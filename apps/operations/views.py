@@ -801,13 +801,3 @@ def imprimir_cargo_pdf(request, pk: int):
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
     response['Content-Disposition'] = f'inline; filename="cargo_ticket_{ticket.id}.pdf"'
     return response
-
-
-@staff_interno_required
-def ajax_get_ticket_json(request, pk: int):
-    """GET /operations/api/ticket/<pk>/json/ — Resumen JSON del ticket."""
-    try:
-        resumen = OperationsService.get_resumen_ticket(pk)
-        return _json_ok(data=resumen)
-    except Exception as e:
-        return _json_err(str(e), status=404)

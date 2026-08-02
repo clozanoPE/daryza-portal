@@ -94,8 +94,4 @@ urlpatterns = [
     path('ticket/<int:pk>/cargo/',
          views.imprimir_cargo_pdf,
          name='imprimir_cargo'),
-
-    path('api/ticket/<int:pk>/json/',
-         views.ajax_get_ticket_json,
-         name='ajax_get_ticket_json'),
 ]
