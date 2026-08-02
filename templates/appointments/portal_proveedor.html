@@ -1,0 +1,297 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Portal Proveedor | Daryza VBS{% endblock %}
+
+{% block content %}
+
+{# ── Header KPI ──────────────────────────────────────────────────────────── #}
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-building-check text-success me-2"></i>Portal de Recepción Daryza
+    </h1>
+    <p class="page-header__subtitle">
+      <i class="bi bi-geo-alt-fill text-success"></i>
+      Gestión de Cupos SAP · Bienvenido, {{ request.user.get_full_name|default:request.user.username }}
+    </p>
+  </div>
+  <div class="d-none d-md-flex gap-3">
+    <div class="kpi-card">
+      <div class="kpi-card__icon bg-success-subtle">
+        <i class="bi bi-cart-check text-success"></i>
+      </div>
+      <div>
+        <div class="kpi-card__value text-success">{{ ocs_pendientes|length }}</div>
+        <div class="kpi-card__label">OCs Pendientes SAP</div>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card__icon bg-primary-subtle">
+        <i class="bi bi-calendar-check text-primary"></i>
+      </div>
+      <div>
+        <div class="kpi-card__value text-primary">{{ historial|length }}</div>
+        <div class="kpi-card__label">Solicitudes del Período</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+
+  {# ── GRILLA SEMANAL DE SLOTS ─────────────────────────────────────────── #}
+  <div class="col-lg-8">
+    <div class="dz-card p-4">
+      <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+        <h5 class="fw-bold m-0 text-dark d-flex align-items-center gap-2">
+          <span class="bg-light p-2 rounded-3"><i class="bi bi-calendar3 text-success"></i></span>
+          Agenda de Cupos Semanal
+        </h5>
+        <div class="d-flex gap-2">
+          <span class="badge bg-success-subtle text-success px-3 py-2 rounded-pill text-xxs fw-bold border border-success">Disponible</span>
+          <span class="badge bg-danger-subtle text-danger px-3 py-2 rounded-pill text-xxs fw-bold border border-danger">Lleno</span>
+          <span class="badge bg-secondary-subtle text-secondary px-3 py-2 rounded-pill text-xxs fw-bold border border-secondary">Bloqueado</span>
+        </div>
+      </div>
+
+      {# Cabecera de días #}
+      <div class="row g-1 mb-2 d-none d-lg-flex">
+        <div class="col-auto" style="width:80px;"></div>
+        {% with "Lunes Martes Miércoles Jueves Viernes Sábado" as dias %}
+          {% for dia in dias.split %}
+          <div class="col text-center text-xs fw-bold text-muted text-uppercase">{{ dia }}</div>
+          {% endfor %}
+        {% endwith %}
+      </div>
+
+      {# Filas de horas #}
+      {% for hora, dias in matrix.items %}
+      <div class="row g-1 align-items-center mb-2">
+        <div class="col-auto d-flex align-items-center justify-content-center bg-light rounded-3 fw-bold text-dark text-xs shadow-sm"
+             style="width:80px;height:48px;border:1px solid #eee">
+          {{ hora }}
+        </div>
+        {% for slot in dias %}
+        <div class="col">
+          <div class="slot-cell
+                       {% if slot.color == 'verde' %}slot-cell--available
+                       {% elif slot.color == 'rojo' %}slot-cell--full
+                       {% else %}slot-cell--closed{% endif %}"
+               {% if slot.color == 'verde' %}
+                 data-slot-id="{{ slot.id }}"
+                 onclick="seleccionarSlot('{{ slot.id }}', '{{ slot.fecha }}', '{{ hora }}')"
+               {% endif %}>
+            <span class="slot-qty">{{ slot.disponibles }}</span>
+            <span class="slot-lbl">libres</span>
+            {% if slot.color == 'verde' %}
+              <div class="slot-cta bg-success text-white">SOLICITAR</div>
+            {% elif slot.color == 'rojo' %}
+              <div class="slot-cta bg-danger text-white">LLENO</div>
+            {% else %}
+              <div class="slot-cta bg-secondary text-white">CERRADO</div>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% empty %}
+      <div class="text-center py-5 text-muted">
+        <i class="bi bi-calendar-x fs-1 d-block mb-2 opacity-25"></i>
+        <p class="small">No hay cupos programados para esta semana. Contacte a Almacén.</p>
+      </div>
+      {% endfor %}
+    </div>
+
+    {# Protocolo #}
+    <div class="dz-card dz-card--accent-green p-3 mt-3">
+      <h6 class="fw-bold text-success small mb-2">
+        <i class="bi bi-shield-lock-fill me-1"></i>Protocolo de Ingreso — Vigilancia
+      </h6>
+      <p class="mb-0 small text-dark" style="line-height:1.5">
+        Obligatorio presentarse con <strong>COA impreso</strong>, EPP completo y DNI vigente.<br>
+        <span class="text-danger fw-bold">Tolerancia: 15 minutos. Pasado el tiempo pierde el cupo automáticamente.</span>
+      </p>
+    </div>
+  </div>
+
+  {# ── PANEL LATERAL: Buscador + Expediente ────────────────────────────── #}
+  <div class="col-lg-4">
+
+    {# Buscador + filtro de período (mes/año, Fase 10) #}
+    <div class="dz-card p-3 mb-3">
+      <form method="GET" class="d-flex flex-column gap-2">
+        <div class="input-group">
+          <input type="text" name="q" class="form-control form-control-sm border-0 bg-light rounded-start-3"
+                 placeholder="Buscar ticket o OC…" value="{{ request.GET.q|default:'' }}">
+          <button class="btn btn-success btn-sm px-3 rounded-end-3" type="submit">
+            <i class="bi bi-search"></i>
+          </button>
+        </div>
+        <div class="d-flex align-items-end gap-2">
+          {% include "partials/campo_filtro_periodo.html" %}
+          <button type="submit" class="btn btn-outline-success btn-sm rounded-3">
+            <i class="bi bi-funnel"></i>
+          </button>
+        </div>
+      </form>
+    </div>
+
+    {# Expediente de citas #}
+    <div class="dz-card overflow-hidden">
+      <div class="px-4 py-3 bg-dark d-flex align-items-center gap-2">
+        <i class="bi bi-clock-history text-success"></i>
+        <h6 class="fw-bold m-0 text-white text-xs text-uppercase" style="letter-spacing:1px">Expediente de Citas</h6>
+      </div>
+
+      <div style="max-height:560px;overflow-y:auto">
+        {% for cita in historial %}
+        <div class="p-3 border-bottom animate-fadein">
+
+          {# Encabezado de cita #}
+          <div class="d-flex justify-content-between align-items-start mb-1">
+            <div>
+              <span class="fw-bold small text-dark d-block">Solicitud #{{ cita.id }}</span>
+              <small class="text-muted text-xxs">{{ cita.get_lugar_entrega_display }}</small>
+            </div>
+            <span class="badge rounded-pill text-xxs fw-bold
+              {% if cita.status == 'SOLICITADO' %}bg-warning text-dark
+              {% elif cita.status == 'CONFIRMADA' %}bg-success text-white
+              {% elif cita.status == 'RECHAZADO' %}bg-danger text-white
+              {% else %}bg-secondary text-white{% endif %}">
+              {{ cita.get_status_display }}
+            </span>
+          </div>
+
+          <div class="d-flex align-items-center gap-3 text-muted text-xs mb-2">
+            <span><i class="bi bi-calendar-event text-success me-1"></i>{{ cita.slot.date|date:"d M Y" }}</span>
+            <span><i class="bi bi-clock text-success me-1"></i>{{ cita.slot.start_time|time:"H:i" }}</span>
+          </div>
+
+          {# OCs de la cita #}
+          <div class="d-flex flex-wrap gap-1 mb-2">
+            {% for po in cita.purchase_orders.all %}
+            <span class="badge text-xxs
+              {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border border-info-subtle
+              {% else %}bg-light text-dark border{% endif %}">
+              <i class="bi {% if po.u_mss_tdb == 'MP' %}bi-flask{% else %}bi-cart{% endif %} me-1"></i>OC {{ po.doc_num }}
+            </span>
+            {% endfor %}
+          </div>
+
+          {# Ticket generado: QR + carga de COA (solo mientras la cita sigue activa) +
+             acceso a trazabilidad (Fase 5), SIEMPRE disponible mientras exista Ticket.
+             Antes todo este bloque —incluido "Ver mi Ticket"— dependía de
+             cita.status == 'CONFIRMADA'; como registrar_salida cambia
+             Appointment.status a 'FINALIZADA' al cerrar el ticket, el proveedor
+             perdía el acceso justo cuando el ticket terminaba (Fase 11). #}
+          {% if cita.token_qr %}
+          <div class="p-3 rounded-3 bg-success-subtle border border-success-subtle text-center mb-2">
+            {% if cita.status == 'CONFIRMADA' %}
+            <p class="text-success fw-bold text-xxs mb-2">
+              <i class="bi bi-check-circle-fill me-1"></i>¡Cita Confirmada! Presenta este QR en Vigilancia
+            </p>
+            <div class="bg-white p-2 d-inline-block rounded-3 shadow-sm mb-2">
+              <div class="qr-code-item" data-token="{{ cita.token_qr }}"></div>
+            </div>
+            <code class="d-block text-dark fw-bold text-xxs mb-2">{{ cita.token_qr }}</code>
+
+            {# Botón de carga de COA #}
+            {% if cita.ticket.tipo_flujo == 'CON_CALIDAD' or  cita.ticket.tipo_flujo == 'SOLO_ALMACEN' %}
+            <button onclick="abrirCargaDocumentos({{ cita.id }})"
+                    class="btn btn-success btn-sm w-100 rounded-3 mb-2 text-xxs">
+              <i class="bi bi-file-earmark-arrow-up me-1"></i>Cargar COA por Ítem
+            </button>
+            <div id="document-panel-{{ cita.id }}" class="d-none mt-2 text-start">
+              <div id="lineas-coa-{{ cita.id }}"></div>
+            </div>
+            {% endif %}
+
+            {# Datos de Ingreso: placa del vehículo y conductor (sesión 13).
+               Informativo para Vigilancia, no bloqueante — editable mientras
+               el ticket sigue PROGRAMADO (mismo criterio que el COA). #}
+            <button onclick="toggleDatosIngreso({{ cita.id }})"
+                    class="btn btn-outline-success btn-sm w-100 rounded-3 mb-2 text-xxs">
+              <i class="bi bi-truck me-1"></i>Datos del Vehículo / Conductor
+            </button>
+            <div id="datos-ingreso-panel-{{ cita.id }}" class="d-none mt-2 text-start">
+              <form onsubmit="return guardarDatosIngreso(event, {{ cita.id }})">
+                <div class="mb-2">
+                  <label class="form-label text-xxs fw-bold mb-1">Placa del Vehículo</label>
+                  <input type="text" name="placa_vehiculo" class="form-control form-control-sm rounded-3"
+                         value="{{ cita.datos_ingreso_actual.placa_vehiculo|default:'' }}"
+                         placeholder="ABC-123">
+                </div>
+                <div class="mb-2">
+                  <label class="form-label text-xxs fw-bold mb-1">DNI/CE del Conductor</label>
+                  <input type="text" name="conductor_dni" class="form-control form-control-sm rounded-3"
+                         value="{{ cita.datos_ingreso_actual.conductor_dni|default:'' }}"
+                         placeholder="12345678">
+                </div>
+                <div class="mb-2">
+                  <label class="form-label text-xxs fw-bold mb-1">Nombre y Apellidos del Conductor</label>
+                  <input type="text" name="conductor_nombre" class="form-control form-control-sm rounded-3"
+                         value="{{ cita.datos_ingreso_actual.conductor_nombre|default:'' }}"
+                         placeholder="Juan Pérez López">
+                </div>
+                <button type="submit" class="btn btn-success btn-sm w-100 rounded-3 text-xxs">
+                  <i class="bi bi-save me-1"></i>Guardar Datos
+                </button>
+              </form>
+            </div>
+            {% else %}
+            <p class="text-muted fw-bold text-xxs mb-2">
+              <i class="bi bi-check-circle-fill text-success me-1"></i>Cita {{ cita.get_status_display }}
+            </p>
+            {% endif %}
+
+            <a href="{% url 'operations:trazabilidad_ticket' pk=cita.ticket.id %}"
+               class="btn btn-outline-success btn-sm w-100 rounded-3 text-xxs">
+              <i class="bi bi-eye me-1"></i>Ver mi Ticket
+            </a>
+          </div>
+          {% endif %}
+
+          {# Nota de rechazo/observaciones #}
+          {% if cita.observaciones_admin %}
+          <div class="p-2 rounded-3 text-xxs
+            {% if cita.status == 'RECHAZADO' %}bg-danger-subtle text-danger border-start border-danger border-3
+            {% else %}bg-light text-dark border-start border-success border-3{% endif %}">
+            <i class="bi bi-info-circle-fill me-1"></i>
+            <strong>Nota:</strong> {{ cita.observaciones_admin }}
+          </div>
+          {% endif %}
+
+          {# Timestamps #}
+          <div class="row g-0 pt-2 border-top border-light mt-2 text-xxs text-muted">
+            <div class="col-6 border-end">
+              <span class="d-block fw-bold text-uppercase" style="font-size:.55rem">Solicitado</span>
+              {{ cita.created_at|date:"d/m H:i" }}
+            </div>
+            <div class="col-6 ps-2 text-end">
+              <span class="d-block fw-bold text-uppercase" style="font-size:.55rem">Respuesta</span>
+              <span class="fw-bold">{{ cita.fecha_respuesta_admin|date:"d/m H:i"|default:"Pendiente…" }}</span>
+            </div>
+          </div>
+
+        </div>
+        {% empty %}
+        <div class="p-5 text-center">
+          <i class="bi bi-inbox text-muted d-block mb-2 fs-1 opacity-25"></i>
+          <span class="text-muted small">Sin solicitudes registradas</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+  </div>{# /col-lg-4 #}
+</div>{# /row #}
+
+{# ── Modal de agendar cita ──────────────────────────────────────────────── #}
+{% include "appointments/modal_agendar.html" %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/portal_proveedor.js' %}?v=2.1"></script>
+{% endblock %}

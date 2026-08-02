@@ -1,0 +1,87 @@
+{% comment %}
+Cargo de Entrega — Ticket #{{ ticket.id }} (Fase 12).
+
+Documento standalone (NO extiende base.html): xhtml2pdf soporta un
+subconjunto de CSS 2.1 (sin flexbox/grid, sin box-shadow ni gradientes),
+así que esta plantilla usa solo tablas y bloques simples, sin Bootstrap.
+Mismos datos que trazabilidad_ticket.html (Fase 5), en formato impreso.
+{% endcomment %}
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Cargo de Entrega — Ticket #{{ ticket.id }}</title>
+  <style>
+    @page { size: A4; margin: 2cm; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 11pt; color: #222222; }
+    h1 { font-size: 16pt; margin: 0 0 2px 0; }
+    h3 { font-size: 12pt; margin: 18px 0 6px 0; border-bottom: 1px solid #999999; padding-bottom: 3px; }
+    .subtitle { font-size: 9pt; color: #666666; margin: 0 0 16px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    .datos-cita td { padding: 4px 6px; font-size: 10pt; border-bottom: 1px solid #dddddd; }
+    .datos-cita td.label { width: 32%; color: #666666; font-weight: bold; }
+    .etapas th { background-color: #f0f0f0; text-align: left; font-size: 9pt;
+                 padding: 5px 6px; border-bottom: 1px solid #999999; }
+    .etapas td { padding: 5px 6px; font-size: 9.5pt; border-bottom: 1px solid #eeeeee; }
+    .footer { margin-top: 30px; font-size: 8pt; color: #999999; text-align: center; }
+    .qr-code { font-size: 9pt; color: #444444; }
+  </style>
+</head>
+<body>
+  <h1>Cargo de Entrega — Ticket #{{ ticket.id }}</h1>
+  <p class="subtitle">Daryza S.A.C. &middot; Generado el {{ fecha_generacion|date:"d/m/Y H:i" }}</p>
+
+  <table class="datos-cita">
+    <tr>
+      <td class="label">Proveedor</td>
+      <td>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }} ({{ ticket.appointment.user.username }})</td>
+    </tr>
+    <tr>
+      <td class="label">Sede</td>
+      <td>{{ ticket.appointment.get_lugar_entrega_display }}</td>
+    </tr>
+    <tr>
+      <td class="label">Fecha / Hora de la cita</td>
+      <td>{{ ticket.appointment.slot.date|date:"d/m/Y" }} &middot; {{ ticket.appointment.slot.start_time|date:"H:i" }}</td>
+    </tr>
+    <tr>
+      <td class="label">OC(s) vinculada(s)</td>
+      <td>
+        {% for po in ticket.appointment.purchase_orders.all %}OC {{ po.doc_num }}{% if po.u_mss_tdb == 'MP' %} (Materia Prima){% endif %}{% if not forloop.last %}, {% endif %}{% empty %}&mdash;{% endfor %}
+      </td>
+    </tr>
+    <tr>
+      <td class="label">Estado del Ticket</td>
+      <td>{{ ticket.get_estado_display }}</td>
+    </tr>
+    <tr>
+      <td class="label">Código QR</td>
+      <td class="qr-code">{{ ticket.codigo_qr|default:"—" }}</td>
+    </tr>
+  </table>
+
+  <h3>Trazabilidad de Etapas</h3>
+  <table class="etapas">
+    <thead>
+      <tr>
+        <th>Etapa</th>
+        <th>Inicio</th>
+        <th>Fin</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for stage in etapas %}
+      <tr>
+        <td>{{ stage.get_etapa_display }}</td>
+        <td>{{ stage.fecha_inicio|date:"d/m/Y H:i" }}</td>
+        <td>{% if stage.fecha_fin %}{{ stage.fecha_fin|date:"d/m/Y H:i" }}{% else %}En curso{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="3">Sin etapas registradas todavía.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="footer">Documento generado automáticamente por Daryza VBS — no requiere firma para su validez interna.</p>
+</body>
+</html>

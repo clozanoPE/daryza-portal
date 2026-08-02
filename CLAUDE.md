@@ -1,0 +1,522 @@
+# CLAUDE.md — Daryza Portal (VBS · Vendor Booking System)
+
+Guía de referencia rápida para trabajar en este repositorio. Generado a partir de un análisis completo del código el **2026-07-30**. Ver también `INFORME_ANALISIS.md` para el detalle de inconsistencias y prioridades.
+
+## Descripción del negocio
+
+Portal Django para que proveedores agenden citas de entrega a las plantas de Daryza. Flujo funcional:
+
+```
+Proveedor solicita cita (con OCs de SAP)
+   → Compras/Almacén confirma (genera Ticket + QR)
+   → Proveedor carga COA (Certificado de Análisis) por línea de OC
+   → Vigilancia escanea QR y autoriza ingreso a planta
+   → Almacén recibe físicamente
+   → Calidad inspecciona (solo si la OC es Materia Prima / tipo_flujo=CON_CALIDAD)
+   → Vigilancia registra salida → Ticket FINALIZADO
+```
+
+Áreas/roles (Django Groups, no hay modelo `User` propio): `PROVEEDORES`, `COMPRAS`, `ALMACEN`, `CALIDAD`, `VIGILANCIA`. El enrutamiento por rol ocurre en `apps/base/views.py::redirect_by_role`.
+
+## Stack técnico
+
+- **Backend**: Django 6.0.3, Django REST Framework 3.17
+- **DB**: PostgreSQL (`psycopg2-binary`), configurada en `core/settings.py` vía variables de entorno cargadas desde `core/.env`
+- **Auth API**: `rest_framework.authtoken` (Token Authentication) — usado por el endpoint de sincronización SAP
+- **Estáticos**: WhiteNoise (`CompressedManifestStaticFilesStorage`)
+- **CORS**: `django-cors-headers` instalado y con middleware activo (nota: sin `CORS_ALLOWED_ORIGINS` configurado, ver informe)
+- **Archivos**: Pillow, integración propia con **OneDrive/Microsoft Graph API** para almacenar COAs (`apps/base/utils.py::OneDriveClient`)
+- **Frontend**: Server-rendered con Django Templates + Bootstrap 5 (CDN) + JS vanilla (`static/js/`), AJAX (fetch) contra endpoints propios devolviendo JSON
+- **i18n**: `es-pe`, zona horaria `America/Lima`
+- **Dependencia adicional no usada**: `django-extensions` está en `requirements.txt` pero no en `INSTALLED_APPS`
+
+Variables de entorno esperadas en `core/.env`: `DEBUG`, `DJANGO_SECRET_KEY`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `ONEDRIVE_CLIENT_ID`, `ONEDRIVE_TENANT_ID`, `ONEDRIVE_CLIENT_SECRET`, `ONEDRIVE_DRIVE_ID`. `DJANGO_SECRET_KEY` y `DB_PASSWORD` son **obligatorias** desde la sesión 18 (`settings.py` falla al arrancar con `ImproperlyConfigured` si faltan, sin fallback inseguro). Opcional: `ALLOWED_HOSTS` (lista separada por comas; default `localhost,127.0.0.1` si no se define). `SAP_SYNC_TOKEN` (opcional, solo para `test_api.py`, el script manual de humo — ya no tiene el token hardcodeado).
+
+## Estructura de apps
+
+| App | Propósito | Modelos clave |
+|---|---|---|
+| `apps.base` | Infra transversal: modelo abstracto `TimeStampedModel`, decoradores de permisos por grupo (`apps/base/decorators.py`), router de home por rol, cliente OneDrive | (sin modelos concretos) |
+| `apps.sap_sync` | Espejo local de datos maestros de SAP (Órdenes de Compra) | `PurchaseOrder`, `PurchaseOrderLine` |
+| `apps.appointments` | Portal del proveedor: slots de horario y solicitud/gestión de citas | `AppointmentSlot`, `Appointment` |
+| `apps.operations` | Ciclo de vida operativo del Ticket (Compras/Almacén/Calidad/Vigilancia) | `Ticket`, `TicketStage`, `TicketLineInspection` |
+| `apps.scheduling` | Administración de plantillas de horario semanal (genera `AppointmentSlot`) | `ScheduleTemplate`, `WeeklySlotRule` |
+| `api` (raíz, fuera de `apps/`) | Endpoint REST de sincronización SAP (`/api/v1/sync-oc/`), consumido por un demonio VB.NET externo | usa modelos de `apps.sap_sync` |
+| `services` (raíz) | **Código muerto/duplicado** — no lo uses como referencia, ver `INFORME_ANALISIS.md` | — |
+
+Namespacing de URLs: `appointments:`, `operations:`, `scheduling:` (ver `core/urls.py`).
+
+## Convenciones de código detectadas
+
+- **Lógica de negocio en `services.py` por app** (patrón "fat services, thin views"): las vistas casi no tienen lógica, delegan a clases estáticas (`AppointmentService`, `OperationsService`, `SchedulingService`, `SlotService`).
+- **Permisos por grupo, no por permission de Django**: se usan decoradores `@algo_required` de `apps/base/decorators.py` (`proveedor_required`, `almacen_required`, `calidad_required`, `vigilancia_required`, `compras_required`, `staff_interno_required`, `staff_o_proveedor_required`). Los superusuarios siempre pasan (`or user.is_superuser`).
+- **Respuestas AJAX**: patrón uniforme `{'status': 'success'|'error', ...}` vía helpers `_json_ok`/`_json_err` (repetidos localmente en `appointments/views.py` y `operations/views.py`, no compartidos).
+- **Choices en español, en mayúsculas** (`SOLICITADO`, `CONFIRMADA`, `PROGRAMADO`, `EN_PLANTA`, etc.) definidos como listas de tuplas dentro de cada modelo.
+- **Trazabilidad por etapas**: `TicketStage` registra timestamps de inicio/fin por etapa; `TicketLineInspection` registra el detalle por línea de OC y por etapa (`VIGILANCIA`/`ALMACEN`/`CALIDAD`).
+- **Nombres de URL**: `panel_<area>` para dashboards, `ajax_<verbo>_<recurso>` para AJAX (convención documentada en `apps/operations/urls.py`).
+- Comentarios en español, abundantes docstrings explicando el "por qué" del flujo de negocio — útiles, consérvalos al editar.
+- Hay comentarios/código obsoleto dejado in-place con explicaciones tipo "AJUSTE QUIRÚRGICO" o "# POR esto:" — señal de que el código ha sido parcheado varias veces sin limpiar rastros; revisar con cuidado antes de asumir que un comentario describe el estado actual (ver `INFORME_ANALISIS.md`).
+
+## Comandos frecuentes
+
+```powershell
+# Entorno virtual (ya existe en ./env)
+.\env\Scripts\Activate.ps1
+
+# Migraciones
+python manage.py makemigrations
+python manage.py migrate
+python manage.py showmigrations
+
+# Servidor de desarrollo
+python manage.py runserver
+
+# Shell interactivo
+python manage.py shell
+
+# Crear superusuario
+python manage.py createsuperuser
+```
+
+⚠️ La suite de tests automatizada (`tests.py`) sigue acotada a `apps/operations` (5 tests, sesión 5) — el resto del proyecto no tiene pruebas. `test_api.py` (raíz) es un script manual de humo contra el endpoint SAP; desde la sesión 18 ya no tiene el token hardcodeado (lee `SAP_SYNC_TOKEN` de `core/.env` o lo pide por `input()`) — el token viejo que estaba expuesto en texto plano sigue pendiente de rotación manual en el sistema real (fuera del alcance de Claude).
+
+✅ `requirements.txt` está en UTF-8 real desde la sesión 14 (antes UTF-16LE con BOM).
+
+## Historial de sesiones
+
+### 2026-07-30 — Análisis inicial completo (sin modificar código)
+- Se recorrió toda la estructura del proyecto (`apps/`, `core/`, `templates/`, `static/`, `services/`, `api/`, migraciones).
+- Se verificó estado de migraciones: **al día**, sin cambios pendientes (`makemigrations --check` limpio) y todas aplicadas en la BD Postgres configurada (`showmigrations` sin pendientes).
+- Se consultó la BD real: 5 `PurchaseOrder`, 3 `Appointment`, 25 `AppointmentSlot`, 3 `Ticket`, grupos `CALIDAD/VIGILANCIA/ALMACEN/COMPRAS/PROVEEDORES` ya creados, 9 usuarios.
+- Se generó `INFORME_ANALISIS.md` con hallazgos clasificados por severidad. Pendiente: decisión del usuario sobre qué corregir primero antes de tocar código.
+- Hallazgo más urgente: bug real en `apps/operations/services.py::get_resumen_ticket` (`insp.coa_url.url` sobre un `URLField`) que ya afecta datos existentes (25 inspecciones con `coa_url` no vacío en BD).
+
+### 2026-07-30 (sesión 2) — Diagnóstico del flujo de etapas (Ticket → TicketLineInspection)
+- Sin modificar código: se trazó el ciclo de vida completo de `TicketLineInspection` a través de las etapas (Vigilancia/Almacén/Calidad), con verificación contra los 3 `Ticket` reales.
+- Se agregó la sección 5 a `INFORME_ANALISIS.md` con los 5 puntos de escritura identificados, la ausencia de un control de "etapa cerrada", el hallazgo de que `detalle_ticket.html` solo muestra `ocs_agrupadas_almacen` (nunca `ocs_agrupadas_calidad`/`_vigilancia`), y evidencia real de que una cuenta de `ALMACEN` registró resultados de `CALIDAD` (sin restricción de rol en el backend).
+- Preguntas de seguimiento respondidas (sin tocar código): el COA por línea del proveedor solo vivía en `TicketLineInspection.coa_url` (etapa='ALMACEN'), sin campo propio previo; y no existe ninguna vista pública/semi-pública accesible solo con el `token_qr`.
+
+### 2026-07-30 (sesión 3) — Implementación: modelo `TicketLineCOA` y desacople del COA por línea
+Cambios de código realizados (con confirmación previa del usuario, alcance acotado — sin tocar `etapa_actual` ni permisos):
+
+1. **Nuevo modelo `TicketLineCOA`** (`apps/operations/models.py`): guarda el COA por línea de OC de forma independiente a las etapas operativas (`ticket`, `po_line`, `coa_url`, `evidencia_url` opcional, `subido_por`, `fecha_carga`, único por `(ticket, po_line)`). Migración `apps/operations/migrations/0003_ticketlinecoa.py`, generada y aplicada.
+2. **`OperationsService.registrar_coa_proveedor`** (`apps/operations/services.py`) reescrito: ahora crea/actualiza `TicketLineCOA` y **ya no toca `TicketLineInspection` en absoluto**.
+3. **`AppointmentService.confirmar_cita`** (`apps/appointments/services.py`): se eliminó la creación prematura del esqueleto `TicketLineInspection` (etapa='ALMACEN') al confirmar la cita. El `Ticket` se sigue creando ahí.
+4. **`detalle_ticket.html` + su vista** (`apps/operations/views.py`): la tabla "Estado de Certificados (COA)" (revisión pre-ingreso de Vigilancia) ahora lee de `TicketLineCOA` vía el nuevo `OperationsService.get_coa_status_por_oc()`; el cálculo de `coa_completo` también se centralizó ahí (`OperationsService.calcular_coa_completo()`).
+5. **`panel_vigilancia`** (`apps/operations/views.py`): ahora anota `ticket.coa_completo` (mismo helper) en cada ticket `PROGRAMADO`, corrigiendo el badge del Kanban que antes siempre mostraba "Faltan COAs" (el atributo no existía).
+
+**Ripple fixes necesarios, no pedidos explícitamente pero requeridos para no romper el flujo al ejecutar los puntos anteriores** (documentados también en el resumen entregado al usuario):
+- `OperationsService.iniciar_ingreso_planta` reescrito: ya no depende de que exista el esqueleto `TicketLineInspection` etapa='ALMACEN' (eliminado en el punto 3); ahora lee las líneas directamente de las OCs de la cita y valida el COA contra `TicketLineCOA`. Sin este cambio, Vigilancia no podría autorizar ingreso nunca más (la validación `if not inspecciones_base.exists(): raise ValidationError` fallaría siempre).
+- `OperationsService.autorizar_almacen`: se añadió `'doc_num': po.doc_num` a los `defaults` del `get_or_create` de `TicketLineInspection` (etapa='ALMACEN'). Antes era un no-op porque el esqueleto ya existía; al eliminarlo, este `get_or_create` pasa a **crear** la fila por primera vez, y `doc_num` es un campo obligatorio (`NOT NULL`, sin default) — sin este fix habría lanzado un `IntegrityError` en el primer ticket que llegara a este paso.
+- `apps/appointments/views.py::api_lineas_cita` reescrito: ya no depende de `ticket.inspections.filter(etapa='ALMACEN')` (que ya no existe justo tras confirmar la cita); ahora lista siempre las líneas desde `appointment.purchase_orders__lines` y cruza el estado de COA contra `TicketLineCOA`. Sin este cambio, el panel de carga de COA del proveedor mostraría 0 líneas justo en la ventana en que el proveedor debe subir el COA.
+- Se evitó reproducir el bug ya documentado de asignar una URL (string) al `FileField` `evidencia_url`: ni `registrar_coa_proveedor` ni el `iniciar_ingreso_planta` reescrito lo hacen ya (antes sí, en `iniciar_ingreso_planta` y en la versión anterior de `registrar_coa_proveedor`).
+
+**Validación realizada** (sin dejar datos de prueba permanentes, todo dentro de `transaction.atomic()` con rollback forzado):
+- `manage.py check` y `makemigrations --check --dry-run` limpios tras los cambios.
+- Ciclo completo `CON_CALIDAD` (confirmar → cargar COA → ingreso → almacén → calidad → salida) ejecutado extremo a extremo sin excepciones sobre datos reales.
+- Caso negativo: ingreso bloqueado correctamente cuando falta el COA obligatorio (mensaje "Acceso Denegado...").
+- Ciclo completo `SOLO_ALMACEN` (con OC sintética autocontenida) ejecutado extremo a extremo; se confirmó que el comportamiento ya documentado de sobreescritura en el sitio de la fila `etapa='ALMACEN'` en el cierre sigue funcionando igual que antes (no se tocó esa parte, fuera de alcance de esta fase).
+- `detalle_ticket` y `panel_vigilancia` renderizan correctamente (HTTP 200) para los 3 tickets reales vía Django test `Client`.
+
+**Fuera de alcance de esta fase (confirmado explícitamente por el usuario, para fases posteriores):** control de "etapa cerrada"/`etapa_actual` en `TicketLineInspection`, y ajuste de permisos (`ajax_registrar_inspeccion` sigue usando `@staff_interno_required`, no restringido por rol de etapa).
+
+### 2026-07-30 (sesión 4) — Máquina de estados `Ticket.etapa_actual` (candado a nivel de servicio)
+
+**Modelo y migraciones:**
+- Nuevo campo `Ticket.etapa_actual` (`apps/operations/models.py`), `CharField` con choices y constantes de clase (`Ticket.ETAPA_PENDIENTE_INGRESO`, `.ETAPA_VIGILANCIA_INGRESO`, `.ETAPA_ALMACEN`, `.ETAPA_CALIDAD`, `.ETAPA_VIGILANCIA_SALIDA`, `.ETAPA_FINALIZADO`), `default=ETAPA_PENDIENTE_INGRESO` (así todo `Ticket` nuevo arranca ahí sin tocar `confirmar_cita`).
+- Migración de esquema: `apps/operations/migrations/0004_ticket_etapa_actual.py` (AddField).
+- Migración de datos: `apps/operations/migrations/0005_inicializar_etapa_actual.py` (`RunPython`), reconstruye `etapa_actual` de los tickets existentes según `estado` + `TicketStage` ya registradas (no quedó ninguno en el valor por defecto si ya estaba en curso). Aplicada y verificada contra los 3 tickets reales: Ticket 1 (`EN_PLANTA`/`CON_CALIDAD`, con `CALIDAD_INSPECCION` abierta) → `CALIDAD`; Ticket 2 (`FINALIZADO`) → `FINALIZADO`; Ticket 3 (`EN_PLANTA`/`SOLO_ALMACEN`, con `ALMACEN_RECEPCION` abierta) → `ALMACEN`.
+
+**Semántica elegida** (cada valor = última acción operativa completada, no "quién debe actuar"):
+
+```
+CON_CALIDAD:  PENDIENTE_INGRESO → VIGILANCIA_INGRESO → ALMACEN → CALIDAD → VIGILANCIA_SALIDA → FINALIZADO
+SOLO_ALMACEN: PENDIENTE_INGRESO → VIGILANCIA_INGRESO → ALMACEN → VIGILANCIA_SALIDA → FINALIZADO
+              (CALIDAD se omite: registrar_calidad salta directo a VIGILANCIA_SALIDA)
+```
+
+| Método (`OperationsService`) | Precondición (`etapa_actual` requerida) | Postcondición (nueva `etapa_actual`) |
+|---|---|---|
+| `iniciar_ingreso_planta` | `PENDIENTE_INGRESO` | `VIGILANCIA_INGRESO` |
+| `autorizar_almacen` | `VIGILANCIA_INGRESO` | `ALMACEN` |
+| `registrar_calidad` | `ALMACEN` (ambos flujos) | `CALIDAD` si `tipo_flujo=CON_CALIDAD`, si no `VIGILANCIA_SALIDA` (salta Calidad) |
+| `registrar_salida` | `CALIDAD` si `CON_CALIDAD`, si no `VIGILANCIA_SALIDA` | `FINALIZADO` |
+
+`registrar_coa_proveedor` (carga de COA) **no** tiene candado ni avanza `etapa_actual` — es independiente del flujo operativo por diseño (ver sesión 3).
+
+**Implementación:**
+- Nueva excepción `TicketEtapaError(ValidationError)` en `apps/operations/services.py` — hereda de `ValidationError` a propósito para que los endpoints AJAX existentes (que ya capturan `ValidationError`) sigan funcionando sin tocarlos (Fase 3 pendiente = ajustar permisos, no esta fase).
+- Helper `OperationsService._validar_etapa(ticket, esperada)`: compara `ticket.etapa_actual`, lanza `TicketEtapaError` con mensaje legible (etapa actual vs. esperada) si no corresponde. Se llama al inicio de cada método, antes de cualquier `save()`.
+- Cada método guarda `etapa_actual` junto con sus demás campos (mismo `save()`/`update_fields`, dentro del `@transaction.atomic` ya existente) — si algo falla a mitad del método, la transacción completa (incluida `etapa_actual`) se revierte.
+
+**Validación realizada** (dentro de `transaction.atomic()` con rollback forzado, sin dejar datos permanentes):
+- Ciclo `CON_CALIDAD` completo en orden correcto: `etapa_actual` avanza exactamente como en la tabla de arriba, verificado con `assert` en cada paso.
+- Ciclo `SOLO_ALMACEN` completo: confirmado el salto `ALMACEN → VIGILANCIA_SALIDA` (sin pasar por `CALIDAD`).
+- Intentos fuera de orden bloqueados correctamente con `TicketEtapaError` y mensaje claro: `registrar_calidad`/`registrar_salida` llamados antes de tiempo (ticket ya `EN_PLANTA` pero en la etapa incorrecta — el candado nuevo es justo lo que detecta esto, ya que el filtro `estado='EN_PLANTA'` preexistente no distingue entre estos tres pasos); reintento de `autorizar_almacen` después de ya haber avanzado a `ALMACEN`, también bloqueado.
+- `manage.py check` y `makemigrations --check --dry-run` limpios; `detalle_ticket` y `panel_vigilancia` siguen respondiendo 200 OK para los 3 tickets reales.
+
+**Fuera de alcance de esta fase (Fase 3, pendiente, confirmado por el usuario):** no se tocó el endpoint AJAX `ajax_registrar_inspeccion` ni ningún decorador de permisos — sigue siendo posible, a nivel de autenticación, que una cuenta de `ALMACEN` ejecute el paso de Calidad (ver hallazgo de la sesión 2); el candado de esta sesión solo garantiza el *orden* de las etapas, no *quién* las ejecuta.
+
+### 2026-07-30 (sesión 5) — Fase 3: permiso por grupo según la etapa activa
+
+**Diagnóstico previo (confirmado, no repetido aquí):** `ajax_registrar_inspeccion` (`apps/operations/views.py`) es el único endpoint de escritura sobre `TicketLineInspection`/ciclo del ticket que dependía de un decorador *genérico* de grupo interno (`@staff_interno_required`, permite ALMACEN/CALIDAD/VIGILANCIA/COMPRAS indistintamente). Revisé el resto de endpoints de escritura del ciclo (`ajax_autorizar_almacen`, `ajax_autorizar_ingreso`, `ajax_registrar_salida`, los de `panel_compras`) y todos ya usan un decorador de rol específico y único (`@almacen_required`, `@vigilancia_required`, `@compras_required`) — no había otro caso que corrigir. `ajax_get_ticket_json` también usa `@staff_interno_required`, pero es de solo lectura (no escribe `TicketLineInspection`), así que quedó fuera de alcance a propósito.
+
+**Implementación:**
+- Nuevo método `OperationsService.grupo_requerido_por_etapa(ticket)` (`apps/operations/services.py`): dado `ticket.etapa_actual` + `tipo_flujo`, devuelve el grupo (`VIGILANCIA`/`ALMACEN`/`CALIDAD`) al que le corresponde ejecutar la siguiente acción. Es la contraparte "de rol" del candado de orden (`_validar_etapa`) de la sesión 4 — ese valida la secuencia, este valida quién la ejecuta.
+- `ajax_registrar_inspeccion` (`apps/operations/views.py`): conserva `@staff_interno_required` como primer filtro (login + algún grupo interno), y ahora además, dentro de la vista, obtiene el `Ticket`, calcula `grupo_requerido_por_etapa(ticket)` y exige que `request.user` pertenezca a ese grupo específico (o sea superusuario). Si no corresponde, responde `403` con un mensaje claro, sin llegar a invocar `OperationsService.registrar_calidad` (no se escribe nada). El frontend (`static/js/modules/api.js::postJSON`) ya maneja cualquier respuesta no-2xx mostrando `data.msg`, así que no fue necesario tocar JS/templates.
+
+**Test nuevo:** `apps/operations/tests.py` (no existía ninguna suite de tests en el proyecto; este es el primer archivo). `RegistrarInspeccionPermisoPorEtapaTests` cubre:
+- Un usuario `ALMACEN` **no puede** registrar la inspección de un ticket `CON_CALIDAD` en etapa `ALMACEN` (le corresponde a `CALIDAD`) → `403`, `etapa_actual` no avanza.
+- Un usuario `CALIDAD` **no puede** registrar el cierre de un ticket `SOLO_ALMACEN` en etapa `ALMACEN` (le corresponde a `ALMACEN`) → `403`, `etapa_actual` no avanza.
+- Caminos positivos (mismos escenarios, con el grupo correcto) → `200`, `etapa_actual` sí avanza — para asegurar que el test detecta tanto un bloqueo roto como un endpoint roto por completo.
+- Superusuario siempre puede, sin importar el grupo.
+- `manage.py test apps.operations`: **5/5 tests OK** (usa su propia BD de pruebas, `test_daryza_portal_db`, creada y destruida automáticamente; no toca la BD real).
+
+**Validación adicional:** `manage.py check` y `makemigrations --check --dry-run` limpios; `detalle_ticket` y `panel_vigilancia` siguen respondiendo 200 OK para los 3 tickets reales tras el cambio.
+
+**Fuera de alcance de esta fase (según lo pedido):** no se generalizó `grupo_requerido_por_etapa` a los endpoints que ya tenían decorador específico (no era necesario); no se tocaron plantillas ni JS.
+
+### 2026-07-31 (sesión 6) — "Mi Sesión" vs "Estado Actual" en `detalle_ticket`: corrección del bug de visibilidad de Calidad
+
+**Diagnóstico previo (confirmado, sesión 2):** `detalle_ticket.html` solo leía `ocs_agrupadas_almacen` (`OperationsService.get_grouped_by_oc(pk, etapa='ALMACEN')`), nunca `ocs_agrupadas_calidad`/`_vigilancia` (esas variables de contexto existían pero no se usaban en la plantilla). Como `registrar_calidad` escribe el resultado real de Calidad en una fila **aparte** (`etapa='CALIDAD'`, ver sesión 3), un `RECHAZADO` o una cantidad ajustada por Calidad quedaba guardado en BD pero la UI seguía mostrando el registro base de Almacén (`PENDIENTE`, cantidad SAP sin ajustar). Verificado contra el Ticket #1 real: línea `8040` tiene `ALMACEN: PENDIENTE/6.0000` vs. `CALIDAD: RECHAZADO/0.0000` — la UI anterior solo mostraba la primera.
+
+**Implementación:**
+- **`OperationsService.get_mi_sesion(ticket)`** (`apps/operations/services.py`): filas editables de la etapa activa. Solo `Ticket.etapa_actual == ETAPA_ALMACEN` tiene un formulario editable por línea (alimenta `ajax_registrar_inspeccion`/`registrar_calidad`, que siempre lee/escribe sobre `etapa='ALMACEN'` sin importar el flujo); el resto de etapas activas son acciones de un clic sin edición por línea, así que devuelve `{}`. Reutiliza `get_grouped_by_oc(ticket.id, etapa='ALMACEN')` sin duplicar lógica.
+- **`OperationsService.get_estado_actual_por_oc(ticket_id)`** (`apps/operations/services.py`): agrupa por OC la fila **más reciente** (`fecha_registro`) de `TicketLineInspection` por línea, entre **todas** las etapas ya ejecutadas (VIGILANCIA/ALMACEN/CALIDAD), no solo ALMACEN. Siempre de solo lectura — esta es la corrección del bug de visibilidad.
+- **Gate de edición en `detalle_ticket`** (`apps/operations/views.py`): se reemplazó la condición anterior (`es_calidad`/`es_almacen` + `es_flujo_calidad` exigido en ambas ramas + `etapas_completadas` vía `TicketStage`) por `puede_editar_mi_sesion = ticket.estado == 'EN_PLANTA' and ticket.etapa_actual == Ticket.ETAPA_ALMACEN and es_su_turno`, donde `es_su_turno` reutiliza `OperationsService.grupo_requerido_por_etapa(ticket)` (la misma función que ya usa `ajax_registrar_inspeccion` desde la sesión 5) comparado contra los grupos del usuario, con bypass de superusuario. `puede_registrar_calidad`/`puede_registrar_almacen` ahora se derivan de este único gate. El contexto pasa `mi_sesion_agrupada` (vacío si el gate no pasa — ni siquiera se envía al template) y `estado_actual_agrupada` (siempre, de solo lectura).
+- **Bug lateral encontrado y corregido como parte de este cambio:** la condición anterior exigía `es_flujo_calidad` (`tipo_flujo == 'CON_CALIDAD'`) tanto para `puede_registrar_calidad` **como** para `puede_registrar_almacen` — es decir, para tickets `SOLO_ALMACEN` el formulario de cierre de Almacén (`ajax_registrar_inspeccion` con `etapa_linea='ALMACEN'`) **nunca se renderizaba en la UI**, aunque el backend sí lo permitía. Confirmado con el Ticket #3 real (`SOLO_ALMACEN`, `etapa_actual=ALMACEN`): con el gate nuevo, el botón "Guardar Inspección Almacén" aparece correctamente para un usuario `ALMACEN`.
+- **Plantilla nueva reutilizable:** `apps/operations/templates/operations/_partials/tabla_inspeccion.html` — misma estructura de tabla para ambas vistas, parametrizada por `editable` (inputs/select vs. texto/badges, y presencia de `data-inspeccion-id`) y `mostrar_etapa` (columna extra "Etapa", solo en "Estado Actual", que mezcla filas de distintas etapas).
+- **`detalle_ticket.html`**: si `acciones.puede_editar_mi_sesion` es verdadero, renderiza pestañas Bootstrap ("Mi Sesión" / "Estado Actual"); si no, renderiza solo "Estado Actual" (sin pestañas, sin formularios) — accesible para cualquier rol interno (incluido Compras) y para el proveedor dueño de la cita, igual que antes.
+- **`static/js/panels/ticket_actions.js`**: `guardarInspeccion` ahora limita `document.querySelectorAll('[data-inspeccion-id]')` al contenedor `#mi-sesion-panel` (antes buscaba en todo el documento) — evita que una futura fila de "Estado Actual" contamine el payload enviado a `ajax_registrar_inspeccion`. `static/js/operations/ticket_actions.js` sigue siendo el duplicado muerto ya documentado (sin referencias); no se tocó.
+
+**Validación realizada** (contra los 3 tickets reales, `Client` de pruebas, sin escrituras — la vista es de solo lectura):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 5; `ajax_registrar_inspeccion` no se tocó).
+- `detalle_ticket` responde `200` para los 3 tickets reales con superusuario y con un usuario de cada grupo interno (`ALMACEN`, `CALIDAD`, `VIGILANCIA`, `COMPRAS`).
+- Ticket #1 (`CON_CALIDAD`, `etapa_actual=CALIDAD`): `get_estado_actual_por_oc` devuelve la fila `CALIDAD` (p.ej. línea `8040`: `RECHAZADO`/`0.0000`) en vez de la fila `ALMACEN` (`PENDIENTE`/`6.0000`) — bug de visibilidad confirmado corregido. `get_mi_sesion` devuelve `{}` (correcto: la etapa activa es `CALIDAD`, no `ALMACEN`).
+- Ticket #3 (`SOLO_ALMACEN`, `etapa_actual=ALMACEN`): un usuario `ALMACEN` ve la pestaña "Mi Sesión" y el botón "Guardar Inspección Almacén" (antes, nunca aparecía); un usuario `CALIDAD` sobre el mismo ticket **no** ve la pestaña "Mi Sesión" ni ningún input editable (`insp-cantidad`, `data-inspeccion-id` ausentes), solo la tabla de solo lectura.
+- Usuarios `CALIDAD` y `COMPRAS` ven "Detalle de OC — Inspección" con los datos de las líneas (`oc-group-card`) pero sin ningún elemento de formulario — confirma el punto 2 (Compras y roles de consulta acceden de solo lectura).
+
+**Fuera de alcance de esta fase (no pedido, no tocado):** no se agregaron tests nuevos (no se solicitaron en este pedido); no se tocó `ajax_registrar_inspeccion` ni el candado de `Ticket.etapa_actual` (siguen igual que en la sesión 5); no se tocó `ticket_detalle.html` (plantilla sin ruta activa, ya detectada como código muerto) ni `static/js/operations/ticket_actions.js` (duplicado muerto).
+
+### 2026-07-31 (sesión 7) — Fase 5 (cierre): vista de trazabilidad de solo lectura + enrutamiento de `scan_qr` por rol
+
+Con esta sesión se cierra el plan de 5 fases sobre el ciclo `Ticket → TicketLineInspection` iniciado en el diagnóstico de la sesión 2 (`INFORME_ANALISIS.md` §5): Fase 1-2 (`TicketLineCOA` y desacople del COA, sesión 3), Fase 2b (candado de orden `etapa_actual`, sesión 4), Fase 3 (permiso por grupo según etapa activa, sesión 5), Fase 4 (`mi_sesion` / `estado_actual` + corrección del bug de visibilidad de Calidad, sesión 6), Fase 5 (esta sesión: vista de trazabilidad + `scan_qr` consciente del rol).
+
+**Implementación:**
+- **`OperationsService.grupo_requerido_por_etapa(ticket)`** (sesión 5, sin cambios) se reutiliza ahora como la única fuente de verdad para "¿tiene este usuario una acción pendiente sobre este ticket?", ya usada por el gate de escritura (`ajax_registrar_inspeccion`) y por el gate de edición de `detalle_ticket` (sesión 6). Esta sesión la extiende a un tercer consumidor: el enrutamiento de `scan_qr`.
+- **Vista nueva `OperationsService`-consciente `trazabilidad_ticket`** (`apps/operations/views.py`), protegida con `@staff_o_proveedor_required` (mismo decorador que `detalle_ticket`) y con la misma verificación de propiedad para proveedores (`ticket.appointment.user != request.user` → redirect a `portal_proveedor`). Contexto: `ticket` (para el stepper de `TicketStage`) + `estado_actual_agrupada` = `OperationsService.get_estado_actual_por_oc(pk)` (el mismo método de la Fase 4, sin acciones ni formularios).
+- **Ruta nueva**: `operations:trazabilidad_ticket` → `ticket/<int:pk>/trazabilidad/` (`apps/operations/urls.py`, junto a `detalle_ticket`).
+- **Plantilla nueva** `apps/operations/templates/operations/trazabilidad_ticket.html`: cabecera + "Datos de la Cita" + stepper de etapas + tabla de "Estado Actual" (solo lectura, `mostrar_etapa=True`), sin ningún botón de acción ni `<script>` de `ticket_actions.js`.
+- **`scan_qr`** (`apps/operations/views.py`) reescrito: decorador cambiado de `@vigilancia_required` a `@staff_o_proveedor_required` (antes solo Vigilancia podía usarlo; ahora cualquier rol interno o el proveedor pueden escanear/abrir un QR). Calcula `grupo_pendiente = OperationsService.grupo_requerido_por_etapa(ticket)` (solo si `ticket.estado` es `PROGRAMADO` o `EN_PLANTA`; `None` en cualquier otro caso, p.ej. `FINALIZADO`) y redirige a `detalle_ticket` si el grupo del usuario coincide con `grupo_pendiente` (o es superusuario), o a `trazabilidad_ticket` en cualquier otro caso — lo que cubre automáticamente al proveedor (nunca pertenece a un grupo operativo) sin necesitar un caso especial. La verificación de propiedad para proveedores no se duplica en `scan_qr`: queda delegada a las vistas de destino. Los redirects de error (código vacío / QR no encontrado) ahora van a `portal_proveedor` si el usuario es proveedor, o a `panel_vigilancia` en cualquier otro caso (antes siempre iban a `panel_vigilancia`, lo que habría producido un rebote a login para un proveedor con un código inválido, dado que `panel_vigilancia` sigue siendo `@vigilancia_required`).
+- **Higiene de plantillas (sin cambio de comportamiento):** se extrajeron a partials compartidos dos bloques que iban a duplicarse entre `detalle_ticket.html` y la nueva `trazabilidad_ticket.html`: `_partials/stages_stepper.html` (el stepper de `TicketStage`) y `_partials/inspeccion_styles.html` (el `<style>` de `.oc-group-card`/`.badge-insp`/`.transition-icon` que antes vivía inline al final de `detalle_ticket.html`, dentro de `{% block extra_js %}`; ahora se incluye vía `{% block extra_head %}` en ambas plantillas). Mismo principio ya aplicado a `_partials/tabla_inspeccion.html` en la sesión 6.
+
+**Validación realizada** (contra los 3 tickets reales, `Client` de pruebas, sin escrituras — ambas vistas son de solo lectura):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 6).
+- `trazabilidad_ticket` responde `200` para los 3 tickets reales con superusuario y con un usuario de cada grupo interno.
+- Proveedor dueño del Ticket #1 ve su propia trazabilidad (`200`); un proveedor distinto es redirigido a `portal_proveedor` (`302` → `200` tras seguir el redirect).
+- Contenido verificado en la página de trazabilidad del Ticket #1: aparece el resultado real de Calidad (`RECHAZADO`, clase `badge-insp--rechazado`) y **no** aparece ningún elemento de formulario (`insp-cantidad`, `data-inspeccion-id`) ni botón de acción (`accionTicket(`, `guardarInspeccion(`).
+- `scan_qr` verificado con los 3 tickets reales y los 4 grupos + superusuario + proveedor dueño:
+  - Ticket #1 (`CON_CALIDAD`, `etapa_actual=CALIDAD`, turno de `VIGILANCIA`): superusuario y `VIGILANCIA` → `detalle_ticket`; `ALMACEN`, `CALIDAD`, `COMPRAS` y el proveedor dueño → `trazabilidad_ticket`.
+  - Ticket #2 (`FINALIZADO`, sin turno pendiente): los 4 grupos, superusuario y proveedor → `trazabilidad_ticket` para todos.
+  - Ticket #3 (`SOLO_ALMACEN`, `etapa_actual=ALMACEN`, turno de `ALMACEN`): superusuario y `ALMACEN` → `detalle_ticket`; `CALIDAD`, `VIGILANCIA`, `COMPRAS` y el proveedor dueño → `trazabilidad_ticket`.
+
+**Fuera de alcance de esta fase (no pedido, no tocado):** no se agregó ningún enlace cruzado entre `detalle_ticket` y `trazabilidad_ticket` en las plantillas (p.ej. un botón "Ver trazabilidad completa" desde la ficha operativa); no se tocó `panel_vigilancia.html` (el formulario de búsqueda por QR sigue apuntando al mismo `operations:scan_qr`, ahora con el enrutamiento nuevo, pero la UI del panel no cambió); no se añadieron tests nuevos (no se solicitaron); no se tocó el manejo de `ticket.estado == 'CANCELADO'` en `scan_qr` más allá de tratarlo como "sin turno pendiente" (mismo criterio que `FINALIZADO`).
+
+**Cierre del plan de 5 fases:** el ciclo completo `Ticket ↔ TicketLineInspection` ahora tiene: (1) COA por línea desacoplado de las etapas operativas, (2) un candado de orden que impide saltarse etapas, (3) un candado de rol que impide que un grupo ejecute la etapa de otro, (4) una UI que distingue "lo que yo puedo editar ahora" de "el estado real más reciente de cada línea" (con el bug de visibilidad de Calidad corregido), y (5) una vista de consulta pura para quien no tiene turno, con el QR como punto de entrada único que enruta automáticamente según a quién le toca actuar.
+
+### 2026-07-31 (sesión 7b) — Datos de prueba: usuarios y `AppointmentSlot` futuros para pruebas manuales
+
+Sin cambios de código. A pedido del usuario, para habilitar pruebas manuales end-to-end del flujo completo (horarios → proveedor solicita → Compras confirma → COA → Vigilancia → Almacén → Calidad → Vigilancia salida):
+
+- **Contraseña de prueba `Prueba2026!`** asignada (vía `set_password`, sin crear cuentas nuevas) a las 5 cuentas ya existentes que mapean 1:1 con los grupos operativos: `ucompras` (COMPRAS), `ualmacen` (ALMACEN), `ucalidad` (CALIDAD), `uvigilancia` (VIGILANCIA), y `P20100055237` (PROVEEDORES — ALICORP S.A.A., la única cuenta proveedor con una OC real todavía sin cita: `doc_num 16089835`, tipo Materia Prima). No se tocó `clozano` (superusuario) ni `daemon_user` (token del daemon SAP).
+- **24 `AppointmentSlot` futuros** creados (2026-08-03 a 2026-08-14, lunes a viernes, dos semanas), replicando exactamente el patrón horario/muelle/capacidad de los 25 slots históricos (capacidad 2, `end_time = start_time + 45min`, mismos muelles por día de la semana). Los 25 slots originales ya habían vencido (ninguno con fecha ≥ hoy) y no existe ninguna `ScheduleTemplate`/`WeeklySlotRule` en el sistema (tampoco hay UI ni admin para crearlas), así que se generaron directamente por ORM en vez de vía `SchedulingService.generar_semana`.
+- Confirmado en la sesión siguiente (8): el usuario ya usó este setup para generar el primer ticket real de prueba end-to-end (`Ticket #11`, `PROGRAMADO`, proveedor `P20100055237`, slot `2026-08-04`).
+
+### 2026-08-01 (sesión 8) — Fase 6 (aditiva): historial de Tickets en Panel Compras
+
+**Contexto:** `panel_compras` (`apps/operations/views.py`) solo listaba citas `SOLICITADO` pendientes de revisión. En cuanto Compras confirmaba una cita y se generaba el `Ticket`, este desaparecía de la vista de Compras sin ningún punto de entrada para volver a consultarlo — `trazabilidad_ticket` (Fase 5) ya existía y ya era accesible para COMPRAS (`@staff_o_proveedor_required` incluye el grupo COMPRAS sin restricción adicional por ticket), pero no había ningún enlace hacia ella desde el panel de Compras.
+
+**Alcance explícitamente aditivo** (confirmado con el usuario antes de empezar): no se tocó `Ticket.etapa_actual`, el candado de `_validar_etapa`, los permisos de `ajax_registrar_inspeccion`/`grupo_requerido_por_etapa`, ni el modelo `TicketLineCOA`.
+
+**Implementación:**
+- **`panel_compras`** (`apps/operations/views.py`) ahora arma un segundo queryset, `tickets_qs` (`Ticket.objects...order_by('-fecha_creacion')`), con los **mismos filtros `q`/`fecha`** ya existentes para `solicitudes` pero aplicados sobre `Ticket`/`Appointment` (`id`, `appointment__purchase_orders__doc_num`, `appointment__user__username`, `appointment__slot__date`) — **sin** filtrar por quién confirmó la cita, es decir, devuelve todos los tickets del sistema. Se pasa al contexto como `tickets_historial`.
+- **`panel_compras.html`**: se envolvió el contenido existente en pestañas Bootstrap (`nav-tabs` + `tab-content`), reutilizando el mismo patrón ya establecido en `detalle_ticket.html` (Fase 4/sesión 6: "Mi Sesión" / "Estado Actual") — así no se introduce un tercer estilo de UI en la app. Pestaña **"Pendientes"**: el listado de tarjetas que ya existía, sin cambios de contenido. Pestaña nueva **"Historial"**: una tabla (`table table-hover`, mismo patrón que `_partials/tabla_inspeccion.html`) con columnas Ticket, OC(s) (mismo badge ya usado para OCs en este panel), Proveedor, Fecha de cita, Estado (mismos badges de color que `detalle_ticket.html`/`trazabilidad_ticket.html`: `PROGRAMADO`=azul, `EN_PLANTA`=amarillo, `FINALIZADO`=verde, `CANCELADO`=gris), Etapa activa (`ticket.get_etapa_actual_display` — ya incluye el label `'Finalizado'` para `ETAPA_FINALIZADO`; se agregó un único caso especial para `estado == 'CANCELADO'` → texto "Cancelado", ya que `etapa_actual` no tiene un valor propio para ese caso) y un botón **"Ver"** que enlaza a `{% url 'operations:trazabilidad_ticket' pk=ticket.id %}` — la misma vista de solo lectura de la Fase 5, sin duplicar su plantilla ni su lógica. Cada pestaña muestra su conteo en un badge (mismo patrón de badges-en-tab-title ya usado en Fase 4).
+- Se agregó una nota de una línea bajo el formulario de filtros aclarando que aplican a ambas pestañas.
+
+**Punto 5 (verificación de permisos, no modificación):** se confirmó que `trazabilidad_ticket` ya permite a COMPRAS ver **cualquier** ticket del sistema, no solo los que confirmó — `@staff_o_proveedor_required` (`apps/base/decorators.py::es_staff_o_proveedor`) incluye `COMPRAS` en la lista de grupos sin ninguna restricción adicional por ticket dentro de la vista (la única comprobación extra dentro de `trazabilidad_ticket` es la de propiedad para `PROVEEDORES`, que no aplica a COMPRAS). **No se encontró ninguna restricción que bloqueara esto**, por lo tanto no se tocó nada de permisos — se verificó empíricamente contra los 4 tickets reales.
+
+**Validación realizada** (contra la BD real, sin escrituras — la vista es de solo lectura, `Client` de pruebas):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 7).
+- `panel_compras` responde `200` para `ucompras`; los 4 tickets reales (`#1`, `#2`, `#3`, y el `#11` nuevo de la sesión de pruebas manuales) aparecen en la pestaña "Historial", cada uno con su link a `/operations/ticket/<id>/trazabilidad/`.
+- Filtro `?q=<username de un proveedor>` aplicado sobre `/operations/compras/`: el ticket de ese proveedor aparece, los de los demás proveedores no — confirma que el filtro ya existente ahora también filtra el historial.
+- Las 4 etiquetas de "Etapa activa" (`Inspección de Calidad`, `Finalizado`, `Recepción en Almacén`, `Pendiente de Ingreso (Vigilancia)`) aparecen correctamente en el HTML renderizado, una por cada ticket real con su `etapa_actual` real.
+- `ucompras` obtiene `200` en `trazabilidad_ticket` para los 4 tickets reales, incluidos los que no confirmó él mismo — confirma el punto 5.
+
+**Fuera de alcance de esta fase (explícitamente no pedido, no tocado):** Almacén, Calidad y Vigilancia no reciben ningún historial equivalente todavía (pendiente de decisión posterior, según lo indicado); no se tocó `etapa_actual`, `_validar_etapa`, `grupo_requerido_por_etapa` ni `TicketLineCOA`; no se agregó paginación al historial (con 4 tickets reales no hace falta todavía); no se agregaron tests nuevos (no se solicitaron).
+
+### 2026-08-01 (sesión 9) — 4 correcciones puntuales (bugs de UI/datos, sin tocar etapas/permisos/modelos)
+
+Alcance explícitamente acotado por el usuario: sin tocar `etapa_actual`, permisos de `ajax_registrar_inspeccion`/`grupo_requerido_por_etapa`, ni ningún modelo. Los 4 puntos se investigaron primero (lectura de código + reproducción empírica contra la BD real) antes de tocar nada.
+
+**1. Bug de COA vacío en la vista del proveedor — causa raíz encontrada y corregida.**
+`OperationsService.get_estado_actual_por_oc` (Fase 4, sesión 6) toma la fila **más reciente** de `TicketLineInspection` por línea entre todas las etapas, pero leía `coa_url` de esa misma tabla — un campo que es solo una **foto tomada una única vez**, en `iniciar_ingreso_planta` (etapa VIGILANCIA), y que nunca se sincroniza en las filas posteriores de ALMACEN/CALIDAD (quedan en `None`/`''`, ver `autorizar_almacen` y `registrar_calidad` en `apps/operations/services.py`). Como la función toma la fila más reciente, en cuanto Calidad actúa esa fila casi siempre tiene el COA vacío aunque el proveedor sí lo haya cargado. **Reproducido con datos reales**: `Ticket #11`, línea `MP00000041` — `TicketLineCOA` (fuente correcta) tenía el link real de SharePoint, pero la fila `CALIDAD` de `TicketLineInspection` (la más reciente) tenía `coa_url=''`.
+- **Fix**: `get_estado_actual_por_oc` ahora cruza `coas_cargados = {po_line_id: coa_url para TicketLineCOA.objects.filter(ticket_id=ticket_id)}` y usa ese dict para `coa_url`, en vez del campo de `TicketLineInspection`. Misma fuente que ya usan correctamente `get_coa_status_por_oc` y `api_lineas_cita`.
+- Esto corrige automáticamente tanto `trazabilidad_ticket.html` como `detalle_ticket.html` (ambos consumen `get_estado_actual_por_oc`), sin tocar plantillas.
+- **No se tocó** `OperationsService.get_grouped_by_oc` (usado por `mi_sesion`, la edición interna de Almacén/Calidad) — tiene un mecanismo de fallback distinto (busca la fila `VIGILANCIA` si la propia está vacía) que no fue reportado como roto y es una vista interna de staff, no del proveedor; fuera del alcance pedido ("vista del proveedor").
+- **Historial de Entregas (columna "Documentos")**: `HistorialCitasView` (`apps/appointments/views.py`) leía `cita.coa_pdf`, el campo legacy a nivel de `Appointment` completo que la carga de COA por línea (Fase 3, vía OneDrive) nunca llena. Se agregó `get_context_data` que anota `cita.coa_completo` con `OperationsService.calcular_coa_completo(cita.ticket)` (Fase 4, ya existente — True/False/None si la cita aún no tiene Ticket). El template (`templates/appointments/historial_listado.html`) ahora muestra un ícono de estado (✓ completo / ⚠ pendiente / — no aplica) en vez del enlace directo al PDF legacy (que ya no representa la realidad, al ser el COA por línea y no un único PDF).
+- Verificado con datos reales: `get_estado_actual_por_oc(11)` devuelve el link real de SharePoint para `MP00000041`; `trazabilidad_ticket` renderizado para el proveedor dueño del Ticket #11 muestra el badge "Cargado" con el link correcto.
+
+**2. Menú de tres puntos del Historial de Entregas — confirmado sin funcionalidad, eliminado.**
+`templates/appointments/historial_listado.html`: el ítem `<a href="#">Ver Detalle</a>` (enlace muerto, sin `href` real) fue eliminado. Se mantienen `Ver Ticket y QR` (funcional, va a `operations:detalle_ticket`) e `Imprimir Cargo` (pendiente de Fase 12, se deja tal cual, con su `href="#"` de placeholder). Efecto colateral corregido: el `<hr class="dropdown-divider">` que separaba "Ver Detalle"/"Ver Ticket y QR" de "Imprimir Cargo" quedaba como primer ítem del menú (huérfano, sin nada arriba) para citas no `CONFIRMADA`; se movió el divisor dentro del mismo `{% if cita.status == 'CONFIRMADA' and cita.token_qr %}` para que solo aparezca junto con "Ver Ticket y QR".
+
+**3. Botón "Volver" en Administración de Horarios — agregado.**
+`apps/scheduling/templates/scheduling/panel_horarios.html` no tenía ningún botón de retorno. Se agregó `<a href="{% url 'operations:panel_compras' %}" class="btn btn-light btn-sm rounded-3 border"><i class="bi bi-arrow-left me-1"></i>Volver</a>` como primer botón del grupo de acciones del header, mismo patrón visual (clases, ícono, texto) que ya usan `detalle_ticket.html` y `trazabilidad_ticket.html` — con la diferencia de que aquí apunta a `panel_compras` (pedido explícito), no a `home_router`, ya que este panel solo lo usa Compras (y superusuario).
+
+**4. Bug de redirect post-login para COMPRAS — investigado a fondo, NO reproducido, NO se tocó código.**
+Se revisó `apps/base/views.py::redirect_by_role`, `core/settings.py` (`LOGIN_REDIRECT_URL='home_router'`, `LOGIN_URL='login'`), `core/urls.py` (el `path('login/', ...)` usa el `LoginView` estándar de Django sin override), y `templates/login.html` (formulario plano, sin JS ni AJAX que intercepte el submit). El bloque `elif user.groups.filter(name='COMPRAS').exists(): return redirect('operations:panel_compras')` es **estructuralmente idéntico** a los de ALMACEN/CALIDAD/VIGILANCIA (mismo patrón, sin typo en el nombre del grupo, sin `return` faltante).
+
+Se reprodujo el flujo completo con el `Client` de pruebas de Django simulando un login real (`POST /login/` con usuario `ucompras`, grupo `COMPRAS` únicamente): la cadena de redirects completa exitosamente — `/login/` → `302` → `/home/` → `302` → `/operations/compras/` → `200`. **No se pudo reproducir el bug descrito** ("la pantalla de login queda visible").
+
+Hipótesis más probable, no verificable desde el código (requiere revisar la cuenta real usada en la prueba manual, no `ucompras`): si esa cuenta **no está realmente asignada al grupo `COMPRAS`** en Django (aunque el usuario la identifique como "de Compras"), `redirect_by_role` no entra en ningún `elif` y cae al fallback final `return redirect('/admin/')` — y como esa cuenta no es `is_staff`, Django Admin la vuelve a mandar a **su propia pantalla de login** (`/admin/login/?next=/admin/`, visualmente distinta de `/login/` pero también "una pantalla de login"), sin ningún camino de vuelta a `panel_compras`. Esto coincidiría exactamente con el síntoma descrito. **No se corrigió nada** — se deja pendiente de que el usuario confirme la membresía de grupo de la cuenta real afectada antes de tocar `redirect_by_role` o el fallback a `/admin/`.
+
+No se detectó indicio de que el mismo problema (de existir) afecte a otro grupo — el código es simétrico para los 4 roles internos.
+
+**Validación realizada** (contra la BD real, `Client` de pruebas, sin escrituras salvo las ya explícitas de sesiones anteriores):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 8).
+- `trazabilidad_ticket` para el Ticket #11 (proveedor dueño): contiene el link real de SharePoint y el badge "Cargado" para `MP00000041`.
+- `/appointments/historial/`: contiene el ícono de COA completo, ya no contiene "Ver Detalle", sí contiene "Ver Ticket y QR" e "Imprimir Cargo".
+- `/scheduling/panel/` (como `ucompras`): contiene el botón "Volver" apuntando a `/operations/compras/`.
+
+**Fuera de alcance de esta fase (no tocado):** `get_grouped_by_oc`/`mi_sesion` (vista interna de staff, no reportada como rota); "Imprimir Cargo" (Fase 12, se deja como placeholder); `redirect_by_role`/fallback a `/admin/` (punto 4, sin causa raíz confirmada en código — pendiente de más información del usuario).
+
+### 2026-08-01 (sesión 10) — Panel lateral de citas al hacer click en un slot ocupado (Administración de Horarios)
+
+**Diagnóstico confirmado:** en `/scheduling/panel/`, el click sobre un slot ocupado ya tenía un `onclick="verDetalleSlot(...)"` (`static/js/panel_horarios.js`), pero la función era un placeholder real (`console.log` y nada más — "Expansión futura", nunca implementada). La leyenda del panel (`panel_horarios.html`) ya decía "Click para detalles" sin que existiera esa funcionalidad.
+
+**Implementación:**
+- **`apps/scheduling/views.py::ajax_get_citas_slot`** (nuevo, `@compras_required`, `GET /scheduling/api/citas-slot/<slot_id>/`): dado un `AppointmentSlot`, recorre `slot.appointments.select_related('user')` (related_name ya existente, `apps/appointments/models.py`) y por cada `Appointment` devuelve proveedor (nombre y código/RUC = username), y si ya existe `Ticket` (`getattr(appointment, 'ticket', None)`, patrón ya usado en `api_lineas_cita`), su `id` y `get_estado_display()`; si aún no hay Ticket (cita `SOLICITADO`, no confirmada por Compras), devuelve `ticket_id: null` y el `get_status_display()` de la cita en su lugar.
+- **Ruta nueva** `scheduling:ajax_get_citas_slot` en `apps/scheduling/urls.py`.
+- **Panel lateral (offcanvas de Bootstrap 5)** agregado en `panel_horarios.html` — no había ningún patrón de offcanvas/popover previo en el proyecto (se buscó explícitamente), así que se introdujo el componente offcanvas nativo de Bootstrap (ya cargado globalmente vía `base.html`, sin dependencias nuevas) en vez de un modal, para calzar literalmente con "panel lateral" pedido.
+- **`static/js/panel_horarios.js`**: `construirCeldaSlot` ahora pasa `slot.citas_count` al `onclick`; `verDetalleSlot(slotId, fecha, hora, citasCount)` reescrito con lógica real: si `citasCount` es `0`, no abre nada — solo un toast "Sin citas" (una de las dos opciones pedidas explícitamente); si hay citas, abre el offcanvas y hace `fetch` a `ajax_get_citas_slot`. Nueva función `construirListaCitas(citas)` arma cada ítem con proveedor, código, badge de estado, y un botón "Ver" que enlaza a `/operations/ticket/<ticket_id>/trazabilidad/` (Fase 5, reutilizada tal cual, sin duplicar la vista) — el botón solo aparece si `ticket_id` no es `null`; para citas aún sin confirmar se muestra únicamente "Cita #<id> (sin confirmar)", sin enlace (no hay Ticket todavía al que apuntar).
+- Bump de `?v=1.0` a `?v=1.1` en el `<script>` de `panel_horarios.js` (cache-busting, mismo patrón ya usado en el resto de JS del proyecto).
+
+**Validación realizada** (contra la BD real, `Client` de pruebas):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 9).
+- `ajax_get_citas_slot` probado contra un slot real con cita (`slot #25`, 2026-04-29 14:00): devuelve `ticket_id=2`, proveedor `P20100055237`, estado `Finalizado`.
+- Probado contra un slot real sin citas (uno de los 24 creados en la sesión 7b): devuelve `citas: []` — la UI, al recibir `citas_count=0` desde `slots_json`, ni siquiera llega a hacer la llamada (se corta antes con el toast).
+- `/scheduling/panel/` renderiza `200` con el offcanvas presente en el HTML y el script apuntando a la versión `v=1.1`.
+- No se pudo ejercitar en vivo el camino "cita sin confirmar, sin Ticket" (no hay ninguna `Appointment` en estado `SOLICITADO` en la BD real en este momento) — verificado solo por lectura de código, mismo patrón `hasattr(appointment, 'ticket')` ya usado y probado en `api_lineas_cita`.
+
+**Fuera de alcance de esta fase (no tocado):** no se agregó paginación/scroll infinito al panel lateral (un slot no debería tener más de `max_capacity` citas, que en la práctica es un número bajo); no se tocó el resto de acciones del panel (bloquear/desbloquear/eliminar/generar semana); no se tocó `etapa_actual`, permisos ni modelos.
+
+### 2026-08-02 (sesión 11) — Historial de solo lectura (Fase 6) replicado en Vigilancia, Calidad y Portal del Proveedor
+
+Alcance explícitamente acotado por el usuario: replicar el MISMO patrón de la Fase 6 (pestañas Bootstrap + tabla + link a `trazabilidad_ticket`), sin reinventar. Sin tocar `etapa_actual`, permisos de escritura, ni `ajax_registrar_inspeccion`. Sin implementar todavía el filtro por mes (Fase 10, pendiente).
+
+**Refactor previo (habilita la reutilización real, no solo visual):** se extrajo la tabla de historial de `panel_compras.html` a un partial nuevo, `apps/operations/templates/operations/_partials/historial_tickets.html` (mismo patrón ya aplicado en Fases 4-5 con `_partials/tabla_inspeccion.html` y `_partials/stages_stepper.html` — evitar duplicar HTML). `panel_compras.html` ahora incluye ese partial en vez de tener la tabla inline; se verificó que renderiza exactamente igual que antes (mismos 4 tickets reales, mismos links).
+
+**1. Panel Vigilancia** (`apps/operations/views.py::panel_vigilancia`, `panel_vigilancia.html`): se agregó `tickets_historial` al contexto (`Ticket.objects...order_by('-fecha_creacion')`, sin filtro de fecha ni de estado — a diferencia de `base_qs`, que sigue igual, filtrado a `appointment__slot__date=hoy`). La plantilla ahora envuelve el Kanban existente (Programados/En Planta/Finalizados de hoy, sin ningún cambio de contenido ni de lógica) en una pestaña **"Hoy"**, y agrega una pestaña **"Historial"** con el partial `historial_tickets.html` — cualquier ticket, de cualquier fecha, es consultable en modo solo lectura.
+
+**2. Panel Calidad** (`apps/operations/views.py::panel_calidad`, `panel_calidad.html`): mismo patrón — `tickets_historial` agregado al contexto, el listado de tickets pendientes de inspección (con su formulario inline de `ajax_registrar_inspeccion`, sin tocar) queda envuelto en una pestaña **"Pendientes"**, y se agrega **"Historial"** con el mismo partial. Antes, en cuanto Calidad terminaba su inspección, el ticket desaparecía del panel sin ningún rastro consultable desde ahí.
+
+**3. Portal del Proveedor** (`templates/appointments/portal_proveedor.html`) — bug de raíz encontrado y corregido: el bloque completo (QR + carga de COA + botón "Ver mi Ticket") estaba condicionado a `{% if cita.status == 'CONFIRMADA' and cita.token_qr %}`. `OperationsService.registrar_salida` (sin tocar en esta sesión) cambia `Appointment.status` a `'FINALIZADA'` al cerrar el ticket (`apps/operations/services.py`, ya existente desde antes) — por eso el proveedor perdía el bloque completo, incluido "Ver mi Ticket", justo cuando el ticket terminaba. Confirmado con datos reales: `Ticket #11` → `estado=FINALIZADO`, `appointment.status=FINALIZADA`.
+- **Fix**: la condición externa ahora es solo `{% if cita.token_qr %}` (hay Ticket, sin importar su estado). Dentro, el QR + "Cargar COA por Ítem" (sin tocar su lógica ni gating interno) solo se muestran si `cita.status == 'CONFIRMADA'` (idéntico a antes para ese sub-bloque); en cualquier otro estado se muestra un texto neutro con `cita.get_status_display`. El botón **"Ver mi Ticket" ahora es incondicional siempre que exista Ticket**, y se cambió su destino de `operations:detalle_ticket` a `operations:trazabilidad_ticket` (pedido explícito) — no se tocó la protección de esa vista (`@staff_o_proveedor_required` + validación de propiedad, Fase 5, intacta).
+- **Bug gemelo encontrado, NO corregido (fuera del alcance nombrado):** `templates/appointments/historial_listado.html` (el dropdown de "Historial de Entregas", ya tocado en la sesión 9) tiene la misma condición `{% if cita.status == 'CONFIRMADA' and cita.token_qr %}` para su ítem "Ver Ticket y QR" → mismo síntoma, el proveedor tampoco puede llegar a un ticket finalizado desde ahí. No se tocó porque el pedido nombraba explícitamente "Portal del Proveedor"; además ese enlace SÍ muestra el QR real (vía `detalle_ticket`), cosa que `trazabilidad_ticket` no hace, así que la corrección ahí requiere decidir si se pierde esa capacidad para tickets activos o se maneja distinto — se deja pendiente de confirmación antes de tocarlo.
+
+**Validación realizada** (contra la BD real, `Client` de pruebas, sin escrituras):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 10).
+- `panel_compras` tras el refactor a partial: sigue mostrando los 4 tickets reales con sus links a trazabilidad, sin diferencia visible.
+- `panel_vigilancia`: pestañas "Hoy"/"Historial" presentes; los 4 tickets reales (incluidos los de abril, muy anteriores a "hoy") aparecen en "Historial" con su link a trazabilidad.
+- `panel_calidad`: pestañas "Pendientes"/"Historial" presentes; mismos 4 tickets en "Historial".
+- `portal_proveedor` para el dueño del Ticket #11 (`FINALIZADO`): "Ver mi Ticket" presente, apuntando a `/operations/ticket/11/trazabilidad/` (ya no a `detalle_ticket`).
+
+**Fuera de alcance de esta fase (no tocado, según lo pedido):** filtro por mes (Fase 10, pendiente); `historial_listado.html` (bug gemelo detectado, no corregido — pendiente de confirmación); `etapa_actual`, `_validar_etapa`, `grupo_requerido_por_etapa`, `ajax_registrar_inspeccion` y el formulario inline de Calidad (sin tocar su lógica de escritura); paginación en los nuevos historiales (con 4 tickets reales no hace falta todavía).
+
+### 2026-08-02 (sesión 12) — Fase 10: filtro de período (mes/año) en los 4 historiales, con mes actual por defecto
+
+**Componente compartido (factorizado en 2 capas, reutilizado por los 4 historiales — no se implementó 4 veces):**
+- **`apps/base/filters.py::resolver_periodo(request)`** (nuevo): lee `request.GET['periodo']` (formato `YYYY-MM`, el que produce nativamente `<input type="month">`); si falta o es inválido, devuelve el mes/año **actual** como valor por defecto. Devuelve `(anio, mes, periodo_str)` — `periodo_str` siempre normalizado, para repoblar el input incluso cuando se usó el default. Se eligió `apps/base/` (no `apps/operations/`) porque el mismo helper se usa también desde `apps/appointments` (Portal del Proveedor) — evita import cruzado entre apps de negocio.
+- **`templates/partials/campo_filtro_periodo.html`** (nuevo, a nivel de proyecto — no dentro de `apps/operations/templates/`, justamente porque lo consume también `apps/appointments`): el campo `<input type="month" name="periodo">` solo, pensado para embeberse dentro del `<form method="get">` que ya existe en cada página (no es un `<form>` propio), ya que las 4 páginas tienen formularios de filtro con formas distintas.
+
+**Los 3 historiales de `apps/operations` (Compras/Vigilancia/Calidad) comparten el mismo partial de tabla desde la sesión 11** (`_partials/historial_tickets.html`), así que el filtro de período se agregó **una sola vez, ahí mismo** (como un `<form>` propio al inicio del partial, con inputs ocultos `q`/`fecha` — solo presentes en el contexto de `panel_compras`, no-op en Vigilancia/Calidad donde esas variables no existen) y automáticamente quedó disponible en los 3 paneles sin tocar sus plantillas. Cada vista (`panel_compras`, `panel_vigilancia`, `panel_calidad`) ahora llama `resolver_periodo(request)` y filtra su `tickets_historial` por `appointment__slot__date__year`/`__month`, y pasa `periodo` al contexto. **El filtro NO aplica a las colas activas** ("Pendientes" en Compras/Calidad, "Hoy" en Vigilancia) — no tendría sentido acotarlas por mes, y no se tocó su lógica.
+- En `panel_compras.html`, que ya tenía su propio filtro (`q`/`fecha`, aplicado a ambas pestañas desde la sesión 8) en un `<form>` separado arriba de las pestañas, se agregó un campo oculto `<input type="hidden" name="periodo" value="{{ periodo }}">` a ESE formulario, para que enviarlo no resetee el período que el usuario haya elegido en la pestaña Historial (y viceversa: el formulario de período reenvía `q`/`fecha` como ocultos). Verificado con datos reales que ambos formularios se preservan mutuamente al enviarse por separado.
+
+**4. Portal del Proveedor** (`apps/appointments/views.py::PortalProveedorView`, `templates/appointments/portal_proveedor.html`): el "Expediente de Citas" (`context['historial']`, la lista de citas en la barra lateral del portal — no `historial_listado.html`, que ya tenía paginación propia desde antes y no fue tocado) era el que realmente "cargaba todos los registros sin límite" (sin paginación, sin filtro de fecha, solo `q`/`estado` opcionales). Se agregó `resolver_periodo(request)` filtrando por `slot__date__year`/`__month`, y se extendió el formulario de búsqueda existente (antes solo `q`) para incluir el campo de período (reutilizando el mismo partial), con un botón de filtro adicional. Se ajustó también la etiqueta del KPI "Mis Solicitudes" → **"Solicitudes del Período"**, porque tras el filtro ese número ya no representa el total histórico sino solo el mes visible (consecuencia directa del cambio, no una funcionalidad nueva).
+
+**Validación realizada** (contra la BD real, `Client` de pruebas, sin escrituras):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 11).
+- Con los 4 tickets reales repartidos en 3 meses distintos (`#1`/`#2`: abril 2026; `#3`: mayo 2026; `#11`: agosto 2026 — el mes "actual" del sistema): sin parámetro `periodo`, los 4 historiales (Compras/Vigilancia/Calidad/Proveedor) muestran únicamente el `#11`; con `?periodo=2026-04`, Compras muestra `#1` y `#2` y oculta `#3`/`#11` — coincide exactamente con lo esperado en todos los casos probados.
+- Verificado que el `<input type="month">` de cada historial se repuebla con el mes actual (`2026-08`) cuando no se pasa `periodo`.
+- Verificado que en `panel_compras` el formulario de arriba (`q`/`fecha`) y el del Historial (`periodo`) se preservan mutuamente al enviarse por separado (campos ocultos cruzados), y que "Pendientes" no se ve afectado por `periodo` aunque apunte a un mes sin tickets.
+
+**Fuera de alcance de esta fase (no tocado, según lo pedido):** `historial_listado.html` ("Historial de Entregas", `/appointments/historial/`) no recibió el filtro de período — ya tenía paginación (`paginate_by=10`) y filtros propios desde antes, y no es el historial "sin límite" que describía el pedido; queda pendiente de que el usuario confirme si también lo quiere acotado por período. No se tocó `etapa_actual`, permisos de escritura, ni `ajax_registrar_inspeccion`. No se agregó paginación adicional (el filtro de período ya acota el volumen).
+
+### 2026-08-02 (sesión 13) — Datos de Ingreso (placa/conductor): diseño confirmado + implementación, cierre de Fase 11
+
+**Diseño acordado con el usuario antes de tocar código** (mismo criterio que `TicketLineCOA`, Fase 1):
+1. El dato vive en un modelo **nuevo asociado al `Ticket`**, no en `Appointment` — Vigilancia valida contra el `Ticket`, y el dato es pre-flujo (independiente de `etapa_actual`), igual que el COA.
+2. Se pide en el portal del proveedor **después de que Compras confirma la cita** (existe `Ticket`) y **hasta que Vigilancia autoriza el ingreso** — no al solicitar la cita (el vehículo/conductor normalmente no se conoce con tanta anticipación).
+3. **Confirmado por el usuario**: `conductor_nombre` es un solo campo (nombre y apellidos juntos, sin separar). **Confirmado**: informativo, NO bloqueante — Vigilancia puede autorizar el ingreso aunque falte o esté incompleto; si falta, se muestra explícitamente "No completado por el proveedor" (nunca se omite en silencio).
+
+**Implementación:**
+- **Modelo `TicketDatosIngreso`** (`apps/operations/models.py`): `OneToOneField(Ticket, related_name='datos_ingreso')` — un solo registro por Ticket (no por línea de OC, a diferencia de `TicketLineCOA`). Campos `placa_vehiculo`, `conductor_dni` ("DNI/CE del conductor"), `conductor_nombre` ("Nombre y apellidos del conductor"), los 3 `blank=True` (se acepta guardar parcial); `actualizado_por` (FK User) y `fecha_actualizacion` (`auto_now`), mismo patrón de auditoría que `TicketLineCOA.subido_por`/`fecha_carga`. Migración `apps/operations/migrations/0006_ticketdatosingreso.py`, generada y **aplicada** contra la BD real.
+- **`OperationsService.registrar_datos_ingreso(ticket_id, placa_vehiculo, conductor_dni, conductor_nombre, usuario)`** (`apps/operations/services.py`): `update_or_create` sobre `TicketDatosIngreso`, dentro de `@transaction.atomic`. No toca `etapa_actual` ni ninguna otra lógica operativa — mismo principio que `registrar_coa_proveedor`.
+- **Endpoint AJAX `registrar_datos_ingreso_ajax`** (`apps/appointments/views.py`, `POST /appointments/<appointment_id>/datos-ingreso/`, ruta `apps/appointments/urls.py`): calcado de `subir_coa_linea_ajax` — exige `appointment.status == 'CONFIRMADA'` y `appointment.ticket.estado == 'PROGRAMADO'` (mismo guard exacto, mismo mensaje de error "el proveedor ya ingresó a planta" adaptado). Exige al menos un campo no vacío (evita guardados totalmente en blanco), pero no exige los 3 — consistente con "no bloqueante".
+- **Formulario del proveedor** (`templates/appointments/portal_proveedor.html`): nuevo botón "Datos del Vehículo / Conductor" + panel colapsable con los 3 campos, en la MISMA tarjeta donde ya vivía "Cargar COA por Ítem" (dentro del mismo `{% if cita.status == 'CONFIRMADA' %}` de la sesión 11) — visible y editable en la misma ventana que el COA. `PortalProveedorView.get_context_data` anota `cita.datos_ingreso_actual` (mismo patrón que `ticket.coa_completo` de la sesión 6) para repoblar el formulario sin consulta extra por fila. JS nuevo en `static/js/panels/portal_proveedor.js`: `toggleDatosIngreso`/`guardarDatosIngreso` (async/await, mismo estilo que `subirCoaLinea`), usando `DzApi.postFormData` ya existente.
+- **Vista de solo lectura para Vigilancia** (`apps/operations/templates/operations/detalle_ticket.html`): nueva sección "Datos del Vehículo / Conductor" dentro del mismo bloque `{% if acciones.puede_autorizar_ingreso %}` que ya mostraba "Estado de Certificados (COA)" — a diferencia del COA (que solo se muestra si `tipo_flujo == 'CON_CALIDAD'`), esta sección se muestra **siempre** (aplica a cualquier flujo). Cada campo usa `{% if ticket.datos_ingreso.<campo> %}...{% else %}<span class="text-danger fst-italic">No completado por el proveedor</span>{% endif %}` — cubre tanto "no existe ningún registro" como "existe pero el campo específico está vacío" con el mismo código (Django resuelve un `OneToOneField` inverso inexistente como fallo silencioso en templates, `ObjectDoesNotExist.silent_variable_failure = True`). Vigilancia no tiene ningún formulario aquí — es puramente de lectura, sin cambios de permisos.
+- **Confirmado explícitamente, sin cambios**: `OperationsService.iniciar_ingreso_planta` no fue tocado — no hay ningún check nuevo contra `TicketDatosIngreso`, Vigilancia puede autorizar el ingreso exactamente igual que antes, con o sin estos datos.
+
+**Nota de interacción con la sesión 12 (esperada, no es un bug):** el bloque del proveedor con este formulario vive dentro de la lista `historial` de `portal_proveedor.html`, que desde la sesión 12 está acotada por el filtro de período (mes actual por defecto). Una cita de un mes distinto al actual no aparece en el portal por defecto — hay que pasar `?periodo=YYYY-MM` para verla — igual que le pasaría a cualquier otra tarjeta de esa lista. Se verificó explícitamente durante la validación de esta sesión.
+
+**Validación realizada** (dentro de `transaction.atomic()` con `savepoint_rollback` forzado — Ticket #3 se pasó temporalmente a `PROGRAMADO` para probar el camino positivo, sin dejar datos permanentes; `manage.py test` corrido aparte, normal):
+- `manage.py check` y `makemigrations --check --dry-run` limpios; migración aplicada sin errores.
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 12).
+- Guardado exitoso vía el endpoint mientras `ticket.estado == 'PROGRAMADO'`; los 3 datos aparecen correctamente en `detalle_ticket` para Vigilancia.
+- Actualización parcial (DNI vacío a propósito): Vigilancia ve el nuevo valor de placa/nombre y **"No completado por el proveedor" exactamente donde falta el DNI** — no se omite en silencio.
+- Una vez que el ticket pasa a `EN_PLANTA`, el mismo endpoint devuelve `400` y **no modifica el registro existente** — confirma el guard "editable mientras PROGRAMADO".
+- Con un Ticket real `PROGRAMADO` (temporal) y **sin ningún** `TicketDatosIngreso`, Vigilancia ve "No completado por el proveedor" exactamente **3 veces** (una por campo).
+- Confirmado que la sección de Vigilancia solo aparece junto a la validación de COA previa a "Autorizar Ingreso" (`acciones.puede_autorizar_ingreso`) — una vez que el ticket ya está `EN_PLANTA`, la sección completa desaparece junto con esa tarjeta, tal como se pidió ("junto a la validación de COA previa a Autorizar Ingreso").
+
+**Fuera de alcance de esta fase (no tocado, según lo pedido):** no se bloqueó el ingreso por datos faltantes (confirmado explícitamente como no bloqueante); no se tocó `etapa_actual`, `_validar_etapa`, `grupo_requerido_por_etapa` ni ningún permiso existente; no se agregó este dato a los historiales (Fase 6/11) ni a `trazabilidad_ticket` (no pedido, evaluar en fase futura si Compras/Calidad también lo necesitan).
+
+### 2026-08-02 (sesión 14) — Fase 12: "Imprimir Cargo" → PDF, y corrección de `requirements.txt` a UTF-8
+
+**Dependencia nueva evaluada y confirmada con el usuario antes de instalar:** no había ninguna librería de generación de PDF en el proyecto. Se propusieron 3 opciones (WeasyPrint, ReportLab puro, xhtml2pdf) y se eligió **`xhtml2pdf==0.2.17`** — 100% Python, sin dependencias de sistema (a diferencia de WeasyPrint, que requiere Pango/Cairo/GDK-Pixbuf, notoriamente frágil de instalar en Windows), y permite escribir la plantilla como HTML/CSS de Django en vez de armar el PDF por código (a diferencia de ReportLab puro) — consistente con el resto de la app.
+
+**Corrección de `requirements.txt` (Alta prioridad #4 de `INFORME_ANALISIS.md`), aprovechada en esta sesión:**
+- El archivo estaba en **UTF-16LE con BOM** (confirmado por bytes: `FF-FE-61-00-73-00...`). Se re-escribió como **UTF-8 sin BOM** real — el primer intento con la herramienta de escritura habitual preservó la codificación UTF-16 original (solo perdió el BOM, seguía siendo 2 bytes por carácter); se forzó la reescritura real vía `.NET` (`System.Text.UTF8Encoding($false)`) para obtener UTF-8 genuino (`61-73-67-69-72-65-66...`, 1 byte por carácter). Verificado con `pip install -r requirements.txt` contra el entorno virtual del proyecto: **todas las líneas resueltas correctamente** ("Requirement already satisfied" para las 12), sin errores de parseo — confirma que el archivo resultante es válido.
+- Se agregó `xhtml2pdf==0.2.17` como línea nueva (orden alfabético, al final). No se listaron sus dependencias transitivas (`reportlab`, `pyHanko`, `pypdf`, etc.) explícitamente — el archivo ya era una lista curada de dependencias directas, no un `pip freeze` completo, y pip las resuelve solo.
+
+**Implementación de "Imprimir Cargo":**
+- **Plantilla nueva** `apps/operations/templates/operations/cargo_ticket_pdf.html`: documento HTML **standalone** (no extiende `base.html` — xhtml2pdf soporta un subconjunto de CSS 2.1, sin flexbox/grid/box-shadow, así que Bootstrap no serviría). Mismos datos que `trazabilidad_ticket.html` (Fase 5): ID de ticket, proveedor, sede, fecha/hora de la cita, OC(s) vinculada(s), estado del ticket, código QR, y la tabla de Trazabilidad de Etapas (`TicketStage`, ordenada por `fecha_inicio`). Sin gradientes ni layouts complejos, una sola tabla de datos + una tabla de etapas — confirmado que renderiza en una sola página con datos reales.
+- **Vista `imprimir_cargo_pdf`** (`apps/operations/views.py`, `GET /operations/ticket/<pk>/cargo/`, ruta `operations:imprimir_cargo` en `apps/operations/urls.py`): mismo criterio de propiedad que `detalle_ticket`/`trazabilidad_ticket` (`@staff_o_proveedor_required` + verificación manual de que un proveedor solo genere el cargo de sus propios tickets). Renderiza la plantilla a string (`render_to_string`), la convierte con `xhtml2pdf.pisa.CreatePDF(html, dest=buffer)`, y responde `HttpResponse(..., content_type='application/pdf')` con `Content-Disposition: inline` (no `attachment`) — así el navegador lo abre listo para imprimir en vez de forzar la descarga.
+- **`templates/appointments/historial_listado.html`**: el ítem "Imprimir Cargo" del menú de tres puntos (antes `href="#"`, sin funcionalidad) ahora enlaza a `{% url 'operations:imprimir_cargo' cita.ticket.id %}` con `target="_blank"` (mismo patrón que "Ver Ticket y QR", no reemplaza la navegación del historial). Gateado por `{% if cita.ticket %}` — a diferencia de "Ver Ticket y QR" (que sigue exigiendo `cita.status == 'CONFIRMADA'`, bug gemelo ya reportado en la sesión 11 y todavía sin corregir), "Imprimir Cargo" está disponible en **cualquier estado del ticket, incluido `FINALIZADO`** (tiene sentido como comprobante de entrega ya completada). Se agregó un mensaje "Sin ticket generado todavía" cuando la cita no tiene Ticket, para que el menú no quede vacío en ese caso.
+
+**Validación realizada** (contra la BD real, `Client` de pruebas, sin escrituras — la vista es de solo lectura):
+- `manage.py check` y `makemigrations --check --dry-run` limpios.
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios respecto a la sesión 13).
+- PDF generado contra el Ticket #2 real (`FINALIZADO`): `Content-Type: application/pdf`, `Content-Disposition: inline; filename="cargo_ticket_2.pdf"`, firma de archivo `%PDF` válida, 3.4 KB. **Inspeccionado visualmente** (vía el lector de PDF): una sola página, con los 6 datos de cabecera y las 4 etapas del ticket real, formato limpio y legible.
+- Un proveedor distinto al dueño del Ticket #2 es redirigido a `portal_proveedor` al intentar generar su cargo (`200` tras seguir el redirect) — mismo criterio de propiedad que `trazabilidad_ticket`.
+- Un usuario de Vigilancia (staff) sí puede generar el cargo de cualquier ticket.
+- El link en `/appointments/historial/` apunta a la URL correcta con `target="_blank"`.
+
+**Fuera de alcance de esta fase (no tocado):** no se corrigió el bug gemelo de "Ver Ticket y QR" (gateado por `cita.status == 'CONFIRMADA'`, reportado en la sesión 11); no se agregó un botón de "Imprimir Cargo" a `detalle_ticket.html`/`trazabilidad_ticket.html` (solo se pidió conectar el del Historial de Entregas); no se firmó digitalmente el PDF (el texto del footer ya aclara "no requiere firma para su validez interna").
+
+---
+
+### 2026-08-02 (sesión 15) — Resolución de la "deuda conocida" reportada al cierre de la sesión 14
+
+El usuario pidió resolver los 3 puntos de deuda antes de aceptar el cierre del lote (no se cierra como "lote completo" todavía — queda pendiente de su confirmación final). Los 3 puntos exigían primero **investigar y responder**, y solo corregir código donde correspondiera según la respuesta:
+
+**1. "Ver Ticket y QR" (`historial_listado.html`) vs. "Ver mi Ticket" (`portal_proveedor.html`, sesión 11) — confirmado: eran vistas de destino DISTINTAS, por una razón real.**
+- `historial_listado.html` apuntaba a `operations:detalle_ticket` (sin cambios desde la sesión 9); `portal_proveedor.html` apunta a `operations:trazabilidad_ticket` desde la sesión 11.
+- Motivo de la diferencia: `detalle_ticket.html` renderiza el widget de QR escaneable (`#qrcode` + JS `QRCode`); `trazabilidad_ticket.html` no lo tiene. El nombre "...y QR" prometía específicamente esa imagen.
+- **Resuelto** (corresponde el mismo fix, per lo indicado por el usuario): se unificó el criterio y el destino — `{% if cita.ticket %}` (antes `cita.status == 'CONFIRMADA' and cita.token_qr`) y el link ahora va a `operations:trazabilidad_ticket`, igual que "Ver mi Ticket". Se renombró la etiqueta a **"Ver Ticket"** (ya no muestra QR). Se combinaron los dos bloques `{% if cita.ticket %}` duplicados (este ítem + "Imprimir Cargo", sesión 14) en uno solo. Sin pérdida operativa real: el QR ya se ve de forma inline en la tarjeta de `portal_proveedor.html` mientras la cita sigue `CONFIRMADA`/`PROGRAMADO` — el único momento en que tiene sentido presentarlo físicamente en Vigilancia.
+- Verificado con el Ticket #2 real (`FINALIZADO`): "Ver Ticket" (sin "y QR") presente, apunta a `/operations/ticket/2/trazabilidad/`, `200 OK`.
+
+**2. Bug de redirect post-login para COMPRAS — investigado en datos reales, NO corregido (solo reportado, según lo pedido).**
+Se listaron los 9 usuarios del sistema completo y sus grupos vía ORM. Resultado: **`ucompras` es la ÚNICA cuenta en el grupo `COMPRAS`**, pertenece exclusivamente a ese grupo (sin membresía múltiple, sin grupos faltantes), y su `last_login` es de **hoy** (2026-08-02) — confirma que es la cuenta que se usó para probar. Esto **descarta por completo** la hipótesis de la sesión 9 (membresía de grupo incorrecta → fallback a `/admin/`). El código de `redirect_by_role` y el flujo completo de login ya se habían verificado funcionando correctamente end-to-end con esta misma cuenta (sesión 9). **No hay ninguna causa identificable en datos ni en código** en este momento — si el síntoma persiste, lo más probable es que sea específico del navegador/cliente usado (caché, extensión, etc.), no del servidor. Se necesitan más detalles de reproducción (navegador, URL exacta en la barra tras el intento, capturas) para seguir investigando; no se tocó ningún archivo.
+
+**3. `historial_listado.html` — confirmado: NO es una de las 4 vistas de la Fase 10, es una vista separada.**
+Las 4 vistas filtradas en la Fase 10 (sesión 12) fueron `panel_compras`, `panel_vigilancia`, `panel_calidad` (los 3 comparten `_partials/historial_tickets.html`), y `PortalProveedorView.get_context_data` → `context['historial']` (el "Expediente de Citas", la lista compacta dentro de `portal_proveedor.html`, sin paginación, esa era la que "cargaba todo sin límite").
+`historial_listado.html` es servida por `HistorialCitasView` (`ListView`, `/appointments/historial/`, enlazada desde el sidebar como "Mi Historial") — **una página aparte**, con su propia paginación (`paginate_by=10`) y sus propios filtros (`q`, `status`, `sede`) desde antes de esta serie de fases. Su propósito: el historial completo y navegable (por páginas) de todas las citas del proveedor, a diferencia del "Expediente de Citas" del portal principal, que es un resumen reciente sin paginar embebido en el dashboard. **No se le agregó el filtro de período** — no corresponde según lo indicado por el usuario (la instrucción era aplicarlo solo si resultaba ser una de las 4 vistas ya tocadas, y no lo es); si se quiere agregar por consistencia visual en una fase futura, es una decisión aparte a confirmar.
+
+**Validación realizada:**
+- `manage.py check` limpio; `manage.py test apps.operations`: **5/5 OK** (sin cambios de lógica de escritura).
+- "Ver Ticket" verificado contra el Ticket #2 real (`FINALIZADO`): aparece sin "y QR", apunta a `trazabilidad_ticket`, `200 OK` al acceder directamente.
+- Consulta de grupos verificada contra los 9 usuarios reales del sistema (no hay ningún otro candidato a "cuenta de Compras" además de `ucompras`).
+
+**Estado del lote de Fases 7-12: sigue sin cerrarse formalmente — pendiente de confirmación final del usuario**, ahora con la deuda reducida a un único punto genuinamente abierto (punto 2, que requiere más información del usuario para seguir investigando, ya que no hay nada más que el código/los datos puedan revelar en este momento).
+
+### 2026-08-02 (sesión 16) — Causa raíz real del bug de login de COMPRAS encontrada y corregida; cierre definitivo del lote Fases 7-13
+
+El usuario confirmó el punto 2 como bug reproducible (Chrome y Edge por igual, no de datos/sesión) y pidió investigar puntualmente `redirect_by_role` (nombre exacto del grupo, orden de los `if/elif`, que la rama de COMPRAS realmente redirija) antes de corregir a ciegas.
+
+**Los 3 puntos que pidió revisar, uno por uno:**
+1. **Nombre del grupo**: `'COMPRAS'` en `redirect_by_role` coincide byte a byte con `'COMPRAS'` en `apps/base/decorators.py::compras_required` y con el nombre real en BD (confirmado sesión 15). Sin discrepancia de mayúsculas/minúsculas ni espacios.
+2. **Orden de los `if/elif`**: revisado de nuevo, simétrico entre los 5 roles, sin ninguna condición previa que pudiera interceptar a COMPRAS.
+3. **¿La rama de COMPRAS redirige de verdad?** Sí — `return redirect('operations:panel_compras')`, no solo arma contexto.
+
+**Con el código de `redirect_by_role` descartado por tercera vez** (sesiones 9, 15 y ahora esta), se cambió de estrategia: en vez de seguir mirando ese archivo, se reprodujo el flujo completo contra el **servidor real corriendo** (`manage.py runserver`, puerto 8000, el mismo que usa el usuario) vía HTTP real con cookies persistentes (PowerShell `Invoke-WebRequest` con `-SessionVariable`, replicando exactamente lo que hace un navegador) — no el `Client` de pruebas de Django, que no pasa por la pila HTTP/WSGI real y podía estar ocultando algo. Resultado: **el flujo funciona perfecto también por HTTP real** (`POST /login/` → `302` → `302` → `200` en `/operations/compras/`, título "Panel Compras" confirmado en el HTML). Se intentó además reproducir literalmente en Chrome vía las herramientas de automatización de navegador, pero la extensión no estaba conectada en este entorno.
+
+**Causa raíz real, encontrada al probar deliberadamente con una contraseña incorrecta contra el servidor real:** `templates/login.html` **no muestra ningún mensaje de error cuando el login falla**. Un `POST` con credenciales inválidas responde `200` sobre `/login/`, sin ninguna clase de error (`is-invalid`, `alert-danger`, etc.), sin cookie de sesión, y con el formulario **visualmente idéntico** al estado inicial — confirmado en la respuesta HTTP real. Un usuario no tiene ninguna señal de que su intento falló; ve exactamente "la pantalla de login sigue ahí", que es palabra por palabra el síntoma reportado.
+
+Esto **no es un bug de `redirect_by_role`** (comprobado limpio 3 veces, por 3 métodos distintos) — es un bug genérico de UX en `login.html`, que solo se manifestó de forma reproducible con la cuenta de Compras porque el navegador de prueba probablemente tiene guardada/autocompletada una contraseña vieja o incorrecta para esa cuenta específica (`ucompras` fue reseteada en la sesión 7b; si el navegador guardó una contraseña de antes de ese reset, cada intento fallaría en silencio, siempre igual, en cualquier navegador que tenga esa credencial vieja guardada — coincide con "reproducible en Chrome y Edge por igual").
+
+**Fix aplicado** (`templates/login.html`): se agregó un bloque `{% if form.errors %}` con una alerta Bootstrap visible ("Usuario o contraseña incorrectos. Verifique e intente nuevamente."), más la clase `is-invalid` en ambos campos y `value="{{ form.username.value }}"` para no perder lo ya tecleado. Django's `AuthenticationForm` ya generaba el error internamente (`form.errors`) — simplemente nunca se renderizaba.
+
+Se reconfirmó (reseteo idempotente, incluido para eliminar cualquier duda) la contraseña de `ucompras` a `Prueba2026!`. **Se recomienda al usuario limpiar la contraseña guardada/autocompletada para esa cuenta en el navegador antes de volver a probar** — el fix de UI hace visible el error, pero no puede corregir una credencial mal guardada en el propio navegador.
+
+**Validación realizada** (contra el servidor real corriendo, HTTP real, sin usar el `Client` de pruebas para esta parte):
+- Con contraseña incorrecta: `200` sobre `/login/`, alerta de error visible, clase `is-invalid` presente — confirmado antes y después del fix (antes: sin alerta; después: con alerta).
+- Con la contraseña correcta (`Prueba2026!`): `200` final sobre `/operations/compras/`, título "Panel Compras | Daryza VBS" — sigue funcionando exactamente igual tras el cambio de plantilla.
+- `manage.py check` limpio; `manage.py test apps.operations`: **5/5 OK**.
+
+**Fuera de alcance de esta sesión:** no se tocó `redirect_by_role`, `compras_required`, ni ningún otro decorador o vista — ninguno tenía el bug. No se implementó recuperación de contraseña (el link "¿Olvidó su contraseña?" en `login.html` sigue siendo un placeholder `href="#"`, no reportado como parte de este problema).
+
+---
+
+## Cierre definitivo del lote — Fases 7 a 13 (sesiones 6 a 16, 2026-08-01 a 2026-08-02)
+
+Con la sesión 16 se resuelven los 3 puntos de deuda pendientes de la sesión 14 (uno corregido en la sesión 15, dos en esta sesión) y se cierra el lote completo de fases aditivas construidas sobre el plan original de 5 fases (sesiones 1-7):
+
+- **Fase 6** (sesión 8): historial de Tickets de solo lectura en Panel Compras.
+- **Fase 7** (sesión 9): 4 correcciones puntuales (COA vacío, "Ver Detalle" eliminado, botón Volver, investigación inicial del bug de login).
+- **Fase 8** (sesión 10): panel lateral al hacer click en un slot ocupado.
+- **Fase 9** (sesiones 11 y 15): historial replicado en Vigilancia/Calidad; "Ver mi Ticket"/"Ver Ticket" ya no desaparecen al finalizar, en **ambos** puntos de entrada (portal principal e Historial de Entregas).
+- **Fase 10** (sesión 12): filtro de período (mes/año) en los 4 historiales correspondientes; confirmado que `historial_listado.html` es una vista aparte, fuera de ese alcance a propósito.
+- **Fase 11** (sesión 13): modelo `TicketDatosIngreso`, informativo para Vigilancia.
+- **Fase 12** (sesión 14): "Imprimir Cargo" → PDF vía `xhtml2pdf`; `requirements.txt` recodificado a UTF-8 real.
+- **Fase 13** (sesión 16, esta sesión): causa raíz real del bug de login (falta de feedback de error en `login.html`, no relacionado con `redirect_by_role`) encontrada y corregida.
+
+**Sin deuda pendiente conocida al cierre de este lote.**
+
+### 2026-08-02 (sesión 17) — Actualización documental de `INFORME_ANALISIS.md` (cierre documental completo)
+
+Sesión puramente documental: **no se modificó ningún archivo de código**, solo `INFORME_ANALISIS.md`. Se releyó `CLAUDE.md` completo (historial de sesiones 1-16) y se verificó contra el código actual (no solo memoria) cuál de los 23 hallazgos de la sección 2 del informe (CRÍTICO 1-6, MEDIO 7-17, BAJO 18-23) quedó realmente corregido a lo largo de las sesiones 3-16, antes de anotar nada.
+
+**Hallazgos marcados como RESUELTO (verificados contra el código actual, no solo contra lo narrado en sesiones previas):**
+- **CRÍTICO #2** (`evidencia_url` mal usado para URLs de OneDrive) → sesión 3. Verificado: `evidencia_url` no se asigna en ningún punto del código actual.
+- **CRÍTICO #5** (`requirements.txt` en UTF-16LE) → sesión 14.
+- **MEDIO #16** (fallback muerto `getattr(line, 'coa_url', None)` en `detalle_ticket`) → resuelto como efecto colateral de la sesión 6 (nunca fue el objetivo explícito de esa sesión, pero el fallback desapareció al reescribirse el cálculo de COA). Verificado: no queda ningún rastro de ese patrón en `views.py`.
+- **BAJO #23** (sin suite de tests) → marcado **parcialmente** resuelto, sesión 5 (`apps/operations/tests.py`, 5 tests, cobertura acotada al candado de permiso por etapa — el resto del proyecto sigue sin tests).
+
+**Hallazgos verificados como NO tocados (confirmado por lectura de código, no solo ausencia de mención en `CLAUDE.md`), dejados sin marcar:** CRÍTICO #1 (`insp.coa_url.url` — confirmado que el bug **sigue presente** en `get_resumen_ticket`, línea 689 de `services.py`), CRÍTICO #3, #4, #6 (`services/` sigue existiendo, confirmado con `Glob`); MEDIO #7, #8, #9, #10, #11, #12, #13, #14, #17; BAJO #15 (confirmado que no existe ningún `admin.py` en ninguna app, vía `Glob`), #18, #19, #20, #21, #22.
+
+**Sección 5** (diagnóstico del flujo de etapas) no se tocó punto por punto — fuera del alcance pedido (solo sección 2); se agregó una nota de una línea señalando que sus 3 conclusiones ya fueron resueltas por el plan de 5 fases (sesiones 4-6) y remitiendo al cierre narrativo que ya tiene en `CLAUDE.md` (sesión 7).
+
+**Sección 6 nueva** ("Funcionalidades agregadas post-análisis inicial"): lista las 10 piezas de funcionalidad nueva construidas en las Fases 1-13 que no corrigen ningún hallazgo del informe original (`TicketLineCOA`, `etapa_actual`, permiso por etapa, `trazabilidad_ticket`/`scan_qr`, historiales por rol, panel lateral de horarios, filtro de período, `TicketDatosIngreso`, generación de PDF), más una mención aparte de los bugs adicionales encontrados y corregidos en el camino que no estaban en el diagnóstico original (visibilidad de Calidad, COA vacío del proveedor, acceso perdido a ticket finalizado, falta de feedback de error en login).
+
+**Fuera de alcance de esta sesión (no tocado, según lo pedido):** secciones 3 y 4 de `INFORME_ANALISIS.md` (brechas de flujo y próximos pasos priorizados) — no se pidió actualizarlas, aunque alguna referencia cruzada ahí (p. ej. el ítem "Alta: re-codificar requirements.txt" en la sección 4) ya está resuelta según la sección 2 actualizada.
+
+**Cierre documental completo:** con esta sesión, tanto `CLAUDE.md` como `INFORME_ANALISIS.md` reflejan con precisión el estado real del código a 2026-08-02 — el lote de Fases 7-13 (sesión 16) y el informe de diagnóstico original (sesión 1-2) quedan reconciliados entre sí.
+
+### 2026-08-02 (sesión 18) — Cierre de los 4 CRÍTICOS originales que quedaron sin tocar en 13 fases
+
+Con esta sesión, **los 6 hallazgos CRÍTICO del informe original quedan resueltos** (2 y 5 ya lo estaban desde las sesiones 3 y 14; 1, 3, 4 y 6 se cierran aquí).
+
+**1. CRÍTICO #1 (`insp.coa_url.url`, `get_resumen_ticket`).** Investigado primero, tal como se pidió: el endpoint que lo consume (`ajax_get_ticket_json`, `/operations/api/ticket/<pk>/json/`) **sigue registrado y accesible**, pero una búsqueda en todo `static/` y en todos los `.html` del proyecto confirma que **ningún template ni archivo JS lo llama** — quedó reemplazado de facto por `detalle_ticket`/`trazabilidad_ticket` (que usan `get_estado_actual_por_oc`, ya corregido desde la sesión 9). Es código huérfano desde la UI, aunque técnicamente "vivo" en el routing. Se corrigió de todas formas (`insp.coa_url or ''`, sin `.url`) en vez de eliminarlo — arreglar una línea es gratis y elimina una trampa activa; **queda pendiente la decisión del usuario sobre si además se elimina el endpoint completo** (vista + ruta + método de servicio) o se deja funcional por si se reutiliza más adelante. Verificado con el Ticket #11 real (con COA cargado): el endpoint responde `200` con el `coa_url` real como string, sin excepción — antes habría lanzado `AttributeError`.
+
+**2. CRÍTICO #3 (`core/settings.py`).** Antes de tocar nada se confirmó que `core/.env` ya tenía `DJANGO_SECRET_KEY`, `DB_PASSWORD` y `DEBUG` definidos (se verificó la presencia de las claves, sin exponer sus valores), así que quitar los fallbacks no iba a romper el entorno de trabajo actual. Cambios: `SECRET_KEY` y `DB_PASSWORD` ya no tienen default inseguro — si faltan en `.env`, `settings.py` lanza `ImproperlyConfigured` con mensaje claro al arrancar (falla fuerte, no silenciosa). `DEBUG` pasa a `default='False'` (antes `'True'`). `ALLOWED_HOSTS` ahora se lee de la variable de entorno `ALLOWED_HOSTS` (separada por comas), con `localhost,127.0.0.1` como default — preserva el comportamiento actual sin obligar a tocar `.env`.
+
+**3. CRÍTICO #4 (`test_api.py`).** El token DRF hardcodeado se reemplazó por `os.getenv('SAP_SYNC_TOKEN')` (vía `core/.env`, reutilizando `python-dotenv` ya presente en el proyecto) con `input()` como respaldo si no está definida. **Acción pendiente del usuario, fuera del alcance de este cambio**: el token real que estuvo expuesto en texto plano en el archivo (visible en el historial/copias del repo) sigue siendo válido en el sistema DRF real hasta que se rote manualmente — Claude no tiene forma de rotarlo ni acceso al sistema de tokens real.
+
+**4. CRÍTICO #6 (`services/`).** Re-verificado por tercera vez (informe original, sesión 17, y esta sesión) con una búsqueda exhaustiva en todo el árbol `.py` del proyecto (`from services`, `import services`, `services.services`, `services.operations_service`): **cero coincidencias**. Con la autorización explícita del usuario en el pedido, se **eliminó la carpeta `services/` completa** (`services.py`, `operations_service.py`, `__init__.py`). Advertencia registrada: el proyecto **no tiene `git` inicializado**, así que esta eliminación no es reversible por control de versiones — se verificó `manage.py check` y la suite de tests (`5/5 OK`) inmediatamente después de borrar para confirmar que nada dependía de esa carpeta.
+
+**Higiene adicional en `CLAUDE.md` (consecuencia directa de estos cambios, no un punto nuevo):** se actualizó la lista de variables de entorno esperadas (agrega `ALLOWED_HOSTS` opcional y `SAP_SYNC_TOKEN` opcional, y marca `DJANGO_SECRET_KEY`/`DB_PASSWORD` como obligatorias); se actualizaron las dos notas de advertencia obsoletas cerca del inicio del archivo (la de `requirements.txt` en UTF-16, ya resuelta desde la sesión 14 pero nunca actualizada ahí, y la de "no ejecutar `test_api.py` sin rotar el token", ajustada para reflejar que el token ya no está hardcodeado pero el token viejo sigue pendiente de rotación real).
+
+**Validación realizada** (contra el entorno real, sin base de datos de prueba salvo la de `manage.py test`):
+- `manage.py check` limpio después de cada uno de los 4 cambios (settings.py, eliminación de `services/`).
+- `manage.py test apps.operations`: **5/5 OK** (sin cambios de lógica operativa; los 4 fixes son de configuración/seguridad/limpieza, no tocan `etapa_actual` ni permisos).
+- `ajax_get_ticket_json` verificado contra el Ticket #11 real: `200`, `coa_url` real presente como string, sin excepción.
+- `core/.env` verificado que ya tenía las claves necesarias antes de quitar los fallbacks (sin imprimir sus valores).
+- `services/` verificado que ya no existe (`Test-Path` → `False`) y que el proyecto sigue funcionando sin ella.
+
+**Fuera de alcance de esta sesión (no tocado, según lo pedido):** no se eliminó el endpoint `ajax_get_ticket_json` completo (decisión pendiente del usuario); no se rotó el token real en el sistema DRF (el usuario debe hacerlo); no se tocaron las secciones 3/4 de `INFORME_ANALISIS.md`; no se inicializó `git` (mencionado aquí solo como contexto de riesgo de la eliminación de `services/`, no se tomó ninguna acción al respecto).

@@ -1,0 +1,14 @@
+{% comment %}
+Estilos de la tabla de inspección (_partials/tabla_inspeccion.html) y del
+stepper de etapas. Compartido por detalle_ticket.html y trazabilidad_ticket.html
+para no duplicar CSS entre ambas páginas.
+{% endcomment %}
+<style>
+  .transition-icon { transition: transform 0.25s ease; font-size: 0.65rem; }
+  [aria-expanded="true"] .transition-icon { transform: rotate(90deg); }
+  .oc-group-card__header:hover { background-color: #f8f9fa; }
+  .badge-insp { font-size: 0.65rem; padding: 0.25rem 0.5rem; border-radius: 0.5rem; font-weight: bold; text-transform: uppercase; }
+  .badge-insp--conforme { background-color: #d1e7dd; color: #0a3622; }
+  .badge-insp--rechazado { background-color: #f8d7da; color: #58151c; }
+  .badge-insp--en_proceso { background-color: #fff3cd; color: #664d03; }
+</style>

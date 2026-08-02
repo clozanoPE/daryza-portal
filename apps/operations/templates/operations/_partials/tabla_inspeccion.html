@@ -1,0 +1,97 @@
+{% comment %}
+Tabla reutilizable de líneas de OC en inspección. Usada tanto por la pestaña
+"Mi Sesión" (editable) como por "Estado Actual" (solo lectura) en
+detalle_ticket.html — misma estructura de tabla, sin duplicar HTML.
+
+Parámetros esperados en el contexto del {% include %}:
+  ocs_agrupadas   : dict {oc_num: {oc_num, card_name, lineas: [...]}}
+  editable        : bool — si True, renderiza inputs/select editables
+                     (y agrega data-inspeccion-id, leído por ticket_actions.js)
+  collapse_prefix : string — prefijo único para los IDs de collapse, para
+                     evitar colisión de IDs cuando ambas tablas están en la página
+  mostrar_etapa   : bool — si True, agrega columna "Etapa" (usada en
+                     "Estado Actual", que mezcla filas de distintas etapas)
+{% endcomment %}
+{% for oc_num, oc_data in ocs_agrupadas.items %}
+<div class="oc-group-card mb-3">
+  <div class="oc-group-card__header" data-bs-toggle="collapse" data-bs-target="#collapse{{ collapse_prefix }}-{{ oc_num }}" style="cursor: pointer;">
+    <div class="d-flex align-items-center gap-2">
+      <i class="bi bi-chevron-right transition-icon"></i>
+      <i class="bi bi-file-text text-success"></i>
+      <span class="fw-bold text-xs">OC {{ oc_data.oc_num }}</span>
+      <span class="text-muted text-xxs">— {{ oc_data.card_name }}</span>
+    </div>
+    <span class="text-xxs text-muted">{{ oc_data.lineas|length }} línea(s)</span>
+  </div>
+
+  <div class="collapse show" id="collapse{{ collapse_prefix }}-{{ oc_num }}">
+    <div class="table-responsive border-top">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th class="text-xxs fw-bold text-muted">Ítem</th>
+            <th class="text-xxs fw-bold text-muted">Descripción</th>
+            <th class="text-xxs fw-bold text-muted text-end">Cant. SAP</th>
+            <th class="text-xxs fw-bold text-muted text-end">Cant. Real</th>
+            <th class="text-xxs fw-bold text-muted text-center">Estado</th>
+            <th class="text-xxs fw-bold text-muted">Observación</th>
+            <th class="text-xxs fw-bold text-muted text-center">COA</th>
+            {% if mostrar_etapa %}<th class="text-xxs fw-bold text-muted text-center">Etapa</th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for linea in oc_data.lineas %}
+          <tr {% if editable %}data-inspeccion-id="{{ linea.id }}"{% endif %}>
+            <td class="fw-bold text-xs">{{ linea.item_code }}</td>
+            <td class="text-xs text-muted" style="max-width:180px">{{ linea.descripcion }}</td>
+            <td class="text-xs text-end text-muted">{{ linea.cantidad_sap }}</td>
+            <td class="text-xs text-end">
+              {% if editable %}
+                <input type="number"
+                    step="0.0001"
+                    class="form-control form-control-sm text-end insp-cantidad"
+                    value="{{ linea.cantidad_modificada|stringformat:'.4f' }}">
+              {% else %}
+                <span class="fw-bold">{{ linea.cantidad_modificada }}</span>
+              {% endif %}
+            </td>
+            <td class="text-center">
+              {% if editable %}
+              <select class="form-select form-select-sm text-xs insp-estado">
+                <option value="EN_PROCESO" {% if linea.estado == 'EN_PROCESO' %}selected{% endif %}>En Proceso</option>
+                <option value="CONFORME" {% if linea.estado == 'CONFORME' %}selected{% endif %}>✓ Conforme</option>
+                <option value="RECHAZADO" {% if linea.estado == 'RECHAZADO' %}selected{% endif %}>✗ Rechazado</option>
+              </select>
+              {% else %}
+              <span class="badge-insp badge-insp--{{ linea.estado|lower }}">{{ linea.estado }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if editable %}
+              <input type="text" class="form-control form-control-sm text-xs insp-comentario" value="{{ linea.comentario|default:'' }}" placeholder="Observación…">
+              {% else %}
+              <span class="text-xs text-muted">{{ linea.comentario|default:"—" }}</span>
+              {% endif %}
+            </td>
+            <td class="text-center">
+              {% if linea.coa_url %}
+                <a href="{{ linea.coa_url }}" target="_blank" class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+                  <i class="bi bi-file-earmark-check"></i>
+                </a>
+              {% else %}
+                <span class="text-muted text-xxs">—</span>
+              {% endif %}
+            </td>
+            {% if mostrar_etapa %}
+            <td class="text-center">
+              <span class="badge bg-light text-dark border text-xxs">{{ linea.etapa_display }}</span>
+            </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endfor %}

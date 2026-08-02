@@ -1,0 +1,99 @@
+{% comment %}
+Tabla de historial de Tickets, de solo lectura, con link a trazabilidad_ticket
+(Fase 5). Patrón construido originalmente en panel_compras (Fase 6) y
+reutilizado tal cual por panel_vigilancia y panel_calidad (Fase 11) — misma
+plantilla, mismo enfoque, sin duplicar HTML.
+
+Incluye el filtro de período (mes/año, Fase 10) que acota la consulta antes
+de listar — la vista debe filtrar tickets_historial usando
+apps.base.filters.resolver_periodo(request) y pasar 'periodo' al contexto.
+Los campos ocultos 'q'/'fecha' son un passthrough opcional: si la página
+(p.ej. panel_compras) ya tiene su propio filtro de búsqueda arriba, este
+formulario no lo pisa al enviarse (en panel_vigilancia/panel_calidad,
+que no tienen ese filtro, 'q'/'fecha_filtro' simplemente no existen en el
+contexto y estos campos ocultos no se renderizan).
+
+Parámetros esperados en el contexto del {% include %}:
+  tickets_historial : queryset/lista de Ticket (con appointment__slot y
+                       appointment__user precargados, y
+                       appointment__purchase_orders prefetched)
+  periodo            : string 'YYYY-MM' (vía resolver_periodo)
+{% endcomment %}
+<form method="get" class="d-flex align-items-end gap-2 mb-3">
+  {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+  {% if fecha_filtro %}<input type="hidden" name="fecha" value="{{ fecha_filtro }}">{% endif %}
+  {% include "partials/campo_filtro_periodo.html" %}
+  <button type="submit" class="btn btn-success btn-sm rounded-3 shadow-sm">
+    <i class="bi bi-funnel me-1"></i>Filtrar
+  </button>
+</form>
+
+<div class="dz-card p-0 overflow-hidden">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th class="text-xxs fw-bold text-muted">Ticket</th>
+          <th class="text-xxs fw-bold text-muted">OC(s)</th>
+          <th class="text-xxs fw-bold text-muted">Proveedor</th>
+          <th class="text-xxs fw-bold text-muted">Fecha cita</th>
+          <th class="text-xxs fw-bold text-muted text-center">Estado</th>
+          <th class="text-xxs fw-bold text-muted text-center">Etapa activa</th>
+          <th class="text-xxs fw-bold text-muted text-center">Trazabilidad</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ticket in tickets_historial %}
+        <tr>
+          <td class="fw-bold text-xs">#{{ ticket.id }}</td>
+          <td>
+            {% for po in ticket.appointment.purchase_orders.all %}
+            <span class="badge rounded-pill px-2 py-1 text-xxs fw-bold me-1 mb-1
+              {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border border-info-subtle
+              {% else %}bg-light text-dark border border-secondary-subtle{% endif %}">
+              OC {{ po.doc_num }}
+            </span>
+            {% endfor %}
+          </td>
+          <td class="text-xs">
+            <strong>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}</strong>
+          </td>
+          <td class="text-xs text-muted">{{ ticket.appointment.slot.date|date:"d/m/Y" }}</td>
+          <td class="text-center">
+            {% if ticket.estado == 'PROGRAMADO' %}
+              <span class="badge bg-primary text-xxs">PROGRAMADO</span>
+            {% elif ticket.estado == 'EN_PLANTA' %}
+              <span class="badge bg-warning text-dark text-xxs">EN PLANTA</span>
+            {% elif ticket.estado == 'FINALIZADO' %}
+              <span class="badge bg-success text-xxs">FINALIZADO</span>
+            {% elif ticket.estado == 'CANCELADO' %}
+              <span class="badge bg-secondary text-xxs">CANCELADO</span>
+            {% else %}
+              <span class="badge bg-secondary text-xxs">{{ ticket.estado }}</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            {% if ticket.estado == 'CANCELADO' %}
+              <span class="badge bg-light text-dark border text-xxs">Cancelado</span>
+            {% else %}
+              <span class="badge bg-light text-dark border text-xxs">{{ ticket.get_etapa_actual_display }}</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            <a href="{% url 'operations:trazabilidad_ticket' pk=ticket.id %}" class="btn btn-sm btn-outline-success rounded-3">
+              <i class="bi bi-clock-history me-1"></i>Ver
+            </a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-5">
+            <i class="bi bi-inbox fs-1 d-block mb-2 opacity-25"></i>
+            <span class="small">No hay tickets que coincidan con el filtro.</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>

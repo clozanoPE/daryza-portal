@@ -1,0 +1,21 @@
+{% comment %}
+Stepper de "Trazabilidad de Etapas" (TicketStage): tiempos de inicio/fin por
+etapa. Reutilizado por detalle_ticket.html y trazabilidad_ticket.html.
+Parámetro esperado en el contexto: `ticket`.
+{% endcomment %}
+<div class="stages-stepper">
+  {% for step_key, step_label in ticket.stages.model.ETAPAS %}
+  {% for s in ticket.stages.all %}{% if s.etapa == step_key %}
+  <div class="stage-step stage-step--completed">
+    <div class="stage-step__dot"><i class="bi bi-check"></i></div>
+    <div class="pt-1">
+      <p class="fw-bold text-xs mb-0">{{ s.get_etapa_display }}</p>
+      <p class="text-xs text-muted mb-0">
+        {{ s.fecha_inicio|date:"H:i" }}
+        {% if s.fecha_fin %}→ {{ s.fecha_fin|date:"H:i" }}{% else %}<span class="text-warning">en curso</span>{% endif %}
+      </p>
+    </div>
+  </div>
+  {% endif %}{% endfor %}
+  {% endfor %}
+</div>

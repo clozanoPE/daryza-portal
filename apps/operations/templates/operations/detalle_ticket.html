@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Ticket #{{ ticket.id }} | Daryza VBS{% endblock %}
+
+{% block extra_head %}{% include "operations/_partials/inspeccion_styles.html" %}{% endblock %}
+
+{% block content %}
+
+{# ── Header del Ticket ────────────────────────────────────────────────────── #}
+<div class="page-header">
+  <div>
+    <div class="d-flex align-items-center gap-3 mb-1">
+      <h1 class="page-header__title m-0">
+        <i class="bi bi-ticket-detailed text-success me-2"></i>Ticket #{{ ticket.id }}
+      </h1>
+      {% if ticket.estado == 'PROGRAMADO' %}
+        <span class="badge bg-primary fs-6 rounded-3 px-3">PROGRAMADO</span>
+      {% elif ticket.estado == 'EN_PLANTA' %}
+        <span class="badge bg-warning text-dark fs-6 rounded-3 px-3">EN PLANTA</span>
+      {% elif ticket.estado == 'FINALIZADO' %}
+        <span class="badge bg-success fs-6 rounded-3 px-3">FINALIZADO</span>
+      {% else %}
+        <span class="badge bg-secondary fs-6 rounded-3 px-3">{{ ticket.estado }}</span>
+      {% endif %}
+    </div>
+    <p class="page-header__subtitle">
+      Creado el {{ ticket.fecha_creacion|date:"d/m/Y H:i" }}
+      &nbsp;·&nbsp;
+      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+        <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
+          <i class="bi bi-flask me-1"></i>Materia Prima · Con Calidad
+        </span>
+      {% else %}
+        <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+          <i class="bi bi-cart me-1"></i>Comercial · Solo Almacén
+        </span>
+      {% endif %}
+    </p>
+  </div>
+  <a href="{% url 'home_router' %}" class="btn btn-light btn-sm rounded-3 border">
+    <i class="bi bi-arrow-left me-1"></i>Volver
+  </a>
+</div>
+
+<div class="row g-3">
+
+  {# ── COLUMNA IZQUIERDA: Info + QR + Stages ──────────────────────────── #}
+  <div class="col-lg-4">
+    <div class="dz-card p-4 mb-3">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-calendar3 text-success me-2"></i>Datos de la Cita
+      </h6>
+      <div class="text-center mb-4">
+        <div id="qrcode" class="d-inline-block"></div>
+        <code class="d-block text-primary fw-bold mt-2" style="font-size:.75rem">
+          {{ ticket.codigo_qr }}
+        </code>
+      </div>
+      <dl class="row mb-0 text-xs">
+        <dt class="col-5 text-muted">Cita ID</dt>
+        <dd class="col-7">#{{ ticket.appointment.id }}</dd>
+        <dt class="col-5 text-muted">Fecha / Hora</dt>
+        <dd class="col-7">
+          {{ ticket.appointment.slot.date|date:"d/m/Y" }} · {{ ticket.appointment.slot.start_time|date:"H:i" }}
+        </dd>
+        <dt class="col-5 text-muted">Proveedor</dt>
+        <dd class="col-7">
+          <strong>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}</strong>
+        </dd>
+        <dt class="col-5 text-muted">Sede</dt>
+        <dd class="col-7">{{ ticket.appointment.get_lugar_entrega_display }}</dd>
+        <dt class="col-5 text-muted">OCs vinculadas</dt>
+        <dd class="col-7">
+          {% for po in ticket.appointment.purchase_orders.all %}
+          <span class="badge border me-1 mb-1 text-xxs
+            {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border-info-subtle
+            {% else %}bg-success-subtle text-success border-success-subtle{% endif %}">
+            OC {{ po.doc_num }}
+            {% if po.u_mss_tdb == 'MP' %}<i class="bi bi-flask ms-1"></i>{% endif %}
+          </span>
+          {% endfor %}
+        </dd>
+      </dl>
+    </div>
+
+    <div class="dz-card p-4">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-diagram-3 text-success me-2"></i>Trazabilidad de Etapas
+      </h6>
+      {% include "operations/_partials/stages_stepper.html" %}
+    </div>
+  </div>
+
+  {# ── COLUMNA DERECHA: Acciones + Inspecciones ─────────────────────── #}
+  <div class="col-lg-8">
+
+    {# ═══ ACCIÓN: VIGILANCIA — AUTORIZAR INGRESO ═══ #}
+    {% if acciones.puede_autorizar_ingreso %}
+    <div class="dz-card dz-card--accent-blue p-4 mb-3">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-box-arrow-in-right text-primary me-2"></i>Acción Pendiente: Autorizar Ingreso a Planta
+      </h6>
+
+      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+      <div class="mb-3">
+        <h6 class="text-xs fw-bold text-uppercase text-muted mb-2">
+          <i class="bi bi-file-earmark-check me-1"></i>Estado de Certificados (COA)
+        </h6>
+        
+        {% with ocs=coa_status_agrupado %}
+        {% if ocs %}
+          {% for oc_num, oc_data in ocs.items %}
+          <div class="oc-group-card mb-2">
+            <div class="oc-group-card__header" data-bs-toggle="collapse" data-bs-target="#collapseVig-{{ oc_num }}" style="cursor: pointer;">
+              <div class="d-flex align-items-center gap-2">
+                <i class="bi bi-chevron-right transition-icon"></i>
+                <i class="bi bi-file-text text-primary"></i>
+                <span class="fw-bold text-xs">OC {{ oc_data.oc_num }}</span>
+                <span class="text-muted text-xxs">— {{ oc_data.card_name }}</span>
+              </div>
+              <span class="text-xxs text-muted">{{ oc_data.lineas|length }} ítems</span>
+            </div>
+
+            <div class="collapse show" id="collapseVig-{{ oc_num }}">
+              <div class="table-responsive border-top">
+                <table class="table table-sm align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th class="text-xxs fw-bold text-muted">Ítem</th>
+                      <th class="text-xxs fw-bold text-muted">Descripción</th>
+                      <th class="text-xxs fw-bold text-muted text-center">Req. COA</th>
+                      <th class="text-xxs fw-bold text-muted text-center">Estado COA</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for linea in oc_data.lineas %}
+                    <tr>
+                      <td class="fw-bold text-xs">{{ linea.item_code }}</td>
+                      <td class="text-xs text-muted">{{ linea.descripcion }}</td>
+                      <td class="text-center">
+                        {% if linea.requiere_coa %}
+                        <i class="bi bi-check-circle-fill text-info"></i>
+                        {% else %}
+                        <i class="bi bi-dash text-muted"></i>
+                        {% endif %}
+                      </td>
+                      <td class="text-center">
+                        {% if linea.coa_url %}
+                          <a href="{{ linea.coa_url }}" target="_blank" class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+                            <i class="bi bi-file-earmark-check me-1"></i>Cargado
+                          </a>
+                        {% elif linea.requiere_coa %}
+                          <span class="badge bg-danger-subtle text-danger border border-danger-subtle text-xxs">
+                            <i class="bi bi-exclamation-triangle me-1"></i>Faltante
+                          </span>
+                        {% else %}
+                          <span class="text-muted text-xxs">—</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        {% endif %}
+        {% endwith %}
+      </div>
+      {% endif %}
+
+      {# Datos de Ingreso: placa del vehículo y conductor (sesión 13).
+         Solo lectura para Vigilancia — no los edita, solo los verifica.
+         Informativo, no bloqueante: si falta el registro o algún campo,
+         se muestra explícitamente en vez de omitirse en silencio. #}
+      <div class="mb-3">
+        <h6 class="text-xs fw-bold text-uppercase text-muted mb-2">
+          <i class="bi bi-truck me-1"></i>Datos del Vehículo / Conductor
+        </h6>
+        <dl class="row mb-0 text-xs">
+          <dt class="col-5 text-muted">Placa del Vehículo</dt>
+          <dd class="col-7">
+            {% if ticket.datos_ingreso.placa_vehiculo %}
+              <strong>{{ ticket.datos_ingreso.placa_vehiculo }}</strong>
+            {% else %}
+              <span class="text-danger fst-italic">No completado por el proveedor</span>
+            {% endif %}
+          </dd>
+          <dt class="col-5 text-muted">DNI/CE del Conductor</dt>
+          <dd class="col-7">
+            {% if ticket.datos_ingreso.conductor_dni %}
+              <strong>{{ ticket.datos_ingreso.conductor_dni }}</strong>
+            {% else %}
+              <span class="text-danger fst-italic">No completado por el proveedor</span>
+            {% endif %}
+          </dd>
+          <dt class="col-5 text-muted">Nombre y Apellidos</dt>
+          <dd class="col-7">
+            {% if ticket.datos_ingreso.conductor_nombre %}
+              <strong>{{ ticket.datos_ingreso.conductor_nombre }}</strong>
+            {% else %}
+              <span class="text-danger fst-italic">No completado por el proveedor</span>
+            {% endif %}
+          </dd>
+        </dl>
+      </div>
+
+      <button class="btn btn-primary rounded-3 shadow-sm px-4"
+              onclick="accionTicket('autorizar-ingreso', {{ ticket.id }}, '¿Autorizar ingreso a planta para Ticket #{{ ticket.id }}?')">
+        <i class="bi bi-box-arrow-in-right me-2"></i>Autorizar Ingreso
+      </button>
+    </div>
+    {% endif %}
+
+    {# ═══ ACCIÓN: ALMACÉN — INICIAR RECEPCIÓN ═══ #}
+    {% if acciones.puede_autorizar_almacen %}
+    <div class="dz-card dz-card--accent-green p-4 mb-3">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-inboxes text-success me-2"></i>Acción Pendiente: Almacén — Iniciar Recepción
+      </h6>
+      <button class="btn btn-success rounded-3 shadow-sm px-4"
+              onclick="accionTicket('autorizar-almacen', {{ ticket.id }}, '¿Iniciar recepción en Almacén para Ticket #{{ ticket.id }}?')">
+        <i class="bi bi-inboxes me-2"></i>Iniciar Recepción
+      </button>
+    </div>
+    {% endif %}
+
+    {# ═══ INSPECCIONES: "MI SESIÓN" (editable) + "ESTADO ACTUAL" (solo lectura) ═══ #}
+    {% if estado_actual_agrupada %}
+    <div class="dz-card p-4 mb-3">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-table text-success me-2"></i>Detalle de OC — Inspección
+      </h6>
+
+      {% if acciones.puede_editar_mi_sesion %}
+      {# Hay una acción editable pendiente para el usuario actual: se muestran
+         ambas vistas como pestañas — "Mi Sesión" (editable) y "Estado Actual"
+         (solo lectura, con el resultado más reciente de cada línea). #}
+      <ul class="nav nav-tabs mb-3" id="inspeccionTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="tab-mi-sesion-btn" data-bs-toggle="tab" data-bs-target="#tab-mi-sesion" type="button" role="tab" aria-selected="true">
+            <i class="bi bi-pencil-square me-1"></i>Mi Sesión
+            {% if acciones.puede_registrar_calidad %}<span class="badge bg-info-subtle text-info border border-info-subtle ms-1 text-xxs">Calidad</span>{% endif %}
+            {% if acciones.puede_registrar_almacen %}<span class="badge bg-success-subtle text-success border border-success-subtle ms-1 text-xxs">Almacén</span>{% endif %}
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-estado-actual-btn" data-bs-toggle="tab" data-bs-target="#tab-estado-actual" type="button" role="tab" aria-selected="false">
+            <i class="bi bi-eye me-1"></i>Estado Actual
+          </button>
+        </li>
+      </ul>
+
+      <div class="tab-content" id="inspeccionTabsContent">
+        <div class="tab-pane fade show active" id="tab-mi-sesion" role="tabpanel">
+          <div id="mi-sesion-panel">
+            {% include "operations/_partials/tabla_inspeccion.html" with ocs_agrupadas=mi_sesion_agrupada editable=True collapse_prefix="Sesion" mostrar_etapa=False %}
+          </div>
+          <div class="d-flex justify-content-end mt-3">
+            {% if acciones.puede_registrar_calidad %}
+              <button id="btn-guardar-inspeccion-calidad" class="btn btn-info text-white rounded-3 shadow-sm px-4" onclick="guardarInspeccion({{ ticket.id }}, 'calidad')">
+                <i class="bi bi-send me-2"></i>Finalizar Inspección Calidad
+              </button>
+            {% elif acciones.puede_registrar_almacen %}
+              <button id="btn-guardar-inspeccion-almacen" class="btn btn-primary text-white rounded-3 shadow-sm px-4" onclick="guardarInspeccion({{ ticket.id }}, 'almacen')">
+                <i class="bi bi-save me-2"></i>Guardar Inspección Almacén
+              </button>
+            {% endif %}
+          </div>
+        </div>
+        <div class="tab-pane fade" id="tab-estado-actual" role="tabpanel">
+          {% include "operations/_partials/tabla_inspeccion.html" with ocs_agrupadas=estado_actual_agrupada editable=False collapse_prefix="Estado" mostrar_etapa=True %}
+        </div>
+      </div>
+
+      {% else %}
+      {# No es el turno del usuario actual (o la etapa activa ya avanzó): solo
+         se muestra "Estado Actual", de solo lectura y sin formularios. #}
+      {% include "operations/_partials/tabla_inspeccion.html" with ocs_agrupadas=estado_actual_agrupada editable=False collapse_prefix="Estado" mostrar_etapa=True %}
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ═══ ACCIÓN: VIGILANCIA — REGISTRAR SALIDA ═══ #}
+    {% if acciones.puede_registrar_salida %}
+    <div class="dz-card dz-card--accent-orange p-4 mb-3 text-center">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-box-arrow-right text-warning me-2"></i>Acción Final: Registrar Salida
+      </h6>
+      <button class="btn btn-warning text-dark rounded-3 shadow-sm px-5 fw-bold" onclick="accionTicket('registrar-salida', {{ ticket.id }}, '¿Cerrar Ticket?')">
+        <i class="bi bi-box-arrow-right me-2"></i>REGISTRAR SALIDA Y CERRAR TICKET
+      </button>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const qrContainer = document.getElementById('qrcode');
+    const token = '{{ ticket.codigo_qr }}';
+    if (qrContainer && token && typeof QRCode !== 'undefined') {
+      new QRCode(qrContainer, { text: token, width: 120, height: 120 });
+    }
+  });
+</script>
+{% endblock %}

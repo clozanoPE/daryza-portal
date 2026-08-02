@@ -1,0 +1,28 @@
+# core/urls.py
+from django.contrib import admin
+from django.contrib.auth import views as auth_views
+from django.urls import path, include
+from django.conf import settings             # <--- ESTA FALTA (Error actual)
+from django.conf.urls.static import static   # <--- ESTA FALTABA ANTES
+from apps.base.views import redirect_by_role  # <--- Importa el enrutador
+
+urlpatterns = [
+    # Panel de administración de Django
+    path('', redirect_by_role, name='home_router'),
+    path('admin/', admin.site.urls),
+    path('home/', redirect_by_role, name='home_router'),
+    path('appointments/', include('apps.appointments.urls')),
+    path('operations/',  include('apps.operations.urls')),   
+    path('scheduling/',  include('apps.scheduling.urls')),   
+    # Rutas de Autenticación
+    path('login/', auth_views.LoginView.as_view(template_name='login.html'), name='login'),
+    path('logout/', auth_views.LogoutView.as_view(), name='logout'),
+    # Endpoints de la API (v1)
+    # Esto busca el archivo api/urls.py y lo incluye bajo el prefijo /api/v1/
+    path('api/v1/', include('api.urls')),
+]
+
+# Esto es lo que causaba el error por no tener el import de arriba
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+ 

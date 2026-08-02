@@ -1,0 +1,292 @@
+{# templates/scheduling/panel_horarios.html #}
+{#                                                                            #}
+{# NUEVA VISTA: Panel de administración de horarios semanales (Fase 3)       #}
+{# Extiende base.html para mantener layout sidebar + navbar de Daryza VBS    #}
+{#                                                                            #}
+{# CAPAS AFECTADAS:                                                           #}
+{#   - apps/scheduling/views.py → panel_horarios() provee el contexto         #}
+{#   - static/js/panel_horarios.js → JS del panel (archivo separado)         #}
+{#   - static/css/daryza_style.css → Reutiliza .slot-card-pro y colores       #}
+{#   - base.html → Sidebar: añadir enlace a este panel para usuarios staff    #}
+{#                                                                            #}
+{# ACCESO: Solo usuarios con is_staff=True (guard en views.py)               #}
+
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Panel de Horarios | Daryza VBS{% endblock %}
+
+{% block extra_head %}
+<style>
+  /* ── Grilla de horarios ───────────────────────────────────────────── */
+  .grilla-semana th { font-size: 0.75rem; font-weight: 700; text-align: center; vertical-align: middle; }
+  .grilla-semana td { vertical-align: middle; padding: 6px 4px; }
+  .grilla-semana .hora-label { font-size: 0.75rem; font-weight: 700; color: #6c757d; white-space: nowrap; }
+
+  /* Slot card dentro de la grilla */
+  .slot-cell {
+    min-height: 62px;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-align: center;
+    padding: 6px 4px;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    border: 1px solid transparent;
+    position: relative;
+  }
+  .slot-cell:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+
+  /* Estados reutilizando variables de daryza_style.css */
+  .slot-disponible { background: #e9f7ef; border-color: #d1e7dd; color: #198754; }
+  .slot-parcial    { background: #fff3cd; border-color: #ffe69c; color: #856404; }
+  .slot-lleno      { background: #fdeaea; border-color: #f9d6d6; color: #dc3545; opacity: 0.85; }
+  .slot-bloqueado  { background: #f8f9fa; border-color: #dee2e6; color: #adb5bd; }
+  .slot-vacio      { background: transparent; border: 1px dashed #dee2e6; color: #ced4da;
+                     min-height: 62px; border-radius: 10px; cursor: default; }
+
+  /* Indicador de capacidad */
+  .cap-badge { font-size: 0.6rem; background: rgba(0,0,0,0.08); border-radius: 20px;
+               padding: 1px 6px; margin-top: 2px; }
+
+  /* Nav de semana */
+  .semana-nav .btn { border-radius: 8px; font-size: 0.85rem; }
+  .semana-nav .semana-label { font-weight: 700; font-size: 0.95rem; min-width: 220px; text-align: center; }
+
+  /* Acciones flotantes al hover del slot */
+  .slot-actions { display: none; position: absolute; top: 2px; right: 4px; gap: 2px; }
+  .slot-cell:hover .slot-actions { display: flex; }
+  .slot-actions .btn { padding: 1px 4px; font-size: 0.6rem; line-height: 1.4; border-radius: 4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h4 class="mb-0 fw-bold text-dark">
+      <i class="bi bi-calendar-week text-success me-2"></i>Administración de Horarios
+    </h4>
+    <small class="text-muted">Programa la disponibilidad semanal para los proveedores</small>
+  </div>
+  {# Botones de acción principal #}
+  <div class="d-flex gap-2">
+    <a href="{% url 'operations:panel_compras' %}" class="btn btn-light btn-sm rounded-3 border">
+      <i class="bi bi-arrow-left me-1"></i>Volver
+    </a>
+
+    {# Duplicar semana anterior: solo disponible si existe semana anterior #}
+    {% if hay_semana_anterior %}
+    <button class="btn btn-outline-secondary btn-sm rounded-3 shadow-sm"
+            onclick="confirmarDuplicar('{{ semana_anterior|date:"Y-m-d" }}', '{{ semana_actual|date:"d/m/Y" }}')"
+            title="Copia los slots de la semana anterior a esta semana">
+      <i class="bi bi-copy me-1"></i> Duplicar semana anterior
+    </button>
+    {% else %}
+    <button class="btn btn-outline-secondary btn-sm rounded-3 shadow-sm" disabled
+            title="No hay datos en la semana anterior para duplicar">
+      <i class="bi bi-copy me-1"></i> Duplicar semana anterior
+    </button>
+    {% endif %}
+
+    {# Generar desde plantilla #}
+    <button class="btn btn-success btn-sm rounded-3 shadow-sm"
+            data-bs-toggle="modal" data-bs-target="#modalGenerarSemana">
+      <i class="bi bi-magic me-1"></i> Generar desde plantilla
+    </button>
+
+    {# Añadir slot individual #}
+    <button class="btn btn-outline-success btn-sm rounded-3 shadow-sm"
+            data-bs-toggle="modal" data-bs-target="#modalAgregarSlot">
+      <i class="bi bi-plus-lg me-1"></i> Añadir slot
+    </button>
+  </div>
+</div>
+
+{# ── Navegación de semanas ───────────────────────────────────────────────── #}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+  <div class="card-body py-3 px-4">
+    <div class="d-flex align-items-center justify-content-between semana-nav">
+      <a href="?semana={{ semana_anterior|date:'Y-m-d' }}" class="btn btn-light border shadow-sm">
+        <i class="bi bi-chevron-left"></i> Sem. anterior
+      </a>
+      <span class="semana-label text-dark">
+        <i class="bi bi-calendar3 text-success me-2"></i>
+        {{ semana_actual|date:"d/m/Y" }} — {{ sabado|date:"d/m/Y" }}
+      </span>
+      <a href="?semana={{ semana_siguiente|date:'Y-m-d' }}" class="btn btn-light border shadow-sm">
+        Sem. siguiente <i class="bi bi-chevron-right"></i>
+      </a>
+    </div>
+  </div>
+</div>
+
+{# ── Grilla principal de horarios ───────────────────────────────────────── #}
+<div class="card border-0 shadow-sm rounded-4">
+  <div class="card-body p-3">
+
+    {# Leyenda #}
+    <div class="d-flex gap-3 mb-3 flex-wrap">
+      <span class="d-flex align-items-center gap-1 small">
+        <span style="width:12px;height:12px;border-radius:3px;background:#e9f7ef;border:1px solid #d1e7dd;display:inline-block"></span>
+        Disponible
+      </span>
+      <span class="d-flex align-items-center gap-1 small">
+        <span style="width:12px;height:12px;border-radius:3px;background:#fff3cd;border:1px solid #ffe69c;display:inline-block"></span>
+        Con citas (parcial)
+      </span>
+      <span class="d-flex align-items-center gap-1 small">
+        <span style="width:12px;height:12px;border-radius:3px;background:#fdeaea;border:1px solid #f9d6d6;display:inline-block"></span>
+        Lleno
+      </span>
+      <span class="d-flex align-items-center gap-1 small">
+        <span style="width:12px;height:12px;border-radius:3px;background:#f8f9fa;border:1px solid #dee2e6;display:inline-block"></span>
+        Bloqueado
+      </span>
+      <span class="ms-auto small text-muted">
+        <i class="bi bi-info-circle me-1"></i>
+        Hover sobre un slot para ver acciones · Click para detalles
+      </span>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table grilla-semana mb-0">
+        <thead>
+          <tr>
+            <th style="width: 60px;">Hora</th>
+            {% for dia in dias_semana %}
+            <th class="text-center">
+              <div>{{ dia.nombre }}</div>
+              <div class="text-muted fw-normal" style="font-size:0.65rem">{{ dia.fecha_display }}</div>
+            </th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody id="grilla-body">
+          {# Renderizado dinámico vía JS (panel_horarios.js) a partir de slots_json #}
+          <tr><td colspan="7" class="text-center py-4 text-muted">
+            <div class="spinner-border spinner-border-sm text-success me-2" role="status"></div>
+            Cargando grilla...
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</div>
+
+{# ── Modal: Generar semana desde plantilla ──────────────────────────────── #}
+<div class="modal fade" id="modalGenerarSemana" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content rounded-4 border-0 shadow-lg">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold">
+          <i class="bi bi-magic text-success me-2"></i>Generar semana desde plantilla
+        </h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pt-2">
+        <p class="text-muted small">
+          Selecciona una plantilla para crear automáticamente los slots de la semana visible.
+          Los slots ya existentes no serán sobreescritos.
+        </p>
+        <div class="mb-3">
+          <label class="form-label small fw-bold">Plantilla de horario</label>
+          <select class="form-select form-select-sm rounded-3" id="select-template">
+            <option value="">— Selecciona una plantilla —</option>
+            {% for tpl in templates %}
+            <option value="{{ tpl.id }}">{{ tpl.nombre }}</option>
+            {% endfor %}
+          </select>
+          {% if not templates %}
+          <div class="text-danger small mt-1">
+            <i class="bi bi-exclamation-circle me-1"></i>
+            No hay plantillas activas. Crea una desde el Admin de Django primero.
+          </div>
+          {% endif %}
+        </div>
+        <div class="alert alert-light border rounded-3 small mb-0">
+          <i class="bi bi-calendar-check text-success me-1"></i>
+          Semana: <strong>{{ semana_actual|date:"d/m/Y" }} — {{ sabado|date:"d/m/Y" }}</strong>
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-light btn-sm rounded-3" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-success btn-sm rounded-3 shadow-sm"
+                id="btn-generar" onclick="generarSemana()">
+          <i class="bi bi-check2-circle me-1"></i> Generar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Modal: Añadir slot individual ──────────────────────────────────────── #}
+<div class="modal fade" id="modalAgregarSlot" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content rounded-4 border-0 shadow-lg">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold">
+          <i class="bi bi-plus-circle text-success me-2"></i>Añadir slot individual
+        </h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pt-2">
+        <div class="mb-3">
+          <label class="form-label small fw-bold">Fecha</label>
+          <input type="date" class="form-control form-control-sm rounded-3" id="nuevo-slot-fecha"
+                 min="{{ semana_actual|date:'Y-m-d' }}" max="{{ sabado|date:'Y-m-d' }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-bold">Hora de inicio</label>
+          <input type="time" class="form-control form-control-sm rounded-3" id="nuevo-slot-hora"
+                 step="900">
+          <div class="text-muted small mt-1">Pasos de 15 minutos recomendados.</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-bold">Capacidad máxima</label>
+          <input type="number" class="form-control form-control-sm rounded-3"
+                 id="nuevo-slot-capacidad" value="1" min="1" max="20">
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-light btn-sm rounded-3" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-success btn-sm rounded-3 shadow-sm"
+                onclick="agregarSlot()">
+          <i class="bi bi-plus-lg me-1"></i> Agregar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Panel lateral: detalle de citas de un slot ocupado ──────────────────── #}
+<div class="offcanvas offcanvas-end" tabindex="-1" id="offcanvasSlotDetalle" aria-labelledby="offcanvasSlotDetalleLabel">
+  <div class="offcanvas-header border-bottom">
+    <h6 class="offcanvas-title fw-bold mb-0" id="offcanvasSlotDetalleLabel">
+      <i class="bi bi-people text-success me-2"></i>Citas del horario
+    </h6>
+    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+  </div>
+  <div class="offcanvas-body p-3" id="offcanvas-slot-body">
+    <div class="text-center py-4 text-muted">
+      <div class="spinner-border spinner-border-sm text-success"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{# Pasamos los datos al JS como variables globales (evitamos una llamada AJAX extra) #}
+<script>
+  const SLOTS_DATA    = {{ slots_json|safe }};
+  const DIAS_SEMANA   = {{ dias_semana|safe }};       {# [{fecha, nombre, fecha_display}] #}
+  const SEMANA_ACTUAL = "{{ semana_actual|date:'Y-m-d' }}";
+  const CSRF_TOKEN    = "{{ csrf_token }}";
+</script>
+<script src="{% static 'js/panel_horarios.js' %}?v=1.1"></script>
+{% endblock %}

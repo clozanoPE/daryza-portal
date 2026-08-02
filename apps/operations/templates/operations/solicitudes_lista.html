@@ -1,0 +1,44 @@
+{% extends "base/base.html" %}
+{% load static %}
+{% block title %}Solicitudes Pendientes{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div><div class="page-title">Solicitudes Pendientes</div><div class="page-subtitle">{{ pending_count }} solicitud(es) aguardando aprobación</div></div>
+</div>
+{% if solicitudes %}
+<div class="card">
+  <div class="table-wrap">
+    <table class="vbs-table">
+      <thead><tr><th>#</th><th>Proveedor</th><th>Slot Solicitado</th><th>OCs</th><th>Sede</th><th>COA</th><th>Solicitado</th><th>Acciones</th></tr></thead>
+      <tbody>
+        {% for sol in solicitudes %}
+        <tr>
+          <td class="col-mono">#{{ sol.id }}</td>
+          <td><div style="font-weight:500">{{ sol.user.get_full_name|default:sol.user.username }}</div><div style="font-size:11px;color:var(--vbs-text-muted)">{{ sol.user.email }}</div></td>
+          <td><div>{{ sol.slot.date|date:"d/m/Y (D)" }}</div><div style="font-size:11px;color:var(--vbs-text-muted)">{{ sol.slot.start_time|time:"H:i" }} — {{ sol.slot.dock }}</div></td>
+          <td><div style="font-size:12px;color:var(--vbs-cyan)">{% for oc in sol.purchase_orders.all %}{{ oc.doc_num }}{% if not forloop.last %}, {% endif %}{% endfor %}</div></td>
+          <td><span style="font-size:12px">{{ sol.get_lugar_entrega_display }}</span></td>
+          <td>{% if sol.coa_pdf %}<span class="coa-badge coa-uploaded">✓ COA</span>{% else %}<span class="coa-badge coa-na">Sin COA</span>{% endif %}</td>
+          <td><span style="font-size:11px;color:var(--vbs-text-muted)">{{ sol.created_at|date:"d/m H:i" }}</span></td>
+          <td>
+            <div class="d-flex gap-2">
+              <a href="{% url 'operations:aprobar_cita' sol.id %}" class="btn btn-success btn-xs">Aprobar</a>
+              <button class="btn btn-danger btn-xs"
+                data-confirm-url="{% url 'operations:rechazar_cita_ajax' sol.id %}"
+                data-confirm-title="Rechazar #{{ sol.id }}"
+                data-confirm-message="¿Confirma el rechazo de la cita de {{ sol.user.get_full_name|default:sol.user.username }}?"
+                data-confirm-type="danger" data-confirm-label="Rechazar">
+                Rechazar
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="empty-state"><svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/></svg><div class="empty-title">Sin solicitudes pendientes</div><div class="empty-sub">Todo al día</div></div></div>
+{% endif %}
+{% endblock %}

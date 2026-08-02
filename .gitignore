@@ -1,0 +1,40 @@
+# Entornos virtuales (env/ es el usado en el proyecto; .venv/ existe también en este equipo)
+env/
+.venv/
+venv/
+
+# Bytecode / cache de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Variables de entorno y credenciales — NUNCA versionar
+.env
+core/.env
+*.env
+
+# Archivos subidos por usuarios (COA, evidencias de inspección, etc.)
+media/
+
+# Archivos estáticos recolectados (manage.py collectstatic)
+staticfiles/
+
+# Bases de datos locales (por si algún entorno usa SQLite)
+*.sqlite3
+db.sqlite3
+
+# Configuración local de Claude Code (no compartir entre máquinas/usuarios)
+.claude/settings.local.json
+
+# Logs
+*.log
+
+# Editores / IDEs
+.vscode/
+.idea/
+*.swp
+
+# Basura de sistema de archivos
+.DS_Store
+Thumbs.db

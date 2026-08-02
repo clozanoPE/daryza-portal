@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Panel Vigilancia | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-shield-check text-success me-2"></i>Panel Vigilancia
+    </h1>
+    <p class="page-header__subtitle">
+      <i class="bi bi-calendar3 me-1"></i>{{ hoy|date:"l, d \d\e F \d\e Y" }}
+    </p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <div class="kpi-card">
+      <div class="kpi-card__icon bg-primary-subtle">
+        <i class="bi bi-calendar-event text-primary"></i>
+      </div>
+      <div>
+        <div class="kpi-card__value text-primary">{{ tickets_programados.count }}</div>
+        <div class="kpi-card__label">Esperados</div>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card__icon bg-warning-subtle">
+        <i class="bi bi-building text-warning"></i>
+      </div>
+      <div>
+        <div class="kpi-card__value text-warning">{{ tickets_en_planta.count }}</div>
+        <div class="kpi-card__label">En Planta</div>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card__icon bg-success-subtle">
+        <i class="bi bi-check-all text-success"></i>
+      </div>
+      <div>
+        <div class="kpi-card__value text-success">{{ tickets_finalizados.count }}</div>
+        <div class="kpi-card__label">Finalizados</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Pestañas: Hoy / Historial (Fase 11 — mismo patrón de la Fase 6) ─────── #}
+<ul class="nav nav-tabs mb-3" id="vigilanciaTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="tab-hoy-btn" data-bs-toggle="tab" data-bs-target="#tab-hoy" type="button" role="tab" aria-selected="true">
+      <i class="bi bi-calendar-day me-1"></i>Hoy
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="tab-historial-btn" data-bs-toggle="tab" data-bs-target="#tab-historial" type="button" role="tab" aria-selected="false">
+      <i class="bi bi-clock-history me-1"></i>Historial
+      <span class="badge bg-light text-dark border rounded-pill ms-1 text-xxs">{{ tickets_historial|length }}</span>
+    </button>
+  </li>
+</ul>
+
+<div class="tab-content" id="vigilanciaTabsContent">
+<div class="tab-pane fade show active" id="tab-hoy" role="tabpanel">
+
+{# ── Scanner QR ──────────────────────────────────────────────────────────── #}
+<div class="dz-card dz-card--accent-green p-4 mb-4">
+  <p class="text-muted text-xs mb-2">
+    <i class="bi bi-qr-code-scan me-1 text-success"></i>
+    Escanea o ingresa el código QR del proveedor para acceder a su ticket:
+  </p>
+  <form action="{% url 'operations:scan_qr' %}" method="get" class="d-flex gap-2">
+    <input type="text" name="codigo"
+           class="form-control rounded-3 qr-input"
+           placeholder="DYZ-123-260401-AB4F2C"
+           autocomplete="off" autofocus
+           aria-label="Código QR del ticket">
+    <button type="submit" class="btn btn-success rounded-3 px-4 shadow-sm">
+      <i class="bi bi-search me-1"></i>Buscar
+    </button>
+  </form>
+</div>
+
+{# ── Columnas Kanban del día ─────────────────────────────────────────────── #}
+<div class="row g-3">
+
+  {# PROGRAMADOS #}
+  <div class="col-md-4">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="fw-bold text-xs text-primary text-uppercase" style="letter-spacing:1px">Programados hoy</span>
+      <span class="badge bg-primary rounded-pill">{{ tickets_programados.count }}</span>
+    </div>
+    {% for ticket in tickets_programados %}
+    <div class="ticket-card ticket-card--programado p-3 mb-2 animate-fadein">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <span class="fw-bold small">Ticket #{{ ticket.id }}</span>
+        <span class="badge bg-primary-subtle text-primary border border-primary-subtle text-xxs">PROGRAMADO</span>
+      </div>
+      <div class="text-muted text-xs mb-1">
+        <i class="bi bi-clock me-1"></i>{{ ticket.appointment.slot.start_time|date:"H:i" }}
+        <span class="mx-2">·</span>
+        <i class="bi bi-person me-1"></i>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}
+      </div>
+
+      {# Tipo de flujo #}
+      <div class="mb-2">
+        {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+        <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
+          <i class="bi bi-flask me-1"></i>Materia Prima · Con Calidad
+        </span>
+        {% else %}
+        <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+          <i class="bi bi-cart me-1"></i>Comercial · Solo Almacén
+        </span>
+        {% endif %}
+      </div>
+
+      {# Estado de COA #}
+      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+      <div class="text-xs mb-2">
+        {% with total_req=ticket.appointment.purchase_orders.all|length %}
+        <i class="bi bi-file-earmark-check me-1
+          {% if ticket.coa_completo %}text-success{% else %}text-danger{% endif %}"></i>
+        <span class="{% if ticket.coa_completo %}text-success{% else %}text-danger fw-bold{% endif %}">
+          {% if ticket.coa_completo %}COA completo{% else %}⚠ Faltan COAs{% endif %}
+        </span>
+        {% endwith %}
+      </div>
+      {% endif %}
+
+      <div class="d-flex gap-2">
+        <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+           class="btn btn-primary btn-sm flex-grow-1 rounded-3 shadow-sm">
+          <i class="bi bi-qr-code me-1"></i>Ver y Autorizar
+        </a>
+        <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+           class="btn btn-outline-secondary btn-sm rounded-3"
+           data-bs-toggle="tooltip" title="Ver detalle">
+          <i class="bi bi-eye"></i>
+        </a>
+      </div>
+    </div>
+    {% empty %}
+    <div class="text-center py-5 text-muted small">
+      <i class="bi bi-calendar-event fs-2 d-block mb-2 opacity-25"></i>
+      Sin llegadas programadas para hoy
+    </div>
+    {% endfor %}
+  </div>
+
+  {# EN PLANTA #}
+  <div class="col-md-4">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="fw-bold text-xs text-warning text-uppercase" style="letter-spacing:1px">En Planta ahora</span>
+      <span class="badge bg-warning text-dark rounded-pill">{{ tickets_en_planta.count }}</span>
+    </div>
+    {% for ticket in tickets_en_planta %}
+    <div class="ticket-card ticket-card--en-planta p-3 mb-2 animate-fadein">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <span class="fw-bold small">Ticket #{{ ticket.id }}</span>
+        <span class="badge bg-warning-subtle text-warning border border-warning-subtle text-xxs">EN PLANTA</span>
+      </div>
+      <div class="text-muted text-xs mb-2">
+        <i class="bi bi-person me-1"></i>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}
+      </div>
+
+      {# Etapa actual del ticket #}
+      {% with etapas=ticket.stages.all %}
+      <div class="text-xs mb-2">
+        {% for stage in etapas %}
+          {% if not stage.fecha_fin %}
+          <span class="badge bg-warning-subtle text-warning border border-warning-subtle text-xxs">
+            <i class="bi bi-hourglass-split me-1"></i>{{ stage.get_etapa_display }}
+          </span>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% endwith %}
+
+      {# Cronómetro de tiempo en planta #}
+      <div class="text-xs text-muted mb-3">
+        <i class="bi bi-stopwatch me-1 text-warning"></i>
+        <span class="fw-bold" id="timer-{{ ticket.id }}"
+              data-entrada="{{ ticket.stages.filter.0.fecha_inicio|default:'' }}">
+          —
+        </span>
+        en planta
+      </div>
+
+      <div class="d-flex gap-2">
+        <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+           class="btn btn-warning btn-sm flex-grow-1 rounded-3 shadow-sm text-dark fw-bold">
+          <i class="bi bi-box-arrow-right me-1"></i>Registrar Salida
+        </a>
+        <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+           class="btn btn-outline-secondary btn-sm rounded-3"
+           data-bs-toggle="tooltip" title="Ver detalle">
+          <i class="bi bi-eye"></i>
+        </a>
+      </div>
+    </div>
+    {% empty %}
+    <div class="text-center py-5 text-muted small">
+      <i class="bi bi-building fs-2 d-block mb-2 opacity-25"></i>
+      Ningún proveedor en planta
+    </div>
+    {% endfor %}
+  </div>
+
+  {# FINALIZADOS #}
+  <div class="col-md-4">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="fw-bold text-xs text-success text-uppercase" style="letter-spacing:1px">Finalizados hoy</span>
+      <span class="badge bg-success rounded-pill">{{ tickets_finalizados.count }}</span>
+    </div>
+    {% for ticket in tickets_finalizados %}
+    <div class="ticket-card ticket-card--finalizado p-3 mb-2 animate-fadein">
+      <div class="d-flex justify-content-between align-items-start mb-1">
+        <span class="fw-bold small">Ticket #{{ ticket.id }}</span>
+        <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">FINALIZADO</span>
+      </div>
+      <div class="text-muted text-xs mb-1">
+        <i class="bi bi-person me-1"></i>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}
+      </div>
+      {% if ticket.tiempo_total_planta %}
+      <div class="text-xs text-success mb-2">
+        <i class="bi bi-stopwatch me-1"></i>Tiempo total:
+        <strong>{{ ticket.tiempo_total_planta }}</strong>
+      </div>
+      {% endif %}
+      <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+         class="btn btn-outline-success btn-sm w-100 rounded-3">
+        <i class="bi bi-graph-up me-1"></i>Ver trazabilidad
+      </a>
+    </div>
+    {% empty %}
+    <div class="text-center py-5 text-muted small">
+      <i class="bi bi-check-all fs-2 d-block mb-2 opacity-25"></i>
+      Sin salidas registradas hoy
+    </div>
+    {% endfor %}
+  </div>
+
+</div>
+
+</div>{# /tab-hoy #}
+
+{# ── Pestaña: Historial (Fase 11) — TODOS los tickets, solo lectura ──────── #}
+<div class="tab-pane fade" id="tab-historial" role="tabpanel">
+  {% include "operations/_partials/historial_tickets.html" with tickets_historial=tickets_historial %}
+</div>{# /tab-historial #}
+
+</div>{# /vigilanciaTabsContent #}
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
+<script>
+  /**
+   * Cronómetros en vivo para tickets en planta.
+   * Calcula tiempo transcurrido desde la etapa VIGILANCIA_ENTRADA.
+   */
+  (function initTimers() {
+    // Los timers usan data-entrada que se pobla en la vista con la fecha real de TicketStage
+    document.querySelectorAll('[data-entrada]').forEach(el => {
+      const entrada = el.dataset.entrada;
+      if (!entrada) return;
+
+      const start = new Date(entrada);
+      const tick = () => {
+        const diff = Math.floor((Date.now() - start) / 1000);
+        const h = Math.floor(diff / 3600);
+        const m = Math.floor((diff % 3600) / 60);
+        const s = diff % 60;
+        el.textContent = h > 0
+          ? `${h}h ${String(m).padStart(2,'0')}m`
+          : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      };
+      tick();
+      setInterval(tick, 1000);
+    });
+  })();
+</script>
+{% endblock %}

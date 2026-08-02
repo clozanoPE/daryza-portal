@@ -1,0 +1,41 @@
+{% extends "base/base.html" %}
+{% load static %}
+{% block title %}Tickets{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div><div class="page-title">Todos los Tickets</div><div class="page-subtitle">Filtrar por estado</div></div>
+  <div class="page-actions">
+    {% for val, label in estados_ticket %}
+    <a href="?estado={{ val }}" class="btn btn-ghost btn-sm {% if request.GET.estado == val %}active{% endif %}">{{ label }}</a>
+    {% endfor %}
+    <a href="?" class="btn btn-ghost btn-sm">Todos</a>
+  </div>
+</div>
+<div class="table-wrap">
+  <table class="vbs-table">
+    <thead><tr><th>Ticket</th><th>Proveedor</th><th>OCs</th><th>Estado</th><th>COA</th><th>Fecha</th><th></th></tr></thead>
+    <tbody>
+      {% for tk in tickets %}
+      <tr>
+        <td><div style="font-family:var(--font-display);font-weight:700">T#{{ tk.id }}</div><div style="font-family:var(--font-mono);font-size:10px;color:var(--vbs-cyan)">{{ tk.codigo_qr }}</div></td>
+        <td><div style="font-weight:500">{{ tk.appointment.user.get_full_name|default:tk.appointment.user.username }}</div></td>
+        <td><div style="font-size:12px;color:var(--vbs-cyan)">{% for oc in tk.appointment.purchase_orders.all %}{{ oc.doc_num }}{% if not forloop.last %}, {% endif %}{% endfor %}</div></td>
+        <td><span class="badge badge-{{ tk.estado|lower }}">{{ tk.get_estado_display }}</span></td>
+        <td>{% if tk.requiere_coa %}{% if tk.appointment.coa_pdf %}<span class="coa-badge coa-uploaded">✓ COA</span>{% else %}<span class="coa-badge coa-missing">⚠ Sin COA</span>{% endif %}{% else %}<span class="coa-badge coa-na">—</span>{% endif %}</td>
+        <td><span style="font-size:11px;color:var(--vbs-text-muted)">{{ tk.fecha_creacion|date:"d/m/Y H:i" }}</span></td>
+        <td><a href="{% url 'operations:ticket_detalle' tk.id %}" class="btn btn-ghost btn-xs">Ver</a></td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" style="text-align:center;color:var(--vbs-text-muted);padding:32px">Sin tickets</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if is_paginated %}
+<div style="display:flex;justify-content:center;gap:8px;margin-top:16px">
+  {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}" class="btn btn-ghost btn-sm">Anterior</a>{% endif %}
+  <span style="font-size:13px;color:var(--vbs-text-secondary);align-self:center">Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}</span>
+  {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}" class="btn btn-ghost btn-sm">Siguiente</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

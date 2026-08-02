@@ -1,0 +1,15 @@
+{% comment %}
+Campo de filtro "Periodo" (mes/año, Fase 10) — reutilizado en los
+historiales de Compras, Vigilancia, Calidad y el Portal del Proveedor.
+Es solo el campo, pensado para embeberse dentro de un <form method="get">
+ya existente en cada página (no es un <form> propio).
+
+Requiere que la vista use apps.base.filters.resolver_periodo(request) y
+pase 'periodo' (string 'YYYY-MM', ya con el mes actual como valor por
+defecto) al contexto.
+{% endcomment %}
+<div>
+  <label class="form-label text-xxs fw-bold text-muted text-uppercase mb-1 d-block">Periodo</label>
+  <input type="month" name="periodo" value="{{ periodo }}"
+         class="form-control form-control-sm rounded-3 bg-white">
+</div>

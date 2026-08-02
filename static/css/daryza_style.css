@@ -1,0 +1,162 @@
+/**
+ * Daryza VBS — Design System
+ * Portal de Citas de Proveedores (Vendor Booking System)
+ *
+ * Arquitectura:
+ *   1. Variables / Tokens de Diseño
+ *   2. Reset & Base
+ *   3. Layout (Sidebar + Content)
+ *   4. Componentes Globales
+ *   5. Slot / Calendario
+ *   6. Ticket / Operaciones
+ *   7. Utilidades & Animaciones
+ */
+
+/* ─── 1. TOKENS ──────────────────────────────────────────────────────────── */
+:root {
+  --dz-green:        #29b44a;
+  --dz-green-dark:   #1f9a3d;
+  --dz-green-light:  #e9f7ef;
+  --dz-dark:         #1e1e2d;
+  --dz-text-muted:   #6c757d;
+  --dz-bg:           #f4f7f6;
+  --dz-surface:      #ffffff;
+  --dz-border:       #e9ecef;
+  --dz-shadow-sm:    0 2px 8px rgba(0,0,0,.06);
+  --dz-shadow:       0 6px 20px rgba(0,0,0,.08);
+  --dz-shadow-lg:    0 12px 35px rgba(0,0,0,.1);
+  --dz-radius-sm:    0.5rem;
+  --dz-radius:       0.875rem;
+  --dz-radius-lg:    1.25rem;
+  --dz-sidebar-w:    280px;
+  --dz-transition:   0.35s cubic-bezier(.25,.8,.25,1);
+  --dz-prog:         #0d6efd;
+  --dz-planta:       #fd7e14;
+  --dz-fin:          #198754;
+}
+
+/* ─── 2. BASE ─────────────────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box}
+body{background:var(--dz-bg);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+a{text-decoration:none}
+
+/* ─── 3. LAYOUT ──────────────────────────────────────────────────────────── */
+#wrapper{display:flex;width:100vw;min-height:100vh;transition:var(--dz-transition)}
+
+#sidebar-wrapper{
+  min-width:var(--dz-sidebar-w);max-width:var(--dz-sidebar-w);
+  background:var(--dz-dark);position:sticky;top:0;height:100vh;
+  overflow-y:auto;overflow-x:hidden;z-index:1050;
+  box-shadow:4px 0 18px rgba(0,0,0,.18);transition:var(--dz-transition);
+  scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.15) transparent;
+}
+#sidebar-wrapper::-webkit-scrollbar{width:4px}
+#sidebar-wrapper::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:4px}
+#wrapper.toggled #sidebar-wrapper{margin-left:calc(-1 * var(--dz-sidebar-w))}
+
+.sidebar-brand{display:flex;align-items:center;padding:1.25rem 1rem 1rem;border-bottom:1px solid rgba(255,255,255,.08);margin-bottom:.75rem}
+.sidebar-brand__logo{width:42px;height:42px;background:#fff;border-radius:var(--dz-radius-sm);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-right:.75rem;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.sidebar-brand__logo img{max-height:32px;max-width:32px;object-fit:contain}
+.brand-title{font-size:1.1rem;font-weight:700;color:#fff;line-height:1.1;display:block}
+.brand-subtitle{font-size:.58rem;font-weight:700;color:var(--dz-green);text-transform:uppercase;letter-spacing:1.5px;display:block}
+
+.sidebar-nav{list-style:none;padding:0 .75rem;margin:0}
+.sidebar-nav__section-label{font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,.3);padding:1rem .5rem .35rem;display:block}
+.sidebar-nav__link{display:flex;align-items:center;gap:.75rem;padding:.6rem .85rem;border-radius:var(--dz-radius-sm);color:rgba(255,255,255,.5);font-size:.875rem;font-weight:500;transition:background .2s,color .2s;margin-bottom:.2rem;cursor:pointer;border:none;background:transparent;width:100%;text-align:left}
+.sidebar-nav__link i{font-size:1.1rem;flex-shrink:0}
+.sidebar-nav__link:hover{background:rgba(255,255,255,.07);color:#fff}
+.sidebar-nav__link.active{background:var(--dz-green);color:#fff;font-weight:700;box-shadow:0 4px 12px rgba(41,180,74,.3)}
+
+#page-content-wrapper{display:flex;flex-direction:column;flex-grow:1;min-width:0;transition:var(--dz-transition)}
+@media(min-width:992px){#wrapper:not(.toggled) #page-content-wrapper{max-width:calc(100vw - var(--dz-sidebar-w))}}
+.navbar-daryza{background:var(--dz-surface);border-bottom:1px solid var(--dz-border);box-shadow:var(--dz-shadow-sm);z-index:1020}
+main.page-main{padding:1.5rem 1.75rem;flex:1}
+
+/* ─── Loader ─────────────────────────────────────────────────────────────── */
+#global-loader{position:fixed;inset:0;background:var(--dz-dark);z-index:9999;display:flex;align-items:center;justify-content:center;transition:opacity .4s .1s,visibility .4s .1s}
+#global-loader.loaded{opacity:0;visibility:hidden}
+#global-loader .bar{width:180px;height:3px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden}
+#global-loader .bar::after{content:'';display:block;height:100%;width:40%;background:var(--dz-green);animation:loader-bar 1s ease-in-out infinite alternate;border-radius:3px}
+@keyframes loader-bar{from{transform:translateX(0)}to{transform:translateX(300%)}}
+
+/* ─── 4. CARDS / KPI ─────────────────────────────────────────────────────── */
+.dz-card{background:var(--dz-surface);border:1px solid var(--dz-border);border-radius:var(--dz-radius);box-shadow:var(--dz-shadow-sm);transition:box-shadow .2s}
+.dz-card:hover{box-shadow:var(--dz-shadow)}
+.dz-card--accent-green{border-left:4px solid var(--dz-green)!important}
+.dz-card--accent-blue{border-left:4px solid var(--dz-prog)!important}
+.dz-card--accent-orange{border-left:4px solid var(--dz-planta)!important}
+
+.page-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.5rem}
+.page-header__title{font-size:1.35rem;font-weight:700;color:#1a1a2e;margin:0}
+.page-header__subtitle{font-size:.8rem;color:var(--dz-text-muted);margin:.1rem 0 0}
+
+.kpi-card{background:var(--dz-surface);border:1px solid var(--dz-border);border-radius:var(--dz-radius);padding:1.1rem 1.25rem;display:flex;align-items:center;gap:1rem;box-shadow:var(--dz-shadow-sm)}
+.kpi-card__icon{width:46px;height:46px;flex-shrink:0;border-radius:var(--dz-radius-sm);display:flex;align-items:center;justify-content:center;font-size:1.3rem}
+.kpi-card__value{font-size:1.6rem;font-weight:800;line-height:1}
+.kpi-card__label{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--dz-text-muted);margin-top:.1rem}
+
+/* ─── 5. SLOT / CALENDARIO ──────────────────────────────────────────────── */
+.slot-cell{padding:10px 5px;border-radius:var(--dz-radius-sm);text-align:center;min-height:62px;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;overflow:hidden;transition:transform .25s,box-shadow .25s;border:1px solid transparent}
+.slot-cell .slot-qty{font-size:1.15rem;font-weight:800;line-height:1;display:block}
+.slot-cell .slot-lbl{font-size:.52rem;font-weight:700;text-transform:uppercase;opacity:.75;letter-spacing:.5px}
+.slot-cell .slot-cta{position:absolute;bottom:-18px;left:0;right:0;font-size:.55rem;font-weight:800;padding:2px 0;transition:bottom .25s,opacity .25s;opacity:0}
+.slot-cell--available{background:var(--dz-green-light);color:var(--dz-green-dark);border-color:#d1e7dd;cursor:pointer}
+.slot-cell--available:hover{transform:translateY(-4px);box-shadow:0 6px 16px rgba(41,180,74,.2)}
+.slot-cell--available:hover .slot-cta{bottom:4px;opacity:1}
+.slot-cell--full{background:#fdeaea;color:#c0392b;border-color:#f9d6d6;opacity:.8}
+.slot-cell--closed{background:#f8f9fa;color:#adb5bd;border-color:#e9ecef}
+.slot-cell--selected{background:var(--dz-green)!important;color:#fff!important;border-color:var(--dz-green-dark)!important;box-shadow:0 6px 18px rgba(41,180,74,.35);transform:scale(1.04)}
+
+/* ─── 6. TICKET / OPERACIONES ─────────────────────────────────────────────── */
+.ticket-card{border-radius:var(--dz-radius);border-left:4px solid transparent;background:var(--dz-surface);box-shadow:var(--dz-shadow-sm);transition:box-shadow .2s,transform .2s}
+.ticket-card:hover{box-shadow:var(--dz-shadow);transform:translateY(-2px)}
+.ticket-card--programado{border-left-color:var(--dz-prog)}
+.ticket-card--en-planta{border-left-color:var(--dz-planta)}
+.ticket-card--finalizado{border-left-color:var(--dz-fin)}
+
+.stages-stepper{display:flex;flex-direction:column;position:relative}
+.stages-stepper::before{content:'';position:absolute;left:19px;top:20px;bottom:20px;width:2px;background:var(--dz-border);z-index:0}
+.stage-step{display:flex;align-items:flex-start;gap:1rem;padding:.75rem 0;position:relative;z-index:1}
+.stage-step__dot{width:40px;height:40px;flex-shrink:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.9rem;font-weight:700;background:var(--dz-surface);border:2px solid var(--dz-border)}
+.stage-step--completed .stage-step__dot{background:var(--dz-green);color:#fff;border-color:var(--dz-green)}
+.stage-step--active .stage-step__dot{background:#fff0d3;color:var(--dz-planta);border-color:var(--dz-planta);animation:pulse-border 1.4s infinite}
+.stage-step--pending .stage-step__dot{background:#f8f9fa;color:#adb5bd}
+@keyframes pulse-border{0%,100%{box-shadow:0 0 0 0 rgba(253,126,20,.4)}50%{box-shadow:0 0 0 8px rgba(253,126,20,0)}}
+
+.oc-group-card{border:1px solid var(--dz-border);border-radius:var(--dz-radius-sm);overflow:hidden;margin-bottom:.75rem}
+.oc-group-card__header{background:#f8f9fa;padding:.65rem 1rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--dz-border)}
+.oc-group-card table{margin:0;font-size:.82rem}
+.oc-group-card table thead th{background:#f8f9fa;font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.5px}
+
+.badge-insp{font-size:.65rem;font-weight:700;padding:.3em .65em;border-radius:100px}
+.badge-insp--pendiente{background:#fff3cd;color:#856404;border:1px solid #ffc107}
+.badge-insp--en-proceso{background:#cfe2ff;color:#084298;border:1px solid #0d6efd}
+.badge-insp--conforme{background:#d1e7dd;color:#0a3622;border:1px solid #198754}
+.badge-insp--rechazado{background:#f8d7da;color:#58151c;border:1px solid #dc3545}
+
+.qr-input{font-family:'Courier New',monospace;font-size:.95rem;letter-spacing:2px;border-radius:var(--dz-radius-sm)}
+
+/* ─── 7. UTILIDADES ──────────────────────────────────────────────────────── */
+.text-xs{font-size:.72rem!important}.text-xxs{font-size:.62rem!important}.fw-800{font-weight:800!important}
+.rounded-dz{border-radius:var(--dz-radius)!important}.shadow-dz{box-shadow:var(--dz-shadow)!important}
+
+@keyframes dzFadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.animate-fadein{animation:dzFadeIn .3s ease forwards}
+
+.skeleton{background:linear-gradient(90deg,#f0f0f0 25%,#e0e0e0 50%,#f0f0f0 75%);background-size:200% 100%;animation:skel 1.2s ease-in-out infinite;border-radius:4px}
+@keyframes skel{from{background-position:200% 0}to{background-position:-200% 0}}
+
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#ced4da;border-radius:6px}::-webkit-scrollbar-thumb:hover{background:#adb5bd}
+
+.dz-toast{position:fixed;bottom:1.5rem;right:1.5rem;min-width:260px;background:var(--dz-dark);color:#fff;padding:.85rem 1.2rem;border-radius:var(--dz-radius-sm);box-shadow:var(--dz-shadow-lg);z-index:2000;font-size:.85rem;display:flex;align-items:center;gap:.75rem;animation:dzFadeIn .3s ease;transition:opacity .3s}
+.dz-toast.hide{opacity:0;pointer-events:none}
+
+/* Portal Proveedor: panel COA */
+.coa-status-ok{color:var(--dz-green)}.coa-status-pend{color:#ffc107}.coa-status-none{color:#adb5bd}
+
+@media(max-width:991.98px){
+  #sidebar-wrapper{position:fixed;height:100vh}
+  #wrapper:not(.toggled) #sidebar-wrapper{margin-left:calc(-1 * var(--dz-sidebar-w))}
+  #wrapper.toggled #sidebar-wrapper{margin-left:0}
+  main.page-main{padding:1rem}
+}

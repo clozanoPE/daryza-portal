@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Trazabilidad Ticket #{{ ticket.id }} | Daryza VBS{% endblock %}
+
+{% block extra_head %}{% include "operations/_partials/inspeccion_styles.html" %}{% endblock %}
+
+{% block content %}
+
+{# ── Header del Ticket ────────────────────────────────────────────────────── #}
+<div class="page-header">
+  <div>
+    <div class="d-flex align-items-center gap-3 mb-1">
+      <h1 class="page-header__title m-0">
+        <i class="bi bi-clock-history text-success me-2"></i>Trazabilidad — Ticket #{{ ticket.id }}
+      </h1>
+      {% if ticket.estado == 'PROGRAMADO' %}
+        <span class="badge bg-primary fs-6 rounded-3 px-3">PROGRAMADO</span>
+      {% elif ticket.estado == 'EN_PLANTA' %}
+        <span class="badge bg-warning text-dark fs-6 rounded-3 px-3">EN PLANTA</span>
+      {% elif ticket.estado == 'FINALIZADO' %}
+        <span class="badge bg-success fs-6 rounded-3 px-3">FINALIZADO</span>
+      {% else %}
+        <span class="badge bg-secondary fs-6 rounded-3 px-3">{{ ticket.estado }}</span>
+      {% endif %}
+      <span class="badge bg-light text-dark border text-xxs">
+        <i class="bi bi-eye me-1"></i>Solo lectura
+      </span>
+    </div>
+    <p class="page-header__subtitle">
+      Creado el {{ ticket.fecha_creacion|date:"d/m/Y H:i" }}
+      &nbsp;·&nbsp;
+      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+        <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
+          <i class="bi bi-flask me-1"></i>Materia Prima · Con Calidad
+        </span>
+      {% else %}
+        <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+          <i class="bi bi-cart me-1"></i>Comercial · Solo Almacén
+        </span>
+      {% endif %}
+    </p>
+  </div>
+  <a href="{% url 'home_router' %}" class="btn btn-light btn-sm rounded-3 border">
+    <i class="bi bi-arrow-left me-1"></i>Volver
+  </a>
+</div>
+
+<div class="row g-3">
+
+  {# ── COLUMNA IZQUIERDA: Info de la cita + Etapas ──────────────────────── #}
+  <div class="col-lg-4">
+    <div class="dz-card p-4 mb-3">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-calendar3 text-success me-2"></i>Datos de la Cita
+      </h6>
+      <dl class="row mb-0 text-xs">
+        <dt class="col-5 text-muted">Cita ID</dt>
+        <dd class="col-7">#{{ ticket.appointment.id }}</dd>
+        <dt class="col-5 text-muted">Fecha / Hora</dt>
+        <dd class="col-7">
+          {{ ticket.appointment.slot.date|date:"d/m/Y" }} · {{ ticket.appointment.slot.start_time|date:"H:i" }}
+        </dd>
+        <dt class="col-5 text-muted">Proveedor</dt>
+        <dd class="col-7">
+          <strong>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}</strong>
+        </dd>
+        <dt class="col-5 text-muted">Sede</dt>
+        <dd class="col-7">{{ ticket.appointment.get_lugar_entrega_display }}</dd>
+        <dt class="col-5 text-muted">OCs vinculadas</dt>
+        <dd class="col-7">
+          {% for po in ticket.appointment.purchase_orders.all %}
+          <span class="badge border me-1 mb-1 text-xxs
+            {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border-info-subtle
+            {% else %}bg-success-subtle text-success border-success-subtle{% endif %}">
+            OC {{ po.doc_num }}
+            {% if po.u_mss_tdb == 'MP' %}<i class="bi bi-flask ms-1"></i>{% endif %}
+          </span>
+          {% endfor %}
+        </dd>
+      </dl>
+    </div>
+
+    <div class="dz-card p-4">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-diagram-3 text-success me-2"></i>Trazabilidad de Etapas
+      </h6>
+      {% include "operations/_partials/stages_stepper.html" %}
+    </div>
+  </div>
+
+  {# ── COLUMNA DERECHA: Estado actual (solo lectura, sin acciones) ──────── #}
+  <div class="col-lg-8">
+    <div class="dz-card p-4 mb-3">
+      <h6 class="fw-bold mb-3">
+        <i class="bi bi-table text-success me-2"></i>Detalle de OC — Estado Actual
+      </h6>
+
+      {% if estado_actual_agrupada %}
+        {% include "operations/_partials/tabla_inspeccion.html" with ocs_agrupadas=estado_actual_agrupada editable=False collapse_prefix="Traza" mostrar_etapa=True %}
+      {% else %}
+        <p class="text-muted text-xs text-center py-3 mb-0">
+          Este ticket todavía no tiene inspecciones registradas.
+        </p>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+{% endblock %}

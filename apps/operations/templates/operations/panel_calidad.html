@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Panel Calidad | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-clipboard2-pulse text-success me-2"></i>Panel Calidad
+    </h1>
+    <p class="page-header__subtitle">
+      Inspección de Materia Prima — línea por línea antes de enviar a Almacén
+    </p>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-card__icon bg-info-subtle">
+      <i class="bi bi-flask text-info"></i>
+    </div>
+    <div>
+      <div class="kpi-card__value text-info">{{ tickets|length }}</div>
+      <div class="kpi-card__label">Para inspeccionar</div>
+    </div>
+  </div>
+</div>
+
+{# ── Pestañas: Pendientes / Historial (Fase 11 — mismo patrón de la Fase 6) #}
+<ul class="nav nav-tabs mb-3" id="calidadTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="tab-pendientes-btn" data-bs-toggle="tab" data-bs-target="#tab-pendientes" type="button" role="tab" aria-selected="true">
+      <i class="bi bi-hourglass-split me-1"></i>Pendientes
+      <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill ms-1 text-xxs">{{ tickets|length }}</span>
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="tab-historial-btn" data-bs-toggle="tab" data-bs-target="#tab-historial" type="button" role="tab" aria-selected="false">
+      <i class="bi bi-clock-history me-1"></i>Historial
+      <span class="badge bg-light text-dark border rounded-pill ms-1 text-xxs">{{ tickets_historial|length }}</span>
+    </button>
+  </li>
+</ul>
+
+<div class="tab-content" id="calidadTabsContent">
+<div class="tab-pane fade show active" id="tab-pendientes" role="tabpanel">
+
+{# ── Listado de Tickets para Calidad ─────────────────────────────────────── #}
+{% for ticket in tickets %}
+<div class="dz-card dz-card--accent-blue p-4 mb-4 animate-fadein">
+
+  {# Cabecera del ticket #}
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3">
+    <div>
+      <div class="d-flex align-items-center gap-2 mb-1">
+        <span class="fw-bold fs-5">Ticket #{{ ticket.id }}</span>
+        <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
+          <i class="bi bi-flask me-1"></i>Materia Prima
+        </span>
+        <span class="badge bg-warning-subtle text-warning border border-warning-subtle text-xxs">
+          PENDIENTE CALIDAD
+        </span>
+      </div>
+      <div class="text-muted text-xs">
+        <i class="bi bi-person me-1"></i>
+        {{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}
+        <span class="mx-2">·</span>
+        <i class="bi bi-calendar3 me-1"></i>{{ ticket.appointment.slot.date|date:"d/m/Y" }}
+        <span class="mx-2">·</span>
+        <i class="bi bi-clock me-1"></i>{{ ticket.appointment.slot.start_time|date:"H:i" }}
+      </div>
+    </div>
+    <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+       class="btn btn-outline-secondary btn-sm rounded-3">
+      <i class="bi bi-arrow-right me-1"></i>Ir al Ticket
+    </a>
+  </div>
+
+  {# Cronómetro de tiempo en planta #}
+  {% with etapa_entrada=ticket.stages.filter %}
+  <div class="alert alert-warning py-2 small mb-3 d-flex align-items-center gap-2">
+    <i class="bi bi-stopwatch text-warning fs-5"></i>
+    <span>
+      <strong>Tiempo en planta:</strong>
+      <span class="ms-1" id="timer-calidad-{{ ticket.id }}"
+            data-entrada="{{ ticket.stages.all.0.fecha_inicio|default:'' }}">
+        calculando…
+      </span>
+    </span>
+  </div>
+  {% endwith %}
+
+  {# Tabla de inspección agrupada por OC #}
+  {% with ocs=ticket.inspections.filter %}
+  {% regroup ticket.inspections.all by po_line.purchase_order as oc_groups %}
+  {% for oc_group in oc_groups %}
+  {% with po=oc_group.grouper %}
+  <div class="oc-group-card mb-3">
+    <div class="oc-group-card__header">
+      <div class="d-flex align-items-center gap-2">
+        <i class="bi bi-file-text text-primary"></i>
+        <span class="fw-bold text-xs">OC {{ po.doc_num }}</span>
+        <span class="text-muted text-xxs">— {{ po.card_name }}</span>
+        <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs ms-1">
+          <i class="bi bi-flask me-1"></i>Materia Prima
+        </span>
+      </div>
+      <span class="text-xxs text-muted">{{ oc_group.list|length }} línea(s)</span>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th class="text-xxs fw-bold text-muted">Ítem</th>
+            <th class="text-xxs fw-bold text-muted">Descripción</th>
+            <th class="text-xxs fw-bold text-muted text-end">Cant. SAP</th>
+            <th class="text-xxs fw-bold text-muted text-end">Cant. Real</th>
+            <th class="text-xxs fw-bold text-muted text-center">Estado</th>
+            <th class="text-xxs fw-bold text-muted">Observación</th>
+            <th class="text-xxs fw-bold text-muted text-center">COA</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for insp in oc_group.list %}
+          {% if insp.etapa == 'ALMACEN' %}
+          <tr data-inspeccion-id="{{ insp.id }}">
+            <td class="fw-bold text-xs">{{ insp.po_line.item_code }}</td>
+            <td class="text-xs text-muted" style="max-width:180px">{{ insp.po_line.description }}</td>
+            <td class="text-xs text-end text-muted">
+              {{ insp.cantidad_sap }} {{ insp.po_line.und_medida }}
+            </td>
+            <td class="text-xs text-end" style="min-width:90px">
+              <input type="number" step="0.0001"
+                     class="form-control form-control-sm text-end insp-cantidad"
+                     value="{{ insp.cantidad_modificada }}"
+                     style="min-width:80px">
+            </td>
+            <td class="text-center" style="min-width:120px">
+              <select class="form-select form-select-sm insp-estado text-xs">
+                <option value="EN_PROCESO"  {% if insp.estado == 'EN_PROCESO'  %}selected{% endif %}>En Proceso</option>
+                <option value="CONFORME"    {% if insp.estado == 'CONFORME'    %}selected{% endif %}>✓ Conforme</option>
+                <option value="RECHAZADO"   {% if insp.estado == 'RECHAZADO'   %}selected{% endif %}>✗ Rechazado</option>
+              </select>
+            </td>
+            <td style="min-width:140px">
+              <input type="text" class="form-control form-control-sm text-xs insp-comentario"
+                     value="{{ insp.comentario|default:'' }}"
+                     placeholder="Observación…">
+            </td>
+            <td class="text-center">
+              {% if insp.requiere_coa %}
+                {% if insp.coa_url %}
+                <a href="{{ insp.coa_url }}" target="_blank"
+                   class="badge bg-success-subtle text-success border border-success-subtle text-xxs"
+                   data-bs-toggle="tooltip" title="Ver COA">
+                  <i class="bi bi-file-earmark-check me-1"></i>OK
+                </a>
+                {% else %}
+                <span class="badge bg-danger-subtle text-danger border border-danger-subtle text-xxs"
+                      data-bs-toggle="tooltip" title="COA no cargado">
+                  <i class="bi bi-exclamation-triangle me-1"></i>Falta
+                </span>
+                {% endif %}
+              {% else %}
+              <span class="text-muted text-xxs">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endwith %}
+  {% endfor %}
+  {% endwith %}
+
+  {# Botón guardar inspección #}
+  <div class="d-flex justify-content-end mt-3">
+    <button id="btn-guardar-inspeccion-calidad"
+            class="btn btn-info text-white rounded-3 shadow-sm px-4"
+            onclick="guardarInspeccion({{ ticket.id }}, 'calidad')">
+      <i class="bi bi-send me-2"></i>Finalizar Inspección → Almacén
+    </button>
+  </div>
+
+</div>
+{% empty %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-clipboard2-check fs-1 d-block mb-2 opacity-25"></i>
+  <p class="small mb-0">No hay tickets de Materia Prima pendientes de inspección en Calidad.</p>
+</div>
+{% endfor %}
+
+</div>{# /tab-pendientes #}
+
+{# ── Pestaña: Historial (Fase 11) — TODOS los tickets, solo lectura ──────── #}
+<div class="tab-pane fade" id="tab-historial" role="tabpanel">
+  {% include "operations/_partials/historial_tickets.html" with tickets_historial=tickets_historial %}
+</div>{# /tab-historial #}
+
+</div>{# /calidadTabsContent #}
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
+<script>
+  /* Cronómetros en vivo */
+  document.querySelectorAll('[data-entrada]').forEach(el => {
+    const entrada = el.dataset.entrada;
+    if (!entrada) return;
+    const start = new Date(entrada);
+    const tick = () => {
+      const diff = Math.floor((Date.now() - start) / 1000);
+      const h = Math.floor(diff / 3600);
+      const m = Math.floor((diff % 3600) / 60);
+      el.textContent = h > 0 ? `${h}h ${String(m).padStart(2,'0')}m` : `${m}m ${String(diff%60).padStart(2,'0')}s`;
+    };
+    tick();
+    setInterval(tick, 1000);
+  });
+</script>
+{% endblock %}

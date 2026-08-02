@@ -1,0 +1,77 @@
+{# templates/operations/_oc_card_grouped.html #}
+{% for oc_num, oc_data in ocs.items %}
+<div class="card border-0 shadow-sm rounded-4 mb-3 border-start border-4 {% if oc_data.es_materia_prima %}border-info{% else %}border-success{% endif %}">
+  <div class="card-header bg-white py-3 px-3 d-flex justify-content-between align-items-center"
+       data-bs-toggle="collapse" data-bs-target="#oc-detail-{{ oc_num }}"
+       style="cursor:pointer;">
+    <div>
+      <span class="fw-bold text-dark">OC {{ oc_num }}</span>
+      <span class="badge {% if oc_data.es_materia_prima %}bg-info-subtle text-info{% else %}bg-success-subtle text-success{% endif %} ms-2" style="font-size:0.6rem">
+          {% if oc_data.es_materia_prima %}MATERIA PRIMA{% else %}COMERCIAL{% endif %}
+      </span>
+    </div>
+    <div class="d-flex gap-3 align-items-center">
+      {# Resumen de COAs para el proveedor #}
+      {% if oc_data.total_req_coa > 0 %}
+        <span class="small {% if oc_data.total_cargados == oc_data.total_req_coa %}text-success{% else %}text-warning{% endif %} fw-bold" style="font-size:0.7rem">
+            <i class="bi bi-file-earmark-arrow-up"></i> {{ oc_data.total_cargados }}/{{ oc_data.total_req_coa }} COAs
+        </span>
+      {% endif %}
+      <i class="bi bi-chevron-down text-muted"></i>
+    </div>
+  </div>
+
+  <div class="collapse show" id="oc-detail-{{ oc_num }}">
+    <div class="card-body p-0">
+      <div class="table-responsive">
+          <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th class="ps-3" style="font-size:0.65rem">ÍTEM</th>
+                <th style="font-size:0.65rem">DESCRIPCIÓN</th>
+                <th class="text-center" style="font-size:0.65rem">CANT.</th>
+                <th class="text-center" style="font-size:0.65rem">ESTADO COA</th>
+                <th class="text-end pe-3" style="font-size:0.65rem">ACCIÓN</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for linea in oc_data.lineas %}
+              <tr id="row-linea-{{ linea.id }}">
+                <td class="ps-3"><code>{{ linea.item_code }}</code></td>
+                <td class="small">{{ linea.description }}</td>
+                <td class="text-center small">{{ linea.quantity_sap }}</td>
+                <td class="text-center">
+                    {% if linea.requiere_coa %}
+                        {% if linea.coa_url %}
+                            <span class="text-success"><i class="bi bi-check-circle-fill"></i></span>
+                        {% else %}
+                            <span class="text-danger" title="Obligatorio"><i class="bi bi-exclamation-circle-fill"></i></span>
+                        {% endif %}
+                    {% else %}
+                        <span class="text-muted small">—</span>
+                    {% endif %}
+                </td>
+                <td class="text-end pe-3">
+                    {% if linea.requiere_coa %}
+                        {% if linea.coa_url %}
+                            <a href="{{ linea.coa_url }}" target="_blank" class="btn btn-link btn-sm p-0 text-success">Ver</a>
+                        {% else %}
+                            {# Botón para disparar el input de archivo oculto #}
+                            <button class="btn btn-outline-primary btn-sm rounded-pill py-0 px-2" style="font-size:0.6rem" 
+                                    onclick="document.getElementById('file-{{ linea.id }}').click()">
+                                <i class="bi bi-upload"></i> Subir
+                            </button>
+                            <input type="file" id="file-{{ linea.id }}" class="d-none" 
+                                   onchange="uploadCoaToLine({{ linea.id }}, this)">
+                        {% endif %}
+                    {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}

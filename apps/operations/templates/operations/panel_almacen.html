@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Panel Almacén | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-inboxes text-success me-2"></i>Panel Almacén
+    </h1>
+    <p class="page-header__subtitle">
+      Recepción física y aprobación de solicitudes de cita
+    </p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <div class="kpi-card">
+      <div class="kpi-card__icon bg-warning-subtle">
+        <i class="bi bi-hourglass-split text-warning"></i>
+      </div>
+      <div>
+        <div class="kpi-card__value text-warning">{{ solicitadas|length }}</div>
+        <div class="kpi-card__label">Por revisar</div>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card__icon bg-success-subtle">
+        <i class="bi bi-check-circle text-success"></i>
+      </div>
+      <div>
+        <div class="kpi-card__value text-success">{{ confirmadas|length }}</div>
+        <div class="kpi-card__label">Confirmadas</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Filtros ─────────────────────────────────────────────────────────────── #}
+<form method="get" class="row g-2 mb-4">
+  <div class="col-md-4">
+    <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm rounded-3 bg-white"
+           placeholder="Buscar por ID, OC o proveedor…">
+  </div>
+  <div class="col-md-3">
+    <input type="date" name="fecha" value="{{ fecha_filtro }}" class="form-control form-control-sm rounded-3 bg-white">
+  </div>
+  <div class="col-md-2">
+    <select name="estado" class="form-select form-select-sm rounded-3 bg-white">
+      <option value="">Todos los estados</option>
+      {% for val, label in estados_choices %}
+      <option value="{{ val }}" {% if val == estado_filtro %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-success btn-sm rounded-3 shadow-sm px-3">
+      <i class="bi bi-search me-1"></i>Filtrar
+    </button>
+    {% if q or fecha_filtro or estado_filtro %}
+    <a href="{% url 'operations:panel_almacen' %}" class="btn btn-light btn-sm rounded-3 ms-1">
+      <i class="bi bi-x"></i> Limpiar
+    </a>
+    {% endif %}
+  </div>
+</form>
+
+{# ── Kanban 3 columnas ────────────────────────────────────────────────────── #}
+<div class="row g-3">
+
+  {# SOLICITADAS #}
+  <div class="col-lg-4">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="fw-bold text-xs text-warning text-uppercase" style="letter-spacing:1px">Solicitadas</span>
+      <span class="badge bg-warning text-dark rounded-pill">{{ solicitadas.count }}</span>
+    </div>
+    {% for cita in solicitadas %}
+    <div class="ticket-card ticket-card--en-planta p-3 mb-2 animate-fadein">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <span class="fw-bold small">Cita #{{ cita.id }}</span>
+        <span class="badge bg-warning text-dark text-xxs">SOLICITADO</span>
+      </div>
+      <div class="text-muted text-xs mb-1">
+        <i class="bi bi-person me-1"></i>{{ cita.user.get_full_name|default:cita.user.username }}
+      </div>
+      <div class="text-muted text-xs mb-2">
+        <i class="bi bi-calendar3 me-1"></i>{{ cita.slot.date|date:"d/m/Y" }}
+        <span class="mx-1">·</span>
+        <i class="bi bi-clock me-1"></i>{{ cita.slot.start_time|date:"H:i" }}
+      </div>
+      <div class="d-flex flex-wrap gap-1 mb-2">
+        {% for po in cita.purchase_orders.all %}
+        <span class="badge text-xxs {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border border-info-subtle{% else %}bg-light text-dark border{% endif %}">
+          OC {{ po.doc_num }}
+        </span>
+        {% endfor %}
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-success btn-sm flex-grow-1 rounded-3 shadow-sm text-xs"
+                onclick="prepararAccionCompras('confirmar', {{ cita.id }})">
+          <i class="bi bi-check-circle me-1"></i>Confirmar
+        </button>
+        <button class="btn btn-outline-danger btn-sm rounded-3 text-xs"
+                onclick="prepararAccionCompras('rechazar', {{ cita.id }})">
+          <i class="bi bi-x-circle"></i>
+        </button>
+      </div>
+    </div>
+    {% empty %}
+    <div class="text-center py-4 text-muted small">
+      <i class="bi bi-inbox fs-2 d-block mb-2 opacity-25"></i>
+      Sin solicitudes pendientes
+    </div>
+    {% endfor %}
+  </div>
+
+  {# CONFIRMADAS #}
+  <div class="col-lg-4">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="fw-bold text-xs text-success text-uppercase" style="letter-spacing:1px">Confirmadas</span>
+      <span class="badge bg-success rounded-pill">{{ confirmadas.count }}</span>
+    </div>
+    {% for cita in confirmadas %}
+    <div class="ticket-card ticket-card--finalizado p-3 mb-2 animate-fadein">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <span class="fw-bold small">Cita #{{ cita.id }}</span>
+        <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">CONFIRMADA</span>
+      </div>
+      <div class="text-muted text-xs mb-1">
+        <i class="bi bi-person me-1"></i>{{ cita.user.get_full_name|default:cita.user.username }}
+      </div>
+      <div class="text-muted text-xs mb-2">
+        <i class="bi bi-calendar3 me-1"></i>{{ cita.slot.date|date:"d/m/Y" }}
+        <span class="mx-1">·</span>
+        <i class="bi bi-clock me-1"></i>{{ cita.slot.start_time|date:"H:i" }}
+      </div>
+      {% if cita.token_qr %}
+      <div class="text-xs mb-2 text-success">
+        <i class="bi bi-qr-code me-1"></i><code class="text-success">{{ cita.token_qr }}</code>
+      </div>
+      {% endif %}
+
+      {# Mostrar ticket vinculado si existe #}
+      {% if cita.ticket %}
+      <a href="{% url 'operations:detalle_ticket' cita.ticket.id %}"
+         class="btn btn-outline-success btn-sm w-100 rounded-3 text-xs">
+        <i class="bi bi-ticket-detailed me-1"></i>Ver Ticket #{{ cita.ticket.id }}
+      </a>
+      {% endif %}
+    </div>
+    {% empty %}
+    <div class="text-center py-4 text-muted small">
+      <i class="bi bi-calendar-check fs-2 d-block mb-2 opacity-25"></i>
+      Sin citas confirmadas
+    </div>
+    {% endfor %}
+  </div>
+
+  {# RECHAZADAS / CANCELADAS #}
+  <div class="col-lg-4">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="fw-bold text-xs text-danger text-uppercase" style="letter-spacing:1px">Rechazadas / Canceladas</span>
+      <span class="badge bg-danger rounded-pill">{{ rechazadas.count }}</span>
+    </div>
+    {% for cita in rechazadas %}
+    <div class="ticket-card p-3 mb-2 animate-fadein" style="border-left-color:#dc3545;opacity:.8">
+      <div class="d-flex justify-content-between align-items-start mb-1">
+        <span class="fw-bold small">Cita #{{ cita.id }}</span>
+        <span class="badge bg-danger-subtle text-danger border border-danger-subtle text-xxs">
+          {{ cita.get_status_display }}
+        </span>
+      </div>
+      <div class="text-muted text-xs mb-1">
+        <i class="bi bi-person me-1"></i>{{ cita.user.get_full_name|default:cita.user.username }}
+      </div>
+      {% if cita.observaciones_admin %}
+      <div class="text-xs text-danger mt-1">
+        <i class="bi bi-info-circle me-1"></i>{{ cita.observaciones_admin|truncatechars:60 }}
+      </div>
+      {% endif %}
+    </div>
+    {% empty %}
+    <div class="text-center py-4 text-muted small">
+      <i class="bi bi-check-all fs-2 d-block mb-2 opacity-25"></i>
+      Sin rechazos recientes
+    </div>
+    {% endfor %}
+  </div>
+
+</div>
+
+{# ── Modal de Observaciones (compartido con panel_compras.js) ─────────── #}
+<div class="modal fade" id="modalObservaciones" tabindex="-1" aria-labelledby="modalObsTitle">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content rounded-dz border-0 shadow-dz">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold" id="modalObsTitle">Observaciones</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <textarea id="txtObservaciones" class="form-control rounded-3 text-xs" rows="3"
+                  placeholder="Comentario opcional…"></textarea>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button class="btn btn-light btn-sm rounded-3" data-bs-dismiss="modal">Cancelar</button>
+        <button class="btn btn-success btn-sm rounded-3 px-3" id="btnConfirmarAccionCompras">Confirmar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
+{% endblock %}
