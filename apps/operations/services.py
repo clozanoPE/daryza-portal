@@ -37,26 +37,58 @@ class OperationsService:
                 f"se esperaba '{labels.get(esperada, esperada)}' para ejecutar esta acción."
             )
 
-    # ─── Autorización por grupo según la etapa activa (Fase 3) ──────────────
+    # ─── Autorización por grupo según la etapa activa (Fase 3; bifurcación
+    #     Materia Prima Fase 3+4, sesión 30) ─────────────────────────────────
+
+    @staticmethod
+    def _grupo_actor_recepcion(ticket: Ticket) -> str:
+        """
+        Devuelve el grupo (ALMACEN o MATERIA_PRIMA) al que le corresponde
+        ejecutar la recepción física de este ticket, según el tipo de OC
+        vinculada (PurchaseOrder.es_materia_prima, vía el UDF de SAP
+        u_mss_tdb — ver análisis de la sesión 27).
+
+        Determinístico: desde la Decisión 1 (sesión 28), el portal del
+        proveedor bloquea combinar OCs Materia Prima con OCs comerciales en
+        la misma solicitud, así que ya no existen tickets con OCs mixtas —
+        basta con verificar si ALGUNA OC del ticket es tipo MP.
+        """
+        tiene_materia_prima = ticket.appointment.purchase_orders.filter(
+            u_mss_tdb='MP'
+        ).exists()
+        return 'MATERIA_PRIMA' if tiene_materia_prima else 'ALMACEN'
 
     @staticmethod
     def grupo_requerido_por_etapa(ticket: Ticket) -> str | None:
         """
-        Devuelve el grupo (VIGILANCIA/ALMACEN/CALIDAD) al que le corresponde
-        ejecutar la siguiente acción de etapa, según Ticket.etapa_actual y
-        tipo_flujo. Es la contraparte "de rol" del candado de orden que ya
-        aplica _validar_etapa (que valida la secuencia, no quién la ejecuta).
+        Devuelve el grupo (VIGILANCIA/ALMACEN/MATERIA_PRIMA/CALIDAD) al que
+        le corresponde ejecutar la siguiente acción de etapa, según
+        Ticket.etapa_actual. Es la contraparte "de rol" del candado de
+        orden que ya aplica _validar_etapa (que valida la secuencia, no
+        quién la ejecuta).
 
         Devuelve None si no queda ninguna acción de etapa pendiente (FINALIZADO).
+
+        Sesión 30 (rediseño Materia Prima, Fase 3+4):
+          - VIGILANCIA_INGRESO ya no es fijo a 'ALMACEN' — bifurca a
+            ALMACEN o MATERIA_PRIMA según _grupo_actor_recepcion (el actor
+            que ejecutará "Iniciar Recepción").
+          - ALMACEN bifurca a CALIDAD o al mismo actor de recepción según
+            ticket.requiere_calidad (capturado al Iniciar Recepción) en vez
+            de tipo_flujo — debe coincidir exactamente con el fork que
+            aplica registrar_calidad al cerrar la etapa, o el candado de
+            permiso quedaría desalineado con lo que realmente ocurre.
         """
         mapa = {
             Ticket.ETAPA_PENDIENTE_INGRESO:  'VIGILANCIA',   # siguiente: iniciar_ingreso_planta
-            Ticket.ETAPA_VIGILANCIA_INGRESO: 'ALMACEN',      # siguiente: autorizar_almacen
+            Ticket.ETAPA_VIGILANCIA_INGRESO: OperationsService._grupo_actor_recepcion(ticket),
+                                                              # siguiente: autorizar_almacen ("Iniciar Recepción")
             Ticket.ETAPA_ALMACEN: (
-                'CALIDAD' if ticket.tipo_flujo == 'CON_CALIDAD' else 'ALMACEN'
+                'CALIDAD' if ticket.requiere_calidad
+                else OperationsService._grupo_actor_recepcion(ticket)
             ),                                               # siguiente: registrar_calidad
-            Ticket.ETAPA_CALIDAD:            'VIGILANCIA',   # siguiente: registrar_salida (CON_CALIDAD)
-            Ticket.ETAPA_VIGILANCIA_SALIDA:  'VIGILANCIA',   # siguiente: registrar_salida (SOLO_ALMACEN)
+            Ticket.ETAPA_CALIDAD:            'VIGILANCIA',   # siguiente: registrar_salida (requiere_calidad=True)
+            Ticket.ETAPA_VIGILANCIA_SALIDA:  'VIGILANCIA',   # siguiente: registrar_salida (requiere_calidad=False)
         }
         return mapa.get(ticket.etapa_actual)
 
@@ -148,38 +180,83 @@ class OperationsService:
 
         return ticket
 
-    # ─── Etapa 2: Almacén — Recepción ───────────────────────────────────────
+    # ─── Etapa 2: Recepción ("Iniciar Recepción") — ALMACEN o MATERIA_PRIMA ──
 
     @staticmethod
     @transaction.atomic
-    def autorizar_almacen(ticket_id: int, usuario_almacen, muelle: str = '') -> TicketStage:
+    def autorizar_almacen(ticket_id: int, usuario, muelle: str = '',
+                           requiere_calidad: bool | None = None,
+                           confirmado: bool = False) -> TicketStage:
         """
-        Almacén autoriza el ingreso al muelle y registra su etapa.
-        Cierra VIGILANCIA_ENTRADA y abre ALMACEN_RECEPCION.
+        "Iniciar Recepción": ejecutado por ALMACEN o MATERIA_PRIMA, según a
+        cuál de los 2 le corresponde el ticket (_grupo_actor_recepcion, según
+        el tipo de OC). El nombre del método se mantiene (no se renombra a
+        "iniciar_recepcion") por compatibilidad — el endpoint AJAX que lo
+        expone sigue siendo el mismo que ya usa el botón "Iniciar Recepción"
+        de la UI (que la Fase 5 actualizará para ambos actores; hasta
+        entonces, este método sigue aceptando la llamada tal como la hace
+        hoy el botón de Almacén, sin romper nada).
 
-        Comportamiento idéntico para CON_CALIDAD y SOLO_ALMACEN.
-        La diferencia del flujo se gestiona en registrar_salida() y en
-        las validaciones del detalle_ticket (acciones disponibles).
+        Cierra VIGILANCIA_ENTRADA y abre ALMACEN_RECEPCION. Comportamiento
+        de conteo/COA idéntico sin importar el actor — la diferencia real
+        del flujo (si pasa por Calidad o no) ahora depende de
+        requiere_calidad, capturado aquí mismo (Fase 1, sesión 27), no de
+        tipo_flujo.
+
+        Parámetros nuevos (sesión 30):
+          muelle           : puerta de descarga real — se guarda en
+                              Ticket.muelle (Fase 1, sesión 27), YA NO en
+                              AppointmentSlot.dock (decisión explícita de
+                              diseño: el muelle es un dato propio del
+                              Ticket, no del horario compartido).
+          requiere_calidad : decide si, al cerrar esta etapa
+                              (registrar_calidad), el ticket pasa a CALIDAD
+                              o salta directo a VIGILANCIA_SALIDA. Si no se
+                              especifica (None), toma el default de
+                              negocio: marcado si el actor es MATERIA_PRIMA,
+                              desmarcado si es ALMACEN — el llamador puede
+                              sobreescribirlo explícitamente.
+          confirmado       : para MATERIA_PRIMA es obligatorio pasar
+                              confirmado=True o se rechaza con
+                              ValidationError, sin escribir nada — el actor
+                              debe confirmar conscientemente antes de
+                              arrancar el proceso (decisión de negocio,
+                              sesión 30). ALMACEN no tiene este paso.
         """
         ticket = OperationsService._get_ticket_en_planta(ticket_id)
 
         # Candado de etapa: solo puede recibirse tras el ingreso de Vigilancia
         OperationsService._validar_etapa(ticket, Ticket.ETAPA_VIGILANCIA_INGRESO)
 
-        OperationsService._cerrar_etapa(ticket, 'VIGILANCIA_ENTRADA', usuario_almacen)
+        actor = OperationsService._grupo_actor_recepcion(ticket)
+        es_materia_prima_actor = (actor == 'MATERIA_PRIMA')
+
+        if requiere_calidad is None:
+            requiere_calidad = es_materia_prima_actor
+
+        if es_materia_prima_actor and not confirmado:
+            raise ValidationError(
+                "Materia Prima debe confirmar explícitamente antes de iniciar la recepción."
+            )
+
+        OperationsService._cerrar_etapa(ticket, 'VIGILANCIA_ENTRADA', usuario)
 
         stage, _ = TicketStage.objects.get_or_create(
             ticket=ticket,
             etapa='ALMACEN_RECEPCION',
-            defaults={'usuario': usuario_almacen}
+            defaults={'usuario': usuario}
         )
 
         if muelle:
-            slot = ticket.appointment.slot
-            slot.dock = muelle
-            slot.save(update_fields=['dock'])
+            ticket.muelle = muelle
 
-        # Inicializar líneas de inspección para etapa ALMACEN.
+        # Inicializar líneas de inspección para etapa ALMACEN. El valor de
+        # 'etapa' se mantiene fijo en 'ALMACEN' sin importar si el actor es
+        # ALMACEN o MATERIA_PRIMA (recomendación confirmada del análisis de
+        # la sesión 27): representa la etapa del flujo de recepción, no el
+        # grupo Django que la ejecutó — evita tocar TicketLineInspection.
+        # ETAPA_CHOICES y todos sus consumidores (get_grouped_by_oc,
+        # registrar_calidad, ajax_registrar_inspeccion, etc.).
         # NOTA: ya no existe un esqueleto previo (se eliminó de confirmar_cita), así
         # que este get_or_create es ahora el que realmente CREA estas filas por
         # primera vez — por eso debe incluir 'doc_num' (campo obligatorio del modelo).
@@ -192,7 +269,7 @@ class OperationsService:
                     etapa='ALMACEN',
                     defaults={
                         'doc_num': po.doc_num,
-                        'usuario': usuario_almacen,
+                        'usuario': usuario,
                         'cantidad_sap': line.quantity_sap,
                         'cantidad_modificada': line.quantity_sap,
                         'estado': 'PENDIENTE',#'EN_PROCESO',
@@ -200,9 +277,11 @@ class OperationsService:
                     }
                 )
 
-        # Avanzamos la etapa (candado de servicio)
+        # Avanzamos la etapa (candado de servicio) y guardamos los 2 datos
+        # nuevos capturados en este paso.
+        ticket.requiere_calidad = requiere_calidad
         ticket.etapa_actual = Ticket.ETAPA_ALMACEN
-        ticket.save(update_fields=['etapa_actual'])
+        ticket.save(update_fields=['muelle', 'requiere_calidad', 'etapa_actual'])
 
         return stage
 
@@ -213,17 +292,25 @@ class OperationsService:
                           resultados: list[dict]) -> TicketStage:
         """
         Registra resultados de inspección por línea de OC.
-        Si es CON_CALIDAD: Registra como CALIDAD.
-        Si es SOLO_ALMACEN: Registra como ALMACEN (Cierre de flujo).
+        Si requiere_calidad=True: Registra como CALIDAD.
+        Si requiere_calidad=False: Registra como ALMACEN (Cierre de flujo).
+
+        Sesión 30: el fork ya no depende de tipo_flujo (legacy, fijado al
+        confirmar la cita) sino de Ticket.requiere_calidad, capturado
+        explícitamente en autorizar_almacen ("Iniciar Recepción") — debe
+        coincidir exactamente con el fork que ya aplica
+        grupo_requerido_por_etapa para la etapa ALMACEN, o el candado de
+        permiso quedaría desalineado con lo que aquí realmente ocurre.
         """
         ticket = OperationsService._get_ticket_en_planta(ticket_id)
 
-        # Candado de etapa: tanto Calidad (CON_CALIDAD) como el cierre de
-        # Almacén (SOLO_ALMACEN) parten de la misma etapa previa: ALMACEN.
+        # Candado de etapa: tanto Calidad (requiere_calidad=True) como el
+        # cierre de Almacén (requiere_calidad=False) parten de la misma
+        # etapa previa: ALMACEN.
         OperationsService._validar_etapa(ticket, Ticket.ETAPA_ALMACEN)
 
-        # 1. Determinamos dinámicamente las etiquetas según el flujo
-        es_mp = (ticket.tipo_flujo == 'CON_CALIDAD')
+        # 1. Determinamos dinámicamente las etiquetas según requiere_calidad
+        es_mp = ticket.requiere_calidad
 
         etapa_historial = 'CALIDAD_INSPECCION' if es_mp else 'ALMACEN_FINALIZADO'
         etapa_linea = 'CALIDAD' if es_mp else 'ALMACEN'
@@ -286,20 +373,22 @@ class OperationsService:
         """
         ticket = OperationsService._get_ticket_en_planta(ticket_id)
 
-        # Candado de etapa: depende del flujo, igual que el resto del método
-        # (CON_CALIDAD cierra desde CALIDAD; SOLO_ALMACEN ya saltó a VIGILANCIA_SALIDA
-        # en registrar_calidad).
-        etapa_esperada = Ticket.ETAPA_CALIDAD if ticket.tipo_flujo == 'CON_CALIDAD' else Ticket.ETAPA_VIGILANCIA_SALIDA
+        # Candado de etapa: depende de requiere_calidad, igual que el resto
+        # del método (sesión 30: antes dependía de tipo_flujo — requiere_calidad
+        # cierra desde CALIDAD; requiere_calidad=False ya saltó a
+        # VIGILANCIA_SALIDA en registrar_calidad).
+        etapa_esperada = Ticket.ETAPA_CALIDAD if ticket.requiere_calidad else Ticket.ETAPA_VIGILANCIA_SALIDA
         OperationsService._validar_etapa(ticket, etapa_esperada)
 
         ahora = timezone.now()
 
         # AJUSTE QUIRÚRGICO: Sincronización de etiquetas para evitar etapas huérfanas
-        if ticket.tipo_flujo == 'CON_CALIDAD':
+        if ticket.requiere_calidad:
             # Cerramos la etapa abierta por el analista de Calidad
             OperationsService._cerrar_etapa(ticket, 'CALIDAD_INSPECCION', usuario_vigilancia)
         else:
-            # SOLO_ALMACEN: Cerramos la etapa abierta por el Jefe de Almacén (registrar_calidad modificado)
+            # requiere_calidad=False: Cerramos la etapa abierta por el actor
+            # de recepción (ALMACEN o MATERIA_PRIMA, registrar_calidad modificado)
             # Reemplazamos 'ALMACEN_RECEPCION' por 'ALMACEN_FINALIZADO'
             OperationsService._cerrar_etapa(ticket, 'ALMACEN_FINALIZADO', usuario_vigilancia)
 

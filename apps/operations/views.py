@@ -388,21 +388,55 @@ def ajax_rechazar_cita(request):
     return _safe_post(request, handle)
 
 
-@almacen_required
+@staff_interno_required
 @require_POST
 def ajax_autorizar_almacen(request):
-    """POST /operations/api/autorizar-almacen/"""
+    """
+    POST /operations/api/autorizar-almacen/ ("Iniciar Recepción")
+
+    Sesión 30 (rediseño Materia Prima, Fase 3+4): este endpoint ahora sirve
+    tanto a Almacén como a Materia Prima — @staff_interno_required por sí
+    solo permite cualquier grupo interno, sin distinguir cuál corresponde
+    al ticket concreto. Igual que ajax_registrar_inspeccion, se valida
+    aquí que el grupo del usuario coincida con
+    OperationsService.grupo_requerido_por_etapa(ticket) (que ya bifurca
+    ALMACEN/MATERIA_PRIMA según el tipo de OC). Los superusuarios siempre
+    pueden.
+
+    Se reutiliza el mismo endpoint/URL/nombre de siempre (no se creó uno
+    nuevo) para que el botón "Iniciar Recepción" existente (Almacén,
+    Fase 5 pendiente de actualizar su JS/template) siga funcionando sin
+    cambios: requiere_calidad/confirmado son opcionales, con default de
+    negocio resuelto en el servicio si no se envían.
+    """
     def handle(data):
         ticket_id = data.get('ticket_id')
         muelle    = data.get('muelle', '').strip()
         if not ticket_id:
             return _json_err('Se requiere ticket_id.')
+
+        ticket = get_object_or_404(Ticket, id=ticket_id)
+
+        if not request.user.is_superuser:
+            grupo_requerido = OperationsService.grupo_requerido_por_etapa(ticket)
+            if not grupo_requerido or not request.user.groups.filter(name=grupo_requerido).exists():
+                return _json_err(
+                    f'No tienes permiso para iniciar la recepción del Ticket #{ticket.id}. '
+                    f'Se requiere pertenecer al grupo {grupo_requerido or "correspondiente"}.',
+                    status=403
+                )
+
+        requiere_calidad = data.get('requiere_calidad')
+        confirmado = bool(data.get('confirmado', False))
+
         stage = OperationsService.autorizar_almacen(
             ticket_id=ticket_id,
-            usuario_almacen=request.user,
-            muelle=muelle
+            usuario=request.user,
+            muelle=muelle,
+            requiere_calidad=requiere_calidad,
+            confirmado=confirmado,
         )
-        return _json_ok(msg=f'Almacén registrado. Etapa {stage.get_etapa_display()} iniciada.')
+        return _json_ok(msg=f'Recepción registrada. Etapa {stage.get_etapa_display()} iniciada.')
 
     return _safe_post(request, handle)
 
