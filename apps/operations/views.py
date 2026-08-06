@@ -32,6 +32,7 @@ from .services import OperationsService
 from apps.base.decorators import (
     almacen_required, vigilancia_required, calidad_required,
     compras_required, staff_interno_required, staff_o_proveedor_required,
+    materia_prima_required,
 )
 from apps.base.filters import resolver_periodo
 from apps.base.reporting import ticket_a_row, exportar_excel, exportar_pdf
@@ -426,6 +427,25 @@ def _historial_por_periodo_qs(request):
         appointment__slot__date__month=mes,
     ).order_by('-fecha_creacion')
     return tickets_qs, periodo
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PANEL MATERIA PRIMA — Fase 2 del rediseño de flujo Materia Prima (sesión 29)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@materia_prima_required
+def panel_materia_prima(request):
+    """
+    Panel del grupo MATERIA_PRIMA — actor nuevo, paralelo a ALMACEN, que
+    ejecutará "Iniciar Recepción" para tickets cuyas OCs sean tipo Materia
+    Prima (según PurchaseOrder.es_materia_prima), una vez que la Fase 4
+    del rediseño bifurque grupo_requerido_por_etapa y autorizar_almacen.
+
+    Esta fase (2) es solo el aterrizaje: login → panel propio. Sin
+    lógica de recepción, sin queryset de tickets pendientes todavía —
+    eso depende de la bifurcación de la Fase 4, que no se toca aquí.
+    """
+    return render(request, 'operations/panel_materia_prima.html', {})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

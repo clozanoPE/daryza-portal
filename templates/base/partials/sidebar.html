@@ -9,6 +9,7 @@
     {% elif grupo == 'VIGILANCIA' %}var(--group-vigilancia)
     {% elif grupo == 'ALMACEN' %}var(--group-almacen)
     {% elif grupo == 'CALIDAD' %}var(--group-calidad)
+    {% elif grupo == 'MATERIA_PRIMA' %}var(--group-materia-prima)
     {% else %}var(--group-proveedor)
     {% endif %},
   transparent);
@@ -21,6 +22,7 @@
     {% elif grupo == 'VIGILANCIA' %}var(--group-vigilancia)
     {% elif grupo == 'ALMACEN' %}var(--group-almacen)
     {% elif grupo == 'CALIDAD' %}var(--group-calidad)
+    {% elif grupo == 'MATERIA_PRIMA' %}var(--group-materia-prima)
     {% else %}var(--group-proveedor){% endif %}
   "></div>
   <div class="group-label" style="color:
@@ -28,6 +30,7 @@
     {% elif grupo == 'VIGILANCIA' %}var(--group-vigilancia)
     {% elif grupo == 'ALMACEN' %}var(--group-almacen)
     {% elif grupo == 'CALIDAD' %}var(--group-calidad)
+    {% elif grupo == 'MATERIA_PRIMA' %}var(--group-materia-prima)
     {% else %}var(--group-proveedor){% endif %}
   ">{{ grupo|default:"ADMINISTRADOR" }}</div>
 </div>
@@ -102,6 +105,19 @@
      class="nav-link {% if request.resolver_match.url_name == 'tickets_lista' %}active{% endif %}">
     <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
     Tickets para Inspección
+  </a>
+</div>
+{% endif %}
+
+{# ── MATERIA PRIMA (Fase 2 del rediseño, sesión 29) ─────── #}
+{% if grupo == 'MATERIA_PRIMA' %}
+<div class="sidebar-section">
+  <div class="sidebar-section-label">Recepción Materia Prima</div>
+
+  <a href="{% url 'operations:panel_materia_prima' %}"
+     class="nav-link {% if request.resolver_match.url_name == 'panel_materia_prima' %}active{% endif %}">
+    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+    Dashboard
   </a>
 </div>
 {% endif %}

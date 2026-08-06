@@ -25,6 +25,8 @@
   --vbs-red-dim:    rgba(239,68,68,0.10);
   --vbs-violet:     #8b5cf6;
   --vbs-violet-dim: rgba(139,92,246,0.10);
+  --vbs-pink:       #ec4899;
+  --vbs-pink-dim:   rgba(236,72,153,0.10);
 
   --vbs-text-primary:   #e2edf8;
   --vbs-text-secondary: #6b8fb5;
@@ -36,6 +38,7 @@
   --group-almacen:    #f59e0b;
   --group-calidad:    #10b981;
   --group-proveedor:  #ef4444;
+  --group-materia-prima: #ec4899;
 
   --font-display: 'Syne', sans-serif;
   --font-body:    'DM Sans', sans-serif;
@@ -266,6 +269,7 @@ input, select, textarea { font-family:var(--font-body); }
 .group-ALMACEN    { background:rgba(245,158,11,.1);   color:var(--group-almacen);    border:1px solid rgba(245,158,11,.25); }
 .group-CALIDAD    { background:var(--vbs-green-dim);  color:var(--group-calidad);    border:1px solid rgba(16,185,129,.25); }
 .group-PROVEEDORES{ background:var(--vbs-red-dim);    color:var(--group-proveedor);  border:1px solid rgba(239,68,68,.25); }
+.group-MATERIA_PRIMA{ background:var(--vbs-pink-dim); color:var(--group-materia-prima); border:1px solid rgba(236,72,153,.25); }
 
 /* badge animado */
 .badge-pulse::before { animation:dot-pulse 1.6s infinite; }

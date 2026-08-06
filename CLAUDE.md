@@ -797,3 +797,31 @@ Implementa la decisión 1 confirmada en la sesión 27 ("el bloqueo de no mezclar
 - Barrido de `{#` multilínea (regla permanente desde la sesión 26): **0 instancias** en los archivos tocados.
 
 **Fuera de alcance de esta sesión (confirmado explícitamente por el usuario):** `confirmar_cita`, `tipo_flujo`, `grupo_requerido_por_etapa`, y cualquier cosa de `apps.operations` — sin tocar. El resto del plan de fases del rediseño Materia Prima (grupo Django, panel nuevo, bifurcación de `autorizar_almacen`, Historial/Reporte de Almacén) sigue pendiente.
+
+### 2026-08-06 (sesión 29) — Rediseño Materia Prima: Fase 2, grupo Django + panel de aterrizaje mínimo
+
+Implementa la Fase 2 del plan estimado en la sesión 27: el objetivo explícito es que una cuenta del grupo `MATERIA_PRIMA` pueda loguearse y aterrizar en un panel propio — sin tocar todavía `grupo_requerido_por_etapa`, `autorizar_almacen` ni el modelo `Ticket` (eso es la Fase 4).
+
+**Grupo Django `MATERIA_PRIMA`**: creado directamente contra la BD real (`Group.objects.get_or_create`), mismo mecanismo que los 5 grupos existentes (`ALMACEN`/`CALIDAD`/`VIGILANCIA`/`COMPRAS`/`PROVEEDORES`) — ninguno de ellos está creado por migración ni fixture en el código (confirmado por búsqueda: `0001_initial.py` solo usa `'ALMACEN'` como string de choice, no crea el `Group` real), así que no se introdujo un mecanismo nuevo para este.
+
+**Permisos (`apps/base/decorators.py`)**: nuevo `materia_prima_required = user_passes_test(en_grupo('MATERIA_PRIMA'), ...)`, mismo patrón que los 5 decoradores existentes. `'MATERIA_PRIMA'` agregado a las 2 listas combinadas identificadas en el análisis de la sesión 27: `es_staff_interno` (protege `ajax_registrar_inspeccion`) y `es_staff_o_proveedor` (protege `detalle_ticket`/`trazabilidad_ticket`) — verificado por invocación directa de ambos predicados contra el usuario de prueba, `True` en los dos.
+
+**`redirect_by_role`** (`apps/base/views.py`): nueva rama `elif user.groups.filter(name='MATERIA_PRIMA').exists(): return redirect('operations:panel_materia_prima')`, en el mismo lugar y con el mismo patrón que las 4 ramas existentes, antes del fallback a `/admin/`.
+
+**Panel nuevo mínimo**:
+- `apps/operations/views.py::panel_materia_prima` (`@materia_prima_required`): renderiza el template sin ningún queryset de tickets — a propósito, esa lógica depende de la bifurcación de `grupo_requerido_por_etapa` que todavía no existe (Fase 4).
+- Ruta `operations:panel_materia_prima` → `/operations/materia-prima/` (`apps/operations/urls.py`), en su propia sección junto a Panel Almacén.
+- Template nuevo `apps/operations/templates/operations/panel_materia_prima.html`: header + una tarjeta de placeholder explicando que la recepción llega en una fase posterior — mismo patrón visual (`page-header`, `dz-card`) que el resto de paneles, sin ningún `{# #}` multilínea (verificado con el barrido de la sesión 26).
+
+**Adicional, no pedido explícitamente pero necesario para que el aterrizaje sea usable** (mismo criterio que los "ripple fixes" de sesiones anteriores — documentado, no oculto): el sidebar (`templates/base/partials/sidebar.html`) tiene un `{% if grupo == ... %}` por cada rol para la franja de color y el menú lateral; sin una rama para `MATERIA_PRIMA` habría caído al `{% else %}` (color de proveedor) y sin ninguna sección de navegación. Se agregó: una 6ª rama en las 3 cadenas `if/elif` de color (franja superior, punto y label del grupo) y una sección nueva "Recepción Materia Prima" con un único link al panel — mismo patrón que la sección de Almacén, sin el link a `tickets_lista` (ya señalado como posible código muerto en análisis previos, no se replicó para el panel nuevo). Color nuevo `--group-materia-prima` (`#ec4899`, rosa — el único tono libre entre los 5 ya usados) agregado a `static/css/vbs-design-system.css` junto con su variante `-dim` y la clase de badge `.group-MATERIA_PRIMA`, seguiendo exactamente el patrón de los 5 grupos existentes.
+
+**Cuenta de prueba**: `umateriaprima`, contraseña `Prueba2026!` (mismo estándar de todas las cuentas de prueba desde la sesión 7b), grupo `MATERIA_PRIMA` únicamente.
+
+**Validación realizada** (contra la BD real, `Client` de pruebas):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (sin cambios de modelo, tal como se pidió). `manage.py test apps.operations`: **5/5 OK**.
+- Login real de `umateriaprima` + `GET /home/` con `follow=True`: redirige a `/operations/materia-prima/` (`302` → `200`), el HTML renderizado contiene "Panel Materia Prima".
+- `ualmacen` y `ucalidad` intentando acceder directo a `/operations/materia-prima/`: **`302`** (bloqueados, redirigidos a login) — el decorador nuevo no abre el panel a otros roles.
+- `es_staff_interno(umateriaprima)` y `es_staff_o_proveedor(umateriaprima)`: `True` en ambos casos, confirmando que el grupo nuevo ya puede alcanzar `detalle_ticket`/`trazabilidad_ticket`/`ajax_registrar_inspeccion` cuando exista lógica que lo requiera (aunque esa lógica en sí — la bifurcación de a quién le toca el turno — sigue sin existir hasta la Fase 4).
+- Barrido de `{#` multilínea: **0 instancias** en los archivos tocados.
+
+**Fuera de alcance de esta sesión (confirmado explícitamente por el usuario, para la Fase 4):** no se tocó `grupo_requerido_por_etapa`, `autorizar_almacen`, `ajax_autorizar_almacen`, `puede_autorizar_almacen` en `detalle_ticket`, ni el modelo `Ticket`. El panel no lista todavía ningún ticket pendiente — no hay ninguna forma determinística de saber "qué le toca a Materia Prima" hasta que esa bifurcación exista. No se agregó Historial/Reporte al panel nuevo (ni se cerró la misma brecha para Almacén, señalada en el análisis de la sesión 27) — queda para una fase posterior, según lo estimado.

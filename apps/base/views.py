@@ -24,5 +24,8 @@ def redirect_by_role(request):
     elif user.groups.filter(name='VIGILANCIA').exists():
         return redirect('operations:panel_vigilancia')
 
+    elif user.groups.filter(name='MATERIA_PRIMA').exists():
+        return redirect('operations:panel_materia_prima')
+
     # Si es un administrador o no tiene grupo definido
     return redirect('/admin/')
