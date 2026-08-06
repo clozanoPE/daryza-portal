@@ -664,9 +664,15 @@ def ajax_registrar_salida(request):
 def panel_calidad(request):
     """
     Panel de Calidad:
-      - Pestaña "Pendientes": tickets EN_PLANTA con tipo_flujo=CON_CALIDAD
+      - Pestaña "Pendientes": tickets EN_PLANTA con requiere_calidad=True
         donde la etapa VIGILANCIA_ENTRADA está completa y la recepción de
         Almacén ha iniciado (ALMACEN_RECEPCION existe) pero Calidad no.
+        (Sesión 30b: filtraba por tipo_flujo='CON_CALIDAD' — desde que
+        registrar_calidad/registrar_salida bifurcan sobre requiere_calidad
+        (capturado en "Iniciar Recepción", sesión 30), un ticket con
+        requiere_calidad=True pero tipo_flujo='SOLO_ALMACEN' quedaba con
+        etapa_actual=CALIDAD sin aparecer nunca en esta bandeja — atascado.
+        Corregido para leer la misma señal que ya usa el resto del flujo.)
       - Pestaña "Historial" (Fase 11, mismo patrón de la Fase 6): TODOS los
         Tickets del sistema, cada uno enlazando a operations:trazabilidad_ticket
         para consulta de solo lectura — antes, en cuanto Calidad terminaba su
@@ -704,7 +710,7 @@ def panel_calidad(request):
     """
     tickets_para_calidad = Ticket.objects.filter(
         estado='EN_PLANTA',
-        tipo_flujo='CON_CALIDAD',
+        requiere_calidad=True,
         stages__etapa='ALMACEN_RECEPCION',
     ).exclude(
         stages__etapa='CALIDAD_INSPECCION'
