@@ -75,22 +75,26 @@
     </a>
   </div>
 
-  {# Cronómetro de tiempo en planta #}
-  {% with etapa_entrada=ticket.stages.filter %}
+  {% comment %}
+  Cronómetro de tiempo en planta (sesión 23): usa la etapa VIGILANCIA_ENTRADA
+  explícita, en formato ISO 8601 vía |date:'c' — ver panel_calidad view.
+  {% endcomment %}
   <div class="alert alert-warning py-2 small mb-3 d-flex align-items-center gap-2">
     <i class="bi bi-stopwatch text-warning fs-5"></i>
     <span>
       <strong>Tiempo en planta:</strong>
       <span class="ms-1" id="timer-calidad-{{ ticket.id }}"
-            data-entrada="{{ ticket.stages.all.0.fecha_inicio|default:'' }}">
+            data-entrada="{{ ticket.fecha_ingreso_planta|date:'c'|default:'' }}">
         calculando…
       </span>
     </span>
   </div>
-  {% endwith %}
 
-  {# Tabla de inspección agrupada por OC #}
-  {% with ocs=ticket.inspections.filter %}
+  {% comment %}
+  Tabla de inspección agrupada por OC (sesión 23): ticket.inspections.all ya
+  viene ordenado por OC/línea desde el Prefetch de la vista — regroup exige
+  que el queryset venga pre-ordenado por la clave de agrupación.
+  {% endcomment %}
   {% regroup ticket.inspections.all by po_line.purchase_order as oc_groups %}
   {% for oc_group in oc_groups %}
   {% with po=oc_group.grouper %}
@@ -148,8 +152,8 @@
             </td>
             <td class="text-center">
               {% if insp.requiere_coa %}
-                {% if insp.coa_url %}
-                <a href="{{ insp.coa_url }}" target="_blank"
+                {% if insp.coa_url_real %}
+                <a href="{{ insp.coa_url_real }}" target="_blank"
                    class="badge bg-success-subtle text-success border border-success-subtle text-xxs"
                    data-bs-toggle="tooltip" title="Ver COA">
                   <i class="bi bi-file-earmark-check me-1"></i>OK
@@ -173,7 +177,6 @@
   </div>
   {% endwith %}
   {% endfor %}
-  {% endwith %}
 
   {# Botón guardar inspección #}
   <div class="d-flex justify-content-end mt-3">

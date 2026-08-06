@@ -571,16 +571,28 @@ class OperationsService:
     @staticmethod
     def get_grouped_by_oc(ticket_id: int, etapa: str = 'ALMACEN'):
         """
-        Motor Quirúrgico: Agrupa las inspecciones de un ticket por Número de OC.
-        Permite que la UI renderice 'Tarjetas de OC' evitando redundancia visual.
+        Agrupa las inspecciones de un ticket por Número de OC (alimenta
+        get_mi_sesion → pestaña "Mi Sesión", editable por Almacén/Calidad).
+
+        El COA por línea se lee de TicketLineCOA (fuente única desde la
+        Fase 1), cruzado por po_line_id — mismo patrón ya usado en
+        get_estado_actual_por_oc y get_coa_status_por_oc. Corregido en la
+        sesión 24: antes leía TicketLineInspection.coa_url (que
+        autorizar_almacen nunca puebla en la fila etapa='ALMACEN', queda
+        siempre None) con un fallback frágil a la fila etapa='VIGILANCIA'
+        cruzada por item_code+doc_num en vez de por po_line_id — mostraba
+        "Falta" para líneas con COA real ya cargado (bug confirmado con
+        datos reales, Ticket #12).
         """
-      
         inspecciones = TicketLineInspection.objects.filter(
             ticket_id=ticket_id,
             etapa=etapa
         ).select_related('po_line__purchase_order')
 
-       
+        coas_cargados = {
+            coa.po_line_id: coa.coa_url
+            for coa in TicketLineCOA.objects.filter(ticket_id=ticket_id)
+        }
 
         # Usamos defaultdict para agrupar de forma eficiente O(n)
         grouped = defaultdict(lambda: {
@@ -593,27 +605,11 @@ class OperationsService:
         for insp in inspecciones:
             oc = insp.po_line.purchase_order
             oc_num = oc.doc_num
-            
+
             if not grouped[oc_num]['oc_num']:
                 grouped[oc_num]['oc_num'] = oc_num
                 grouped[oc_num]['card_name'] = oc.card_name
                 grouped[oc_num]['es_materia_prima'] = oc.es_materia_prima
-
-            # Lógica de cruce: Si el registro actual no tiene COA, buscamos en Vigilancia
-            # para esa misma línea de orden de compra (po_line_id)
-            coa_actual = insp.coa_url
-            #print (f"coa_actual {coa_actual}  insp.po_line.item_code {insp.po_line.item_code} ticket_id {ticket_id}  oc_num={oc_num} insp.requiere_coa {insp.requiere_coa}")
-            if not coa_actual:
-                #print (f"not coa_actual {coa_actual} oc_num={oc_num}")
-                coa_vigilancia = TicketLineInspection.objects.filter(
-                    ticket_id=ticket_id,
-                    etapa='VIGILANCIA',
-                    po_line__item_code=insp.po_line.item_code, # Enlace por código de producto
-                    doc_num=insp.doc_num
-                   
-                ).values_list('coa_url', flat=True).first()
-                coa_actual = coa_vigilancia if coa_vigilancia else ''
-                #print (f"if coa_actual {coa_actual} oc_num={oc_num} insp.po_line.item_code {insp.po_line.item_code} ticket_id {ticket_id} insp.requiere_coa {insp.requiere_coa}")
 
             grouped[oc_num]['lineas'].append({
                 'id': insp.id,
@@ -623,7 +619,7 @@ class OperationsService:
                 'cantidad_modificada': insp.cantidad_modificada,
                 'estado': insp.estado,
                 'requiere_coa': insp.requiere_coa,
-                'coa_url': coa_actual or '',
+                'coa_url': coas_cargados.get(insp.po_line_id, ''),
                 'comentario': insp.comentario or '',
             })
 

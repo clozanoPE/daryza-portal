@@ -1,0 +1,48 @@
+{% comment %}
+Bloque "Datos del Vehículo / Conductor" (TicketDatosIngreso, Fase 11):
+informativo, no bloqueante — si el registro no existe o algún campo está
+vacío, se muestra "No completado por el proveedor" explícitamente, nunca
+se omite en silencio (Django resuelve un OneToOneField inverso inexistente
+como fallo silencioso en templates, así que {% if ticket.datos_ingreso.X %}
+cubre tanto "sin registro" como "registro con campo vacío" con el mismo
+código).
+
+Factorizado en la sesión 25 (mismo criterio ya usado para _partials/
+datos_cita.html en la sesión 22): antes solo vivía inline dentro de
+detalle_ticket.html, visible únicamente para Vigilancia antes de
+autorizar el ingreso. Ahora también se incluye en trazabilidad_ticket.html,
+visible para cualquier rol que acceda a esa vista (Compras/Vigilancia/
+Calidad/proveedor dueño), sin restricción — mismo criterio que el bloque
+de QR: información de solo lectura, sin gate de rol.
+
+Parámetro esperado en el contexto: `ticket`.
+{% endcomment %}
+<h6 class="text-xs fw-bold text-uppercase text-muted mb-2">
+  <i class="bi bi-truck me-1"></i>Datos del Vehículo / Conductor
+</h6>
+<dl class="row mb-0 text-xs">
+  <dt class="col-5 text-muted">Placa del Vehículo</dt>
+  <dd class="col-7">
+    {% if ticket.datos_ingreso.placa_vehiculo %}
+      <strong>{{ ticket.datos_ingreso.placa_vehiculo }}</strong>
+    {% else %}
+      <span class="text-danger fst-italic">No completado por el proveedor</span>
+    {% endif %}
+  </dd>
+  <dt class="col-5 text-muted">DNI/CE del Conductor</dt>
+  <dd class="col-7">
+    {% if ticket.datos_ingreso.conductor_dni %}
+      <strong>{{ ticket.datos_ingreso.conductor_dni }}</strong>
+    {% else %}
+      <span class="text-danger fst-italic">No completado por el proveedor</span>
+    {% endif %}
+  </dd>
+  <dt class="col-5 text-muted">Nombre y Apellidos</dt>
+  <dd class="col-7">
+    {% if ticket.datos_ingreso.conductor_nombre %}
+      <strong>{{ ticket.datos_ingreso.conductor_nombre }}</strong>
+    {% else %}
+      <span class="text-danger fst-italic">No completado por el proveedor</span>
+    {% endif %}
+  </dd>
+</dl>

@@ -1,0 +1,62 @@
+{% comment %}
+Bloque "Datos de la Cita": QR + código + datos de la cita (Fase 5).
+
+Factorizado en la sesión 22 tras detectarse (con capturas reales del
+Ticket #11) que trazabilidad_ticket.html mostraba solo texto "Cita ID #X"
+en el bloque "Datos de la Cita", mientras que detalle_ticket.html siempre
+mostró el QR completo (imagen + código DYZ-X-XXXXXX-XXXXXX) — mismo
+usuario (Vigilancia), mismo Ticket, dos resultados distintos según el
+camino de entrada (detalle_ticket vs. trazabilidad_ticket). Ambas vistas
+ahora incluyen este mismo partial como única fuente de verdad, para que
+no vuelva a desalinearse.
+
+Incluye su propio <script> de renderizado del QR (la librería QRCode ya
+se carga globalmente en base.html) — así cualquier página que incluya
+este partial obtiene el QR renderizado sin declarar su propio
+{% block extra_js %} para eso.
+
+Parámetro esperado en el contexto: `ticket`.
+{% endcomment %}
+<h6 class="fw-bold mb-3">
+  <i class="bi bi-calendar3 text-success me-2"></i>Datos de la Cita
+</h6>
+<div class="text-center mb-4">
+  <div id="qrcode" class="d-inline-block"></div>
+  <code class="d-block text-primary fw-bold mt-2" style="font-size:.75rem">
+    {{ ticket.codigo_qr }}
+  </code>
+</div>
+<dl class="row mb-0 text-xs">
+  <dt class="col-5 text-muted">Cita ID</dt>
+  <dd class="col-7">#{{ ticket.appointment.id }}</dd>
+  <dt class="col-5 text-muted">Fecha / Hora</dt>
+  <dd class="col-7">
+    {{ ticket.appointment.slot.date|date:"d/m/Y" }} · {{ ticket.appointment.slot.start_time|date:"H:i" }}
+  </dd>
+  <dt class="col-5 text-muted">Proveedor</dt>
+  <dd class="col-7">
+    <strong>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}</strong>
+  </dd>
+  <dt class="col-5 text-muted">Sede</dt>
+  <dd class="col-7">{{ ticket.appointment.get_lugar_entrega_display }}</dd>
+  <dt class="col-5 text-muted">OCs vinculadas</dt>
+  <dd class="col-7">
+    {% for po in ticket.appointment.purchase_orders.all %}
+    <span class="badge border me-1 mb-1 text-xxs
+      {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border-info-subtle
+      {% else %}bg-success-subtle text-success border-success-subtle{% endif %}">
+      OC {{ po.doc_num }}
+      {% if po.u_mss_tdb == 'MP' %}<i class="bi bi-flask ms-1"></i>{% endif %}
+    </span>
+    {% endfor %}
+  </dd>
+</dl>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const qrContainer = document.getElementById('qrcode');
+    const token = '{{ ticket.codigo_qr }}';
+    if (qrContainer && token && typeof QRCode !== 'undefined') {
+      new QRCode(qrContainer, { text: token, width: 120, height: 120 });
+    }
+  });
+</script>

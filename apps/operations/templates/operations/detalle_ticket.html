@@ -48,40 +48,7 @@
   {# ── COLUMNA IZQUIERDA: Info + QR + Stages ──────────────────────────── #}
   <div class="col-lg-4">
     <div class="dz-card p-4 mb-3">
-      <h6 class="fw-bold mb-3">
-        <i class="bi bi-calendar3 text-success me-2"></i>Datos de la Cita
-      </h6>
-      <div class="text-center mb-4">
-        <div id="qrcode" class="d-inline-block"></div>
-        <code class="d-block text-primary fw-bold mt-2" style="font-size:.75rem">
-          {{ ticket.codigo_qr }}
-        </code>
-      </div>
-      <dl class="row mb-0 text-xs">
-        <dt class="col-5 text-muted">Cita ID</dt>
-        <dd class="col-7">#{{ ticket.appointment.id }}</dd>
-        <dt class="col-5 text-muted">Fecha / Hora</dt>
-        <dd class="col-7">
-          {{ ticket.appointment.slot.date|date:"d/m/Y" }} · {{ ticket.appointment.slot.start_time|date:"H:i" }}
-        </dd>
-        <dt class="col-5 text-muted">Proveedor</dt>
-        <dd class="col-7">
-          <strong>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}</strong>
-        </dd>
-        <dt class="col-5 text-muted">Sede</dt>
-        <dd class="col-7">{{ ticket.appointment.get_lugar_entrega_display }}</dd>
-        <dt class="col-5 text-muted">OCs vinculadas</dt>
-        <dd class="col-7">
-          {% for po in ticket.appointment.purchase_orders.all %}
-          <span class="badge border me-1 mb-1 text-xxs
-            {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border-info-subtle
-            {% else %}bg-success-subtle text-success border-success-subtle{% endif %}">
-            OC {{ po.doc_num }}
-            {% if po.u_mss_tdb == 'MP' %}<i class="bi bi-flask ms-1"></i>{% endif %}
-          </span>
-          {% endfor %}
-        </dd>
-      </dl>
+      {% include "operations/_partials/datos_cita.html" %}
     </div>
 
     <div class="dz-card p-4">
@@ -171,40 +138,8 @@
       </div>
       {% endif %}
 
-      {# Datos de Ingreso: placa del vehículo y conductor (sesión 13).
-         Solo lectura para Vigilancia — no los edita, solo los verifica.
-         Informativo, no bloqueante: si falta el registro o algún campo,
-         se muestra explícitamente en vez de omitirse en silencio. #}
       <div class="mb-3">
-        <h6 class="text-xs fw-bold text-uppercase text-muted mb-2">
-          <i class="bi bi-truck me-1"></i>Datos del Vehículo / Conductor
-        </h6>
-        <dl class="row mb-0 text-xs">
-          <dt class="col-5 text-muted">Placa del Vehículo</dt>
-          <dd class="col-7">
-            {% if ticket.datos_ingreso.placa_vehiculo %}
-              <strong>{{ ticket.datos_ingreso.placa_vehiculo }}</strong>
-            {% else %}
-              <span class="text-danger fst-italic">No completado por el proveedor</span>
-            {% endif %}
-          </dd>
-          <dt class="col-5 text-muted">DNI/CE del Conductor</dt>
-          <dd class="col-7">
-            {% if ticket.datos_ingreso.conductor_dni %}
-              <strong>{{ ticket.datos_ingreso.conductor_dni }}</strong>
-            {% else %}
-              <span class="text-danger fst-italic">No completado por el proveedor</span>
-            {% endif %}
-          </dd>
-          <dt class="col-5 text-muted">Nombre y Apellidos</dt>
-          <dd class="col-7">
-            {% if ticket.datos_ingreso.conductor_nombre %}
-              <strong>{{ ticket.datos_ingreso.conductor_nombre }}</strong>
-            {% else %}
-              <span class="text-danger fst-italic">No completado por el proveedor</span>
-            {% endif %}
-          </dd>
-        </dl>
+        {% include "operations/_partials/datos_ingreso.html" %}
       </div>
 
       <button class="btn btn-primary rounded-3 shadow-sm px-4"
@@ -297,13 +232,4 @@
 
 {% block extra_js %}
 <script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
-<script>
-  document.addEventListener('DOMContentLoaded', () => {
-    const qrContainer = document.getElementById('qrcode');
-    const token = '{{ ticket.codigo_qr }}';
-    if (qrContainer && token && typeof QRCode !== 'undefined') {
-      new QRCode(qrContainer, { text: token, width: 120, height: 120 });
-    }
-  });
-</script>
 {% endblock %}

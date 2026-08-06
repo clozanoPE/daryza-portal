@@ -16,7 +16,7 @@ import json
 from io import BytesIO
 
 from django.core.exceptions import ValidationError
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import render, get_object_or_404, redirect
 from django.template.loader import render_to_string
@@ -27,7 +27,7 @@ from xhtml2pdf import pisa
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 from apps.appointments.models import Appointment
 from apps.appointments.services import AppointmentService
-from .models import Ticket, TicketStage, TicketLineInspection
+from .models import Ticket, TicketStage, TicketLineInspection, TicketLineCOA
 from .services import OperationsService
 from apps.base.decorators import (
     almacen_required, vigilancia_required, calidad_required,
@@ -445,9 +445,14 @@ def panel_vigilancia(request):
     Incluye buscador QR para escaneo en puerta (sin cambios). El filtro de
     período (mes/año, Fase 10) solo aplica al Historial — "Hoy" ya está
     acotado por definición al día actual.
+
+    Sesión 25 — mismo fix del cronómetro ya aplicado en panel_calidad
+    (sesión 23): se anota `ticket.fecha_ingreso_planta` (etapa
+    VIGILANCIA_ENTRADA explícita) para el cronómetro "En Planta ahora".
+    El de "Finalizados hoy" usa `ticket.tiempo_total_planta` (timedelta
+    ya calculado en Python, sin JS) y no se toca — nunca tuvo este bug.
     """
     hoy = timezone.now().date()
-    anio, mes, periodo = resolver_periodo(request)
 
     base_qs = Ticket.objects.select_related(
         'appointment__slot',
@@ -469,6 +474,15 @@ def panel_vigilancia(request):
     # que el badge del Kanban muestre el estado real sin entrar al detalle.
     for ticket in tickets_prog:
         ticket.coa_completo = OperationsService.calcular_coa_completo(ticket)
+
+    # Anotamos fecha_ingreso_planta (etapa VIGILANCIA_ENTRADA explícita) para
+    # el cronómetro "En Planta ahora" — mismo fix de la sesión 23.
+    for ticket in tickets_planta:
+        entrada = next(
+            (s for s in ticket.stages.all() if s.etapa == 'VIGILANCIA_ENTRADA'),
+            None
+        )
+        ticket.fecha_ingreso_planta = entrada.fecha_inicio if entrada else None
 
     # ── Historial (Fase 11): todos los tickets, acotados al período (Fase 10) ──
     tickets_historial, periodo = _historial_por_periodo_qs(request)
@@ -612,6 +626,27 @@ def panel_calidad(request):
 
     El filtro de período (mes/año, Fase 10) solo aplica al Historial —
     "Pendientes" es la cola activa, no tiene sentido acotarla por mes.
+
+    Sesión 23 — 2 bugs corregidos en esta vista (ver CLAUDE.md para el
+    diagnóstico completo):
+      - El Prefetch de 'inspections' ahora fuerza un orden explícito
+        (por OC y luego por línea). TicketLineInspection no tiene Meta.
+        ordering, así que sin esto el orden de `ticket.inspections.all`
+        no está garantizado; el {% regroup %} del template EXIGE que el
+        queryset ya venga ordenado por la clave de agrupación, si no,
+        una misma OC con filas de etapas distintas intercaladas (p.ej.
+        VIGILANCIA y ALMACEN) se parte en grupos duplicados.
+      - Se anota `ticket.fecha_ingreso_planta` (la fecha_inicio de la
+        etapa VIGILANCIA_ENTRADA, explícita — no "la primera fila que
+        haya, sea la que sea") para el cronómetro JS del template.
+
+    Sesión 24 — bug adicional corregido: la columna "COA" de esta tabla
+    leía TicketLineInspection.coa_url (fila etapa='ALMACEN'), que
+    autorizar_almacen() nunca puebla — siempre None, mostraba "Falta"
+    aunque el proveedor sí hubiera cargado el COA (verificado en
+    TicketLineCOA). Se anota `insp.coa_url_real` por línea, cruzado por
+    po_line_id contra TicketLineCOA (fuente única desde la Fase 1),
+    sobre los objetos ya prefetched (sin queries extra por ticket).
     """
     tickets_para_calidad = Ticket.objects.filter(
         estado='EN_PLANTA',
@@ -622,9 +657,28 @@ def panel_calidad(request):
     ).select_related(
         'appointment__slot', 'appointment__user'
     ).prefetch_related(
-        'inspections__po_line__purchase_order',
+        Prefetch(
+            'inspections',
+            queryset=TicketLineInspection.objects.select_related(
+                'po_line__purchase_order'
+            ).order_by('po_line__purchase_order_id', 'po_line__line_num'),
+        ),
         'stages',
     ).distinct()
+
+    for ticket in tickets_para_calidad:
+        entrada = next(
+            (s for s in ticket.stages.all() if s.etapa == 'VIGILANCIA_ENTRADA'),
+            None
+        )
+        ticket.fecha_ingreso_planta = entrada.fecha_inicio if entrada else None
+
+        coas_por_linea = {
+            coa.po_line_id: coa.coa_url
+            for coa in TicketLineCOA.objects.filter(ticket=ticket)
+        }
+        for insp in ticket.inspections.all():
+            insp.coa_url_real = coas_por_linea.get(insp.po_line_id, '')
 
     # ── Historial (Fase 11): todos los tickets, acotados al período (Fase 10) ──
     tickets_historial, periodo = _historial_por_periodo_qs(request)
@@ -817,6 +871,7 @@ def trazabilidad_ticket(request, pk: int):
         Ticket.objects.select_related(
             'appointment__slot',
             'appointment__user',
+            'datos_ingreso',
         ).prefetch_related(
             'stages__usuario',
             'appointment__purchase_orders__lines',

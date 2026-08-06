@@ -51,34 +51,11 @@
   {# ── COLUMNA IZQUIERDA: Info de la cita + Etapas ──────────────────────── #}
   <div class="col-lg-4">
     <div class="dz-card p-4 mb-3">
-      <h6 class="fw-bold mb-3">
-        <i class="bi bi-calendar3 text-success me-2"></i>Datos de la Cita
-      </h6>
-      <dl class="row mb-0 text-xs">
-        <dt class="col-5 text-muted">Cita ID</dt>
-        <dd class="col-7">#{{ ticket.appointment.id }}</dd>
-        <dt class="col-5 text-muted">Fecha / Hora</dt>
-        <dd class="col-7">
-          {{ ticket.appointment.slot.date|date:"d/m/Y" }} · {{ ticket.appointment.slot.start_time|date:"H:i" }}
-        </dd>
-        <dt class="col-5 text-muted">Proveedor</dt>
-        <dd class="col-7">
-          <strong>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}</strong>
-        </dd>
-        <dt class="col-5 text-muted">Sede</dt>
-        <dd class="col-7">{{ ticket.appointment.get_lugar_entrega_display }}</dd>
-        <dt class="col-5 text-muted">OCs vinculadas</dt>
-        <dd class="col-7">
-          {% for po in ticket.appointment.purchase_orders.all %}
-          <span class="badge border me-1 mb-1 text-xxs
-            {% if po.u_mss_tdb == 'MP' %}bg-info-subtle text-info border-info-subtle
-            {% else %}bg-success-subtle text-success border-success-subtle{% endif %}">
-            OC {{ po.doc_num }}
-            {% if po.u_mss_tdb == 'MP' %}<i class="bi bi-flask ms-1"></i>{% endif %}
-          </span>
-          {% endfor %}
-        </dd>
-      </dl>
+      {% include "operations/_partials/datos_cita.html" %}
+    </div>
+
+    <div class="dz-card p-4 mb-3">
+      {% include "operations/_partials/datos_ingreso.html" %}
     </div>
 
     <div class="dz-card p-4">

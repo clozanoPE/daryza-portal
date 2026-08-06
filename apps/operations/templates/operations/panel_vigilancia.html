@@ -177,11 +177,10 @@
       </div>
       {% endwith %}
 
-      {# Cronómetro de tiempo en planta #}
       <div class="text-xs text-muted mb-3">
         <i class="bi bi-stopwatch me-1 text-warning"></i>
         <span class="fw-bold" id="timer-{{ ticket.id }}"
-              data-entrada="{{ ticket.stages.filter.0.fecha_inicio|default:'' }}">
+              data-entrada="{{ ticket.fecha_ingreso_planta|date:'c'|default:'' }}">
           —
         </span>
         en planta
@@ -228,7 +227,7 @@
         <strong>{{ ticket.tiempo_total_planta }}</strong>
       </div>
       {% endif %}
-      <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+      <a href="{% url 'operations:trazabilidad_ticket' ticket.id %}"
          class="btn btn-outline-success btn-sm w-100 rounded-3">
         <i class="bi bi-graph-up me-1"></i>Ver trazabilidad
       </a>
