@@ -1,11 +1,30 @@
 # apps/operations/tests.py
 """
-Pruebas de la Fase 3: el permiso para escribir en TicketLineInspection vía
-/operations/api/registrar-inspeccion/ debe corresponder al grupo específico
-que le toca actuar según Ticket.etapa_actual + tipo_flujo (no basta con
-pertenecer a "algún" grupo interno, que es lo que validaba el antiguo
-@staff_interno_required por sí solo).
+Suite de pruebas de apps.operations — reescrita en la sesión 33 al cerrar
+el rediseño de flujo Materia Prima (Fases 1-7, sesiones 27-33).
+
+Cubre 2 cosas relacionadas pero distintas, sobre el mismo ciclo de vida
+del Ticket:
+
+  1. El candado de PERMISO por grupo: qué grupo Django puede ejecutar la
+     siguiente acción de etapa sobre un Ticket concreto
+     (OperationsService.grupo_requerido_por_etapa /
+     ajax_registrar_inspeccion / ajax_autorizar_almacen / ajax_autorizar_
+     ingreso / ajax_registrar_salida) — originalmente ALMACEN fijo para
+     toda recepción (Fase 3, sesión 5), ahora bifurcado entre ALMACEN y
+     MATERIA_PRIMA según el tipo de OC (Fase 3+4, sesión 30).
+
+  2. El candado de ORDEN (Ticket.etapa_actual / OperationsService.
+     _validar_etapa / TicketEtapaError): que no se pueda saltar ni repetir
+     un paso del flujo, sin importar quién lo intente.
+
+Todos los Tickets de prueba se construyen ejecutando los métodos reales
+de OperationsService/AppointmentService (nunca escribiendo etapa_actual/
+requiere_calidad directamente sobre el modelo) — así cualquier regresión
+en el propio flujo de construcción también haría fallar la suite.
 """
+import itertools
+
 from django.contrib.auth.models import User, Group
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -13,92 +32,120 @@ from django.test import TestCase
 from apps.appointments.services import AppointmentService
 from apps.appointments.models import AppointmentSlot
 from apps.operations.models import Ticket, TicketLineInspection
-from apps.operations.services import OperationsService
+from apps.operations.services import OperationsService, TicketEtapaError
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
+# Contador global de doc_num para OCs de prueba — cada test crea sus propios
+# datos dentro de su propia transacción (rollback automático al terminar),
+# así que un contador compartido entre clases es seguro: nunca hay colisión
+# real en la base de datos, solo evita reutilizar el mismo literal a mano
+# en decenas de tests (como hacía la suite anterior con 555001, 555002...).
+_doc_num_counter = itertools.count(700001)
 
-class RegistrarInspeccionPermisoPorEtapaTests(TestCase):
+
+class OperationsTestBase(TestCase):
     """
-    Verifica que ajax_registrar_inspeccion exija el grupo correcto según la
-    etapa activa del ticket: un usuario de ALMACEN no puede escribir cuando
-    le corresponde a CALIDAD (ticket CON_CALIDAD), y un usuario de CALIDAD no
-    puede escribir cuando le corresponde a ALMACEN (ticket SOLO_ALMACEN).
+    Base compartida por todas las clases de este archivo. `setUpTestData`
+    es un classmethod: Django lo ejecuta una vez POR CADA SUBCLASE que lo
+    hereda sin sobreescribirlo (no una sola vez para todo el archivo), así
+    que cada clase de test tiene su propio juego aislado de 6 grupos + 6
+    usuarios (uno por grupo) sin duplicar el setup en cada una.
     """
 
     @classmethod
     def setUpTestData(cls):
-        cls.g_proveedores    = Group.objects.create(name='PROVEEDORES')
-        cls.g_compras        = Group.objects.create(name='COMPRAS')
-        cls.g_almacen        = Group.objects.create(name='ALMACEN')
-        cls.g_vigilancia     = Group.objects.create(name='VIGILANCIA')
-        cls.g_calidad        = Group.objects.create(name='CALIDAD')
-        cls.g_materia_prima  = Group.objects.create(name='MATERIA_PRIMA')
+        cls.g_proveedores   = Group.objects.create(name='PROVEEDORES')
+        cls.g_compras       = Group.objects.create(name='COMPRAS')
+        cls.g_almacen       = Group.objects.create(name='ALMACEN')
+        cls.g_vigilancia    = Group.objects.create(name='VIGILANCIA')
+        cls.g_calidad       = Group.objects.create(name='CALIDAD')
+        cls.g_materia_prima = Group.objects.create(name='MATERIA_PRIMA')
 
-        cls.proveedor = User.objects.create_user('proveedor_test', password='x')
-        cls.proveedor.groups.add(cls.g_proveedores)
+        sufijo = cls.__name__.lower()
+        cls.proveedor       = cls._crear_usuario(f'proveedor_{sufijo}', cls.g_proveedores)
+        cls.u_compras       = cls._crear_usuario(f'compras_{sufijo}', cls.g_compras)
+        cls.u_almacen       = cls._crear_usuario(f'almacen_{sufijo}', cls.g_almacen)
+        cls.u_vigilancia    = cls._crear_usuario(f'vigilancia_{sufijo}', cls.g_vigilancia)
+        cls.u_calidad       = cls._crear_usuario(f'calidad_{sufijo}', cls.g_calidad)
+        cls.u_materia_prima = cls._crear_usuario(f'materia_prima_{sufijo}', cls.g_materia_prima)
 
-        cls.u_compras = User.objects.create_user('compras_test', password='x')
-        cls.u_compras.groups.add(cls.g_compras)
+    @staticmethod
+    def _crear_usuario(username, grupo):
+        user = User.objects.create_user(username, password='x')
+        user.groups.add(grupo)
+        return user
 
-        cls.u_almacen = User.objects.create_user('almacen_test', password='x')
-        cls.u_almacen.groups.add(cls.g_almacen)
+    # ── Construcción de Tickets reales, paso a paso ─────────────────────────
 
-        cls.u_vigilancia = User.objects.create_user('vigilancia_test', password='x')
-        cls.u_vigilancia.groups.add(cls.g_vigilancia)
-
-        cls.u_calidad = User.objects.create_user('calidad_test', password='x')
-        cls.u_calidad.groups.add(cls.g_calidad)
-
-        cls.u_materia_prima = User.objects.create_user('materia_prima_test', password='x')
-        cls.u_materia_prima.groups.add(cls.g_materia_prima)
-
-    def _crear_ticket_en_etapa_almacen(self, u_mss_tdb: str, doc_num: int) -> Ticket:
-        """
-        Crea una cita completa (OC -> solicitud -> confirmación -> COA si aplica
-        -> ingreso -> recepción de Almacén) y deja el Ticket justo en
-        etapa_actual=ALMACEN, listo para el siguiente paso (Calidad o cierre
-        de Almacén, según u_mss_tdb).
-        """
+    def _crear_cita_confirmada(self, u_mss_tdb: str, requiere_coa: bool = True) -> Ticket:
+        """OC -> solicitud -> confirmación. Ticket queda en PENDIENTE_INGRESO."""
+        doc_num = next(_doc_num_counter)
         po = PurchaseOrder.objects.create(
             doc_entry=doc_num, doc_num=doc_num, card_code='TESTCODE', card_name='TEST SAC',
             e_mail='test@test.com', status='PENDIENTE', u_mss_tdb=u_mss_tdb,
         )
         PurchaseOrderLine.objects.create(
             purchase_order=po, line_num=1, item_code='ITEM-TEST', description='Item de prueba',
-            quantity_sap=10, und_medida='KG', requiere_coa=(u_mss_tdb == 'MP'),
+            quantity_sap=10, und_medida='KG', requiere_coa=(requiere_coa and u_mss_tdb == 'MP'),
         )
-
         slot = AppointmentSlot.objects.create(
             date='2026-09-01', start_time='08:00', dock='TEST', max_capacity=5
         )
         appointment = AppointmentService.solicitar_cita_borrador(
             user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
         )
-        ticket = AppointmentService.confirmar_cita(
+        return AppointmentService.confirmar_cita(
             appointment_id=appointment.id, usuario_almacen=self.u_compras
         )
 
-        if u_mss_tdb == 'MP':
+    def _avanzar_a_vigilancia_ingreso(self, ticket: Ticket) -> Ticket:
+        """Carga el COA si la OC lo requiere y ejecuta iniciar_ingreso_planta."""
+        for po in ticket.appointment.purchase_orders.all():
             for line in po.lines.filter(requiere_coa=True):
                 OperationsService.registrar_coa_proveedor(
                     ticket_id=ticket.id, po_line_id=line.id,
                     coa_url='https://onedrive.example.com/fake-coa.pdf', usuario=self.proveedor,
                 )
-
-        ticket = OperationsService.iniciar_ingreso_planta(
+        return OperationsService.iniciar_ingreso_planta(
             ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia
         )
-        # Sesión 30: la recepción ahora la ejecuta ALMACEN o MATERIA_PRIMA
-        # según el tipo de OC (mismo criterio que _grupo_actor_recepcion,
-        # que filtra por u_mss_tdb='MP') — MATERIA_PRIMA exige confirmado=True.
-        es_materia_prima = (u_mss_tdb == 'MP')
+
+    def _avanzar_a_almacen(self, ticket: Ticket, requiere_calidad=None) -> Ticket:
+        """
+        Ejecuta autorizar_almacen ("Iniciar Recepción") con el actor real
+        que le corresponde al ticket (Ticket.es_materia_prima), confirmando
+        automáticamente cuando el actor es MATERIA_PRIMA — para probar el
+        rechazo por falta de confirmación, no usar este helper: llamar a
+        OperationsService.autorizar_almacen directamente.
+        """
+        es_mp = ticket.es_materia_prima
+        usuario = self.u_materia_prima if es_mp else self.u_almacen
         OperationsService.autorizar_almacen(
-            ticket_id=ticket.id,
-            usuario=self.u_materia_prima if es_materia_prima else self.u_almacen,
-            confirmado=es_materia_prima,
+            ticket_id=ticket.id, usuario=usuario,
+            requiere_calidad=requiere_calidad, confirmado=es_mp,
         )
         ticket.refresh_from_db()
         return ticket
+
+    def _crear_ticket_en_etapa(self, etapa: str, u_mss_tdb: str,
+                                requiere_coa: bool = True, requiere_calidad=None) -> Ticket:
+        """
+        Construye un Ticket real hasta la etapa pedida
+        (Ticket.ETAPA_VIGILANCIA_INGRESO o Ticket.ETAPA_ALMACEN).
+        """
+        ticket = self._crear_cita_confirmada(u_mss_tdb, requiere_coa)
+        if etapa == Ticket.ETAPA_PENDIENTE_INGRESO:
+            return ticket
+
+        ticket = self._avanzar_a_vigilancia_ingreso(ticket)
+        if etapa == Ticket.ETAPA_VIGILANCIA_INGRESO:
+            return ticket
+
+        ticket = self._avanzar_a_almacen(ticket, requiere_calidad=requiere_calidad)
+        if etapa == Ticket.ETAPA_ALMACEN:
+            return ticket
+
+        raise ValueError(f"Etapa objetivo no soportada por este helper: {etapa}")
 
     @staticmethod
     def _resultados_para(ticket: Ticket) -> list[dict]:
@@ -111,6 +158,8 @@ class RegistrarInspeccionPermisoPorEtapaTests(TestCase):
             for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
         ]
 
+    # ── Llamadas HTTP a los 2 endpoints centrales de este archivo ───────────
+
     def _post_registrar_inspeccion(self, ticket: Ticket):
         return self.client.post(
             '/operations/api/registrar-inspeccion/',
@@ -118,177 +167,57 @@ class RegistrarInspeccionPermisoPorEtapaTests(TestCase):
             content_type='application/json',
         )
 
-    # ── Caso 1: ALMACEN no puede escribir cuando le toca a CALIDAD ──────────
-
-    def test_almacen_no_puede_registrar_inspeccion_que_le_corresponde_a_calidad(self):
-        ticket = self._crear_ticket_en_etapa_almacen('MP', 555001)
-        self.assertEqual(ticket.tipo_flujo, 'CON_CALIDAD')
-        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
-        self.assertEqual(
-            OperationsService.grupo_requerido_por_etapa(ticket), 'CALIDAD'
+    def _post_autorizar_almacen(self, ticket: Ticket, **extra):
+        return self.client.post(
+            '/operations/api/autorizar-almacen/',
+            data={'ticket_id': ticket.id, **extra},
+            content_type='application/json',
         )
 
-        self.client.force_login(self.u_almacen)
-        resp = self._post_registrar_inspeccion(ticket)
 
-        self.assertEqual(resp.status_code, 403)
-        ticket.refresh_from_db()
-        self.assertEqual(
-            ticket.etapa_actual, Ticket.ETAPA_ALMACEN,
-            "El ticket no debía avanzar: el usuario de ALMACEN no tenía permiso "
-            "para registrar la inspección de Calidad."
-        )
+# ═══════════════════════════════════════════════════════════════════════════
+# 1-2. Bifurcación del actor de recepción (ALMACEN vs MATERIA_PRIMA)
+# ═══════════════════════════════════════════════════════════════════════════
 
-    def test_calidad_si_puede_registrar_su_propia_inspeccion(self):
-        """Camino positivo, mismo escenario: CALIDAD sí puede."""
-        ticket = self._crear_ticket_en_etapa_almacen('MP', 555002)
-
-        self.client.force_login(self.u_calidad)
-        resp = self._post_registrar_inspeccion(ticket)
-
-        self.assertEqual(resp.status_code, 200)
-        ticket.refresh_from_db()
-        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
-
-    # ── Caso 2: CALIDAD no puede escribir cuando le toca a ALMACEN ───────────
-
-    def test_calidad_no_puede_registrar_cierre_que_le_corresponde_a_almacen(self):
-        ticket = self._crear_ticket_en_etapa_almacen('CDL', 555003)
-        self.assertEqual(ticket.tipo_flujo, 'SOLO_ALMACEN')
-        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
-        self.assertEqual(
-            OperationsService.grupo_requerido_por_etapa(ticket), 'ALMACEN'
-        )
-
-        self.client.force_login(self.u_calidad)
-        resp = self._post_registrar_inspeccion(ticket)
-
-        self.assertEqual(resp.status_code, 403)
-        ticket.refresh_from_db()
-        self.assertEqual(
-            ticket.etapa_actual, Ticket.ETAPA_ALMACEN,
-            "El ticket no debía avanzar: el usuario de CALIDAD no tenía permiso "
-            "para registrar el cierre de Almacén."
-        )
-
-    def test_almacen_si_puede_registrar_su_propio_cierre(self):
-        """Camino positivo, mismo escenario: ALMACEN sí puede cerrar su propio flujo."""
-        ticket = self._crear_ticket_en_etapa_almacen('CDL', 555004)
-
-        self.client.force_login(self.u_almacen)
-        resp = self._post_registrar_inspeccion(ticket)
-
-        self.assertEqual(resp.status_code, 200)
-        ticket.refresh_from_db()
-        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
-
-    # ── Superusuario siempre puede, sin importar el grupo ────────────────────
-
-    def test_superusuario_siempre_puede(self):
-        ticket = self._crear_ticket_en_etapa_almacen('MP', 555005)
-        admin = User.objects.create_superuser('admin_test', 'admin@test.com', 'x')
-
-        self.client.force_login(admin)
-        resp = self._post_registrar_inspeccion(ticket)
-
-        self.assertEqual(resp.status_code, 200)
-        ticket.refresh_from_db()
-        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
-
-
-class AutorizarAlmacenBifurcacionMateriaPrimaTests(TestCase):
+class BifurcacionActorRecepcionTests(OperationsTestBase):
     """
-    Sesión 30 (rediseño Materia Prima, Fase 3+4): verifica que "Iniciar
-    Recepción" (OperationsService.autorizar_almacen / ajax_autorizar_almacen)
-    bifurque correctamente entre ALMACEN y MATERIA_PRIMA según el tipo de OC
-    (PurchaseOrder.u_mss_tdb), que MATERIA_PRIMA exija confirmación explícita,
-    y que el fork de Calidad dependa de Ticket.requiere_calidad (capturado
-    aquí) y no de tipo_flujo (legacy, fijado al confirmar la cita).
+    OperationsService.grupo_requerido_por_etapa, en la etapa
+    VIGILANCIA_INGRESO, debe bifurcar entre ALMACEN y MATERIA_PRIMA según
+    el tipo de OC vinculada (Ticket.es_materia_prima) — no fijo a ALMACEN
+    como antes de la Fase 3+4 (sesión 30).
     """
 
-    @classmethod
-    def setUpTestData(cls):
-        cls.g_proveedores   = Group.objects.create(name='PROVEEDORES')
-        cls.g_compras       = Group.objects.create(name='COMPRAS')
-        cls.g_almacen       = Group.objects.create(name='ALMACEN')
-        cls.g_vigilancia    = Group.objects.create(name='VIGILANCIA')
-        cls.g_calidad       = Group.objects.create(name='CALIDAD')
-        cls.g_materia_prima = Group.objects.create(name='MATERIA_PRIMA')
-
-        cls.proveedor = User.objects.create_user('proveedor_test2', password='x')
-        cls.proveedor.groups.add(cls.g_proveedores)
-
-        cls.u_compras = User.objects.create_user('compras_test2', password='x')
-        cls.u_compras.groups.add(cls.g_compras)
-
-        cls.u_almacen = User.objects.create_user('almacen_test2', password='x')
-        cls.u_almacen.groups.add(cls.g_almacen)
-
-        cls.u_vigilancia = User.objects.create_user('vigilancia_test2', password='x')
-        cls.u_vigilancia.groups.add(cls.g_vigilancia)
-
-        cls.u_calidad = User.objects.create_user('calidad_test2', password='x')
-        cls.u_calidad.groups.add(cls.g_calidad)
-
-        cls.u_materia_prima = User.objects.create_user('materia_prima_test2', password='x')
-        cls.u_materia_prima.groups.add(cls.g_materia_prima)
-
-    def _crear_ticket_en_etapa_vigilancia_ingreso(self, u_mss_tdb: str, doc_num: int) -> Ticket:
-        """
-        Igual que _crear_ticket_en_etapa_almacen de la otra clase, pero se
-        detiene justo ANTES de "Iniciar Recepción" — deja el Ticket en
-        etapa_actual=VIGILANCIA_INGRESO, listo para probar autorizar_almacen
-        directamente con distintos parámetros/actores.
-        """
-        po = PurchaseOrder.objects.create(
-            doc_entry=doc_num, doc_num=doc_num, card_code='TESTCODE', card_name='TEST SAC',
-            e_mail='test@test.com', status='PENDIENTE', u_mss_tdb=u_mss_tdb,
-        )
-        PurchaseOrderLine.objects.create(
-            purchase_order=po, line_num=1, item_code='ITEM-TEST', description='Item de prueba',
-            quantity_sap=10, und_medida='KG', requiere_coa=(u_mss_tdb == 'MP'),
-        )
-
-        slot = AppointmentSlot.objects.create(
-            date='2026-09-02', start_time='08:00', dock='TEST', max_capacity=5
-        )
-        appointment = AppointmentService.solicitar_cita_borrador(
-            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
-        )
-        ticket = AppointmentService.confirmar_cita(
-            appointment_id=appointment.id, usuario_almacen=self.u_compras
-        )
-
-        if u_mss_tdb == 'MP':
-            for line in po.lines.filter(requiere_coa=True):
-                OperationsService.registrar_coa_proveedor(
-                    ticket_id=ticket.id, po_line_id=line.id,
-                    coa_url='https://onedrive.example.com/fake-coa.pdf', usuario=self.proveedor,
-                )
-
-        ticket = OperationsService.iniciar_ingreso_planta(
-            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia
-        )
-        return ticket
-
-    # ── Bifurcación de grupo_requerido_por_etapa en VIGILANCIA_INGRESO ──────
-
-    def test_vigilancia_ingreso_bifurca_a_materia_prima_para_oc_mp(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('MP', 555101)
+    def test_oc_materia_prima_bifurca_a_materia_prima(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'MP')
+        self.assertTrue(ticket.es_materia_prima)
         self.assertEqual(
             OperationsService.grupo_requerido_por_etapa(ticket), 'MATERIA_PRIMA'
         )
 
-    def test_vigilancia_ingreso_bifurca_a_almacen_para_oc_comercial(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('CDL', 555102)
+    def test_oc_comercial_bifurca_a_almacen(self):
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_VIGILANCIA_INGRESO, 'CDL', requiere_coa=False
+        )
+        self.assertFalse(ticket.es_materia_prima)
         self.assertEqual(
             OperationsService.grupo_requerido_por_etapa(ticket), 'ALMACEN'
         )
 
-    # ── Materia Prima exige confirmación explícita ───────────────────────────
 
-    def test_materia_prima_sin_confirmar_es_rechazado(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('MP', 555103)
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. Confirmación explícita obligatoria para Materia Prima
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ConfirmacionMateriaPrimaTests(OperationsTestBase):
+    """
+    "Iniciar Recepción" (autorizar_almacen / ajax_autorizar_almacen) exige
+    confirmado=True cuando el actor es MATERIA_PRIMA — rechaza sin escribir
+    nada si falta. Para ALMACEN no exige este paso (mismo comportamiento
+    que antes de la Fase 3+4).
+    """
+
+    def test_service_materia_prima_sin_confirmado_lanza_validation_error(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'MP')
 
         with self.assertRaises(ValidationError):
             OperationsService.autorizar_almacen(
@@ -296,35 +225,168 @@ class AutorizarAlmacenBifurcacionMateriaPrimaTests(TestCase):
             )
 
         ticket.refresh_from_db()
-        self.assertEqual(
-            ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO,
-            "El ticket no debía avanzar sin la confirmación explícita de Materia Prima."
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO)
+
+    def test_service_almacen_no_requiere_confirmado(self):
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_VIGILANCIA_INGRESO, 'CDL', requiere_coa=False
         )
 
-    def test_materia_prima_confirmado_avanza_y_requiere_calidad_por_default(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('MP', 555104)
-
-        OperationsService.autorizar_almacen(
-            ticket_id=ticket.id, usuario=self.u_materia_prima, confirmado=True
-        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
 
         ticket.refresh_from_db()
         self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_endpoint_materia_prima_sin_confirmado_responde_400(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'MP')
+
+        self.client.force_login(self.u_materia_prima)
+        resp = self._post_autorizar_almacen(ticket)
+
+        self.assertEqual(resp.status_code, 400)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO)
+
+    def test_endpoint_materia_prima_con_confirmado_responde_200(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'MP')
+
+        self.client.force_login(self.u_materia_prima)
+        resp = self._post_autorizar_almacen(ticket, confirmado=True)
+
+        self.assertEqual(resp.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_endpoint_almacen_sin_confirmado_responde_200(self):
+        """Regresión: el botón simple de Almacén (sin el paso de confirmación) sigue funcionando."""
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_VIGILANCIA_INGRESO, 'CDL', requiere_coa=False
+        )
+
+        self.client.force_login(self.u_almacen)
+        resp = self._post_autorizar_almacen(ticket)
+
+        self.assertEqual(resp.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3-4. Fork de Ticket.requiere_calidad (CALIDAD vs "Continuar sin Calidad")
+# ═══════════════════════════════════════════════════════════════════════════
+
+class RequiereCalidadForkTests(OperationsTestBase):
+    """
+    Ticket.requiere_calidad (capturado en "Iniciar Recepción") decide si el
+    ticket pasa por CALIDAD o salta directo a VIGILANCIA_SALIDA — ya no
+    tipo_flujo (legacy). Incluye el test de regresión del bug corregido en
+    la sesión 30b (panel_calidad filtraba por tipo_flujo y podía dejar
+    tickets con requiere_calidad=True atascados, sin aparecer nunca en su
+    propia bandeja de Pendientes).
+    """
+
+    def test_requiere_calidad_true_avanza_a_etapa_calidad(self):
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=True
+        )
+        self.assertTrue(ticket.requiere_calidad)
+        self.assertEqual(
+            OperationsService.grupo_requerido_por_etapa(ticket), 'CALIDAD'
+        )
+
+    def test_requiere_calidad_true_aparece_en_panel_calidad_pendientes(self):
+        """
+        Test de regresión del bug de la sesión 30b: panel_calidad debe
+        filtrar su bandeja de "Pendientes" por Ticket.requiere_calidad, no
+        por tipo_flujo — si alguien reintroduce el filtro viejo, este test
+        debe fallar.
+        """
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False, requiere_calidad=True
+        )
+        # tipo_flujo (legacy) es SOLO_ALMACEN para esta OC comercial, aunque
+        # requiere_calidad quedó en True — la divergencia exacta del bug.
+        self.assertEqual(ticket.tipo_flujo, 'SOLO_ALMACEN')
         self.assertTrue(ticket.requiere_calidad)
 
-    def test_almacen_no_requiere_confirmacion_y_requiere_calidad_desmarcado_por_default(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('CDL', 555105)
+        self.client.force_login(self.u_calidad)
+        resp = self.client.get('/operations/calidad/')
 
-        OperationsService.autorizar_almacen(
-            ticket_id=ticket.id, usuario=self.u_almacen
+        self.assertEqual(resp.status_code, 200)
+        ids_pendientes = [t.id for t in resp.context['tickets']]
+        self.assertIn(
+            ticket.id, ids_pendientes,
+            "El ticket con requiere_calidad=True debía aparecer en Pendientes de "
+            "Calidad sin importar tipo_flujo (bug de la sesión 30b, no debe reaparecer)."
         )
 
+    def test_requiere_calidad_false_almacen_salta_a_vigilancia_salida(self):
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False, requiere_calidad=False
+        )
+        self.assertFalse(ticket.requiere_calidad)
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
         ticket.refresh_from_db()
-        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+
+    def test_requiere_calidad_false_materia_prima_salta_a_vigilancia_salida(self):
+        """Mismo camino que el caso Almacén, pero para el actor Materia Prima."""
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=False
+        )
+        self.assertFalse(ticket.requiere_calidad)
+        self.assertEqual(
+            OperationsService.grupo_requerido_por_etapa(ticket), 'MATERIA_PRIMA',
+            "Con requiere_calidad=False, el cierre debe volver al mismo actor "
+            "de recepción (MATERIA_PRIMA), no a CALIDAD."
+        )
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima,
+            resultados=self._resultados_para(ticket),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+
+    def test_requiere_calidad_desacoplado_de_tipo_flujo(self):
+        """
+        Un ticket de OC Materia Prima (tipo_flujo='CON_CALIDAD', legacy)
+        puede recibir requiere_calidad=False explícito al Iniciar
+        Recepción, y el cierre debe saltar Calidad igual.
+        """
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=False
+        )
+        self.assertEqual(ticket.tipo_flujo, 'CON_CALIDAD')
+        self.assertFalse(ticket.requiere_calidad)
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima,
+            resultados=self._resultados_para(ticket),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(
+            ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA,
+            "Con requiere_calidad=False, debía saltar directo a VIGILANCIA_SALIDA "
+            "aunque tipo_flujo siga siendo CON_CALIDAD (legacy)."
+        )
+
+    def test_requiere_calidad_default_marcado_para_materia_prima(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
+        self.assertTrue(ticket.requiere_calidad)
+
+    def test_requiere_calidad_default_desmarcado_para_almacen(self):
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False
+        )
         self.assertFalse(ticket.requiere_calidad)
 
     def test_muelle_se_guarda_en_ticket_no_en_slot(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('CDL', 555106)
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'CDL', requiere_coa=False)
         dock_original = ticket.appointment.slot.dock
 
         OperationsService.autorizar_almacen(
@@ -336,75 +398,105 @@ class AutorizarAlmacenBifurcacionMateriaPrimaTests(TestCase):
         ticket.appointment.slot.refresh_from_db()
         self.assertEqual(ticket.appointment.slot.dock, dock_original)
 
-    # ── requiere_calidad desacoplado de tipo_flujo ───────────────────────────
 
-    def test_requiere_calidad_explicito_desacoplado_de_tipo_flujo(self):
-        """
-        Un ticket de OC Materia Prima (tipo_flujo='CON_CALIDAD', legacy) puede
-        recibir requiere_calidad=False explícito al Iniciar Recepción, y el
-        cierre debe saltar Calidad igual — el fork ya no depende de tipo_flujo.
-        """
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('MP', 555107)
-        self.assertEqual(ticket.tipo_flujo, 'CON_CALIDAD')
+# ═══════════════════════════════════════════════════════════════════════════
+# 6-7. Candado de permiso por grupo (ALMACEN / CALIDAD / MATERIA_PRIMA)
+# ═══════════════════════════════════════════════════════════════════════════
 
-        OperationsService.autorizar_almacen(
-            ticket_id=ticket.id, usuario=self.u_materia_prima,
-            confirmado=True, requiere_calidad=False,
-        )
-        ticket.refresh_from_db()
-        self.assertFalse(ticket.requiere_calidad)
-        self.assertEqual(
-            OperationsService.grupo_requerido_por_etapa(ticket), 'MATERIA_PRIMA',
-            "Con requiere_calidad=False, el cierre debe volver al mismo actor "
-            "de recepción (MATERIA_PRIMA), no a CALIDAD."
-        )
+class PermisoPorGrupoTests(OperationsTestBase):
+    """
+    Verifica que ajax_registrar_inspeccion y ajax_autorizar_almacen exijan
+    el grupo específico que le corresponde al turno real del ticket
+    (grupo_requerido_por_etapa) — no basta con pertenecer a "algún" grupo
+    interno. Cubre las 3 combinaciones de actor de recepción posibles
+    (ALMACEN/CALIDAD ya cubiertas desde la Fase 3 original, sesión 5;
+    MATERIA_PRIMA agregado en esta sesión) en ambas direcciones.
+    """
 
-        resultados = [
-            {'inspeccion_id': insp.id, 'estado': 'CONFORME', 'cantidad_modificada': str(insp.cantidad_sap)}
-            for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
-        ]
-        OperationsService.registrar_calidad(
-            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima, resultados=resultados
-        )
-        ticket.refresh_from_db()
-        self.assertEqual(
-            ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA,
-            "Con requiere_calidad=False, debía saltar directo a VIGILANCIA_SALIDA "
-            "aunque tipo_flujo siga siendo CON_CALIDAD (legacy)."
-        )
+    # ── ajax_registrar-inspeccion: ALMACEN vs CALIDAD (cobertura original) ──
 
-    # ── Endpoint AJAX: permiso por grupo + gate de confirmación ─────────────
+    def test_almacen_no_puede_actuar_cuando_turno_es_calidad(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
+        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'CALIDAD')
 
-    def _post_autorizar_almacen(self, ticket: Ticket, **extra):
-        return self.client.post(
-            '/operations/api/autorizar-almacen/',
-            data={'ticket_id': ticket.id, **extra},
-            content_type='application/json',
-        )
+        self.client.force_login(self.u_almacen)
+        resp = self._post_registrar_inspeccion(ticket)
 
-    def test_endpoint_rechaza_materia_prima_sin_confirmar_con_400(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('MP', 555108)
-
-        self.client.force_login(self.u_materia_prima)
-        resp = self._post_autorizar_almacen(ticket)
-
-        self.assertEqual(resp.status_code, 400)
-        ticket.refresh_from_db()
-        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO)
-
-    def test_endpoint_permite_materia_prima_confirmado(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('MP', 555109)
-
-        self.client.force_login(self.u_materia_prima)
-        resp = self._post_autorizar_almacen(ticket, confirmado=True)
-
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 403)
         ticket.refresh_from_db()
         self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
 
-    def test_endpoint_rechaza_grupo_incorrecto_con_403(self):
-        """Un usuario de ALMACEN no puede iniciar la recepción de un ticket MP."""
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('MP', 555110)
+    def test_calidad_si_puede_actuar_en_su_propio_turno(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
+
+        self.client.force_login(self.u_calidad)
+        resp = self._post_registrar_inspeccion(ticket)
+
+        self.assertEqual(resp.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+    def test_calidad_no_puede_actuar_cuando_turno_es_almacen(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'ALMACEN')
+
+        self.client.force_login(self.u_calidad)
+        resp = self._post_registrar_inspeccion(ticket)
+
+        self.assertEqual(resp.status_code, 403)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_almacen_si_puede_actuar_en_su_propio_turno(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+
+        self.client.force_login(self.u_almacen)
+        resp = self._post_registrar_inspeccion(ticket)
+
+        self.assertEqual(resp.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+
+    # ── ajax_registrar-inspeccion: ALMACEN vs MATERIA_PRIMA (nuevo, punto 6) ──
+
+    def test_almacen_no_puede_cerrar_inspeccion_de_ticket_materia_prima_sin_calidad(self):
+        """Ticket MP con requiere_calidad=False: el cierre le toca a MATERIA_PRIMA, no a ALMACEN."""
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=False)
+        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'MATERIA_PRIMA')
+
+        self.client.force_login(self.u_almacen)
+        resp = self._post_registrar_inspeccion(ticket)
+
+        self.assertEqual(resp.status_code, 403)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_materia_prima_si_puede_cerrar_su_propia_inspeccion_sin_calidad(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=False)
+
+        self.client.force_login(self.u_materia_prima)
+        resp = self._post_registrar_inspeccion(ticket)
+
+        self.assertEqual(resp.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+
+    def test_materia_prima_no_puede_cerrar_inspeccion_de_ticket_comercial(self):
+        """Ticket comercial con requiere_calidad=False: el cierre le toca a ALMACEN, no a MATERIA_PRIMA."""
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'ALMACEN')
+
+        self.client.force_login(self.u_materia_prima)
+        resp = self._post_registrar_inspeccion(ticket)
+
+        self.assertEqual(resp.status_code, 403)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    # ── ajax_autorizar-almacen ("Iniciar Recepción"): ALMACEN vs MATERIA_PRIMA ──
+
+    def test_almacen_no_puede_iniciar_recepcion_de_ticket_materia_prima(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'MP')
 
         self.client.force_login(self.u_almacen)
         resp = self._post_autorizar_almacen(ticket, confirmado=True)
@@ -413,12 +505,157 @@ class AutorizarAlmacenBifurcacionMateriaPrimaTests(TestCase):
         ticket.refresh_from_db()
         self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO)
 
-    def test_endpoint_permite_almacen_sin_confirmacion_para_oc_comercial(self):
-        ticket = self._crear_ticket_en_etapa_vigilancia_ingreso('CDL', 555111)
+    def test_materia_prima_no_puede_iniciar_recepcion_de_ticket_comercial(self):
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_VIGILANCIA_INGRESO, 'CDL', requiere_coa=False
+        )
 
-        self.client.force_login(self.u_almacen)
-        resp = self._post_autorizar_almacen(ticket)
+        self.client.force_login(self.u_materia_prima)
+        resp = self._post_autorizar_almacen(ticket, confirmado=True)
+
+        self.assertEqual(resp.status_code, 403)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO)
+
+    # ── Superusuario siempre puede, sin importar el grupo ────────────────────
+
+    def test_superusuario_siempre_puede(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
+        admin = User.objects.create_superuser('admin_permiso_test', 'admin@test.com', 'x')
+
+        self.client.force_login(admin)
+        resp = self._post_registrar_inspeccion(ticket)
 
         self.assertEqual(resp.status_code, 200)
         ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. Candado de orden (Ticket.etapa_actual / TicketEtapaError)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CandadoDeEtapaTests(OperationsTestBase):
+    """
+    OperationsService._validar_etapa impide saltarse o repetir un paso del
+    flujo, sin importar qué grupo lo intente — cobertura que ya era válida
+    antes del rediseño Materia Prima (sesión 4) y sigue siéndolo con la
+    bifurcación de actor (sesiones 30/33).
+    """
+
+    def test_no_se_puede_iniciar_recepcion_sin_autorizar_ingreso_primero(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_PENDIENTE_INGRESO, 'CDL', requiere_coa=False)
+
+        with self.assertRaises(ValidationError):
+            OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_PENDIENTE_INGRESO)
+
+    def test_no_se_puede_reautorizar_recepcion_dos_veces(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+
+        with self.assertRaises(TicketEtapaError):
+            OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
+
+        ticket.refresh_from_db()
         self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_no_se_puede_registrar_calidad_antes_de_iniciar_recepcion(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'MP')
+
+        with self.assertRaises(TicketEtapaError):
+            OperationsService.registrar_calidad(
+                ticket_id=ticket.id, usuario_calidad=self.u_calidad, resultados=[]
+            )
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO)
+
+    def test_no_se_puede_registrar_salida_antes_de_cerrar_calidad(self):
+        """Ticket con requiere_calidad=True, todavía en ALMACEN (registrar_calidad no corrió)."""
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=True)
+
+        with self.assertRaises(TicketEtapaError):
+            OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_no_se_puede_registrar_salida_dos_veces(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.estado, 'FINALIZADO')
+
+        with self.assertRaises(ValidationError):
+            OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. Permisos de Vigilancia (sin cambios respecto al rediseño Materia Prima)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class PermisosVigilanciaTests(OperationsTestBase):
+    """
+    autorizar-ingreso y registrar-salida siguen siendo exclusivos de
+    VIGILANCIA (@vigilancia_required) — el rediseño Materia Prima no tocó
+    estos 2 endpoints, se cubren aquí para que una regresión futura no
+    pase inadvertida.
+    """
+
+    def test_almacen_no_puede_autorizar_ingreso(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_PENDIENTE_INGRESO, 'CDL', requiere_coa=False)
+
+        self.client.force_login(self.u_almacen)
+        resp = self.client.post(
+            '/operations/api/autorizar-ingreso/',
+            data={'ticket_id': ticket.id}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 302)
+
+    def test_vigilancia_si_puede_autorizar_ingreso(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_PENDIENTE_INGRESO, 'CDL', requiere_coa=False)
+
+        self.client.force_login(self.u_vigilancia)
+        resp = self.client.post(
+            '/operations/api/autorizar-ingreso/',
+            data={'ticket_id': ticket.id}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_INGRESO)
+
+    def test_almacen_no_puede_registrar_salida(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
+
+        self.client.force_login(self.u_almacen)
+        resp = self.client.post(
+            '/operations/api/registrar-salida/',
+            data={'ticket_id': ticket.id}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 302)
+
+    def test_vigilancia_si_puede_registrar_salida(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
+
+        self.client.force_login(self.u_vigilancia)
+        resp = self.client.post(
+            '/operations/api/registrar-salida/',
+            data={'ticket_id': ticket.id}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.estado, 'FINALIZADO')

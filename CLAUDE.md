@@ -975,3 +975,39 @@ Sesión de solo verificación/documentación, pedida explícitamente antes de av
 **Validación:** ningún archivo de código tocado esta sesión — solo `CLAUDE.md` y el script de scratchpad (no versionado). No aplica `manage.py check`/`test` ni barrido de `{#` multilínea (sin cambios de `.html`).
 
 **Fuera de alcance de esta sesión (confirmado, no tocado — no era el pedido):** no se tocó `static/css/operations/ticket_detalle.css` (CSS muerto detectado de paso, inofensivo); no se tocó `sidebar-brand__text` (cosmético, preexistente); no se avanzó nada de la Fase 7, según lo pedido explícitamente.
+
+### 2026-08-06 (sesión 33) — Fase 7 (última): reescritura completa de `apps/operations/tests.py`. Rediseño Materia Prima COMPLETO
+
+Cierra la Fase 7 (última fase estimada en la sesión 27) del rediseño de flujo Materia Prima: la suite de tests, construida incrementalmente desde la Fase 3 original (sesión 5) y parchada varias veces para no romperse durante las Fases 3+4/5 (sesiones 30/31), se reescribió por completo para reflejar explícitamente el modelo nuevo (bifurcación de actor + `requiere_calidad`), en vez de seguir siendo el modelo viejo (`tipo_flujo` + `ALMACEN` fijo) con parches encima.
+
+**Estructura nueva:** `OperationsTestBase` (clase base sin tests propios) centraliza la creación de los 6 grupos/usuarios y los helpers de construcción de Tickets reales (`_crear_cita_confirmada` → `_avanzar_a_vigilancia_ingreso` → `_avanzar_a_almacen` → `_crear_ticket_en_etapa(etapa, u_mss_tdb, ...)`), todos ejecutando los métodos reales de `AppointmentService`/`OperationsService` (nunca escribiendo `etapa_actual`/`requiere_calidad` directo sobre el modelo) — mismo principio ya usado en la suite anterior, ahora sin duplicar el setup en cada clase (`setUpTestData` se hereda y Django lo re-ejecuta por cada subclase). 6 clases de test, organizadas por lo que cada una verifica:
+
+1. **`BifurcacionActorRecepcionTests`** (puntos 1-2 del pedido): OC MP → turno `MATERIA_PRIMA` en `VIGILANCIA_INGRESO`; OC comercial → turno `ALMACEN`, sin cambios de comportamiento respecto al modelo previo a la Fase 3+4.
+2. **`ConfirmacionMateriaPrimaTests`** (punto 5): `autorizar_almacen`/`ajax_autorizar_almacen` rechazan (`ValidationError`/`400`) a Materia Prima sin `confirmado=True`, aceptan con él; Almacén no exige el paso (regresión: el botón simple sigue funcionando).
+3. **`RequiereCalidadForkTests`** (puntos 3-4): `requiere_calidad=True` avanza a `CALIDAD`; incluye **test de regresión explícito del bug de la sesión 30b** (`test_requiere_calidad_true_aparece_en_panel_calidad_pendientes` — construye deliberadamente el caso divergente, OC comercial con `requiere_calidad=True` forzado, y verifica que el ticket aparezca en `panel_calidad`'s `context['tickets']`; si alguien revierte el filtro a `tipo_flujo`, este test falla). `requiere_calidad=False` salta a `VIGILANCIA_SALIDA`, para ambos actores posibles (Almacén y Materia Prima). Conserva los tests de la sesión 30 que seguían siendo válidos (`muelle` en `Ticket` no en `AppointmentSlot`, desacople de `tipo_flujo`, defaults por actor).
+4. **`PermisoPorGrupoTests`** (punto 6, + cobertura original de ALMACEN/CALIDAD del punto 7): candado de permiso en ambas direcciones para las 3 combinaciones de actor — ALMACEN↔CALIDAD (cobertura original, sesión 5), y **ALMACEN↔MATERIA_PRIMA nuevo**, en los 2 endpoints donde aplica (`ajax_registrar-inspeccion` para el cierre de recepción, `ajax_autorizar-almacen` para "Iniciar Recepción") — la suite anterior solo cubría "ALMACEN no puede actuar sobre un ticket de MATERIA_PRIMA" en `autorizar-almacen`; esta reescritura agrega explícitamente el caso inverso ("MATERIA_PRIMA no puede actuar sobre un ticket de ALMACEN") en ambos endpoints, que no estaba cubierto antes.
+5. **`CandadoDeEtapaTests`** (punto 7, cobertura nueva): el candado de orden (`_validar_etapa`/`TicketEtapaError`) nunca había tenido un test dedicado en la suite automatizada (solo se había verificado manualmente en las sesiones 4-5) — se agregó cobertura explícita: no saltarse "Iniciar Recepción", no repetirlo, no registrar Calidad antes de tiempo, no registrar salida antes de cerrar Calidad, no repetir la salida.
+6. **`PermisosVigilanciaTests`** (punto 7): cobertura mínima nueva de que `autorizar-ingreso`/`registrar-salida` siguen siendo exclusivos de `VIGILANCIA` — el rediseño no tocó estos 2 endpoints, pero tampoco tenían ningún test dedicado antes.
+
+**Resultado: 16 → 34 tests, todos pasando.** `manage.py check` y `makemigrations --check --dry-run` limpios (sin cambios de modelo). Ningún archivo de código de producción se tocó — solo `apps/operations/tests.py`.
+
+---
+
+## Rediseño de flujo Materia Prima — COMPLETO (sesiones 27-33)
+
+Las 7 fases estimadas en el análisis de impacto de la sesión 27 quedan cerradas:
+
+| Fase | Contenido | Sesión(es) |
+|---|---|---|
+| Análisis + decisiones de diseño | Impacto, decisiones (OCs mixtas, `muelle`, `requiere_calidad`), reset de datos de prueba | 27 |
+| Fase 1 | Modelo: `Ticket.muelle`, `Ticket.requiere_calidad` | 27 |
+| Decisión 1 | Bloqueo de OCs mixtas (MP + comercial) en el portal del proveedor | 28 |
+| Fase 2 | Grupo Django `MATERIA_PRIMA` + panel de aterrizaje mínimo | 29 |
+| Fase 3+4 | Bifurcación `ALMACEN`/`MATERIA_PRIMA` en `grupo_requerido_por_etapa`/`autorizar_almacen` (backend) | 30 (+ fix de `panel_calidad`, 30b) |
+| Fase 5 | UI de "Iniciar Recepción" (muelle, checkbox Calidad, confirmación explícita) + cierre de `tipo_flujo` en templates | 31 |
+| Fase 6 | Historial + Reporte para Materia Prima (panel nuevo) y Almacén (brecha histórica cerrada) | 32 (+ regla/barrido CSS, 32b) |
+| Fase 7 | Reescritura completa de la suite de tests | 33 (esta sesión) |
+
+**Total: 9 sesiones** (27, 28, 29, 30, 30b, 31, 32, 32b, 33) contra las **6-8 estimadas originalmente** en el análisis de la sesión 27 — dentro del rango, con el excedente explicado por 2 sesiones de corrección no planificadas (30b: bug real de `panel_calidad` encontrado antes de avanzar a Fase 5; 32b: ajuste de la regla de verificación + barrido, tras encontrar 2 veces el mismo error de clase CSS huérfana dentro del propio rediseño).
+
+**Estado final del sistema:** un ticket con OC tipo Materia Prima ahora lo recibe el grupo `MATERIA_PRIMA` (panel propio, con Pendientes/Historial/Reporte/buscador de QR); un ticket con OC comercial lo sigue recibiendo `ALMACEN` (mismo panel de siempre, ahora también con Historial/Reporte). Ambos actores deciden explícitamente, al "Iniciar Recepción", si el ticket pasa por Calidad (`Ticket.requiere_calidad`) — señal operativa que reemplaza a `tipo_flujo` (legacy, que se mantiene en el modelo sin que ninguna vista/lógica activa dependa ya de él, salvo el requisito de COA obligatorio al ingreso, decisión explícita de la sesión 30). Materia Prima exige una confirmación explícita adicional antes de iniciar la recepción; Almacén no. La suite automatizada (34 tests) cubre la bifurcación de actor, el fork de Calidad, el candado de confirmación, el candado de permiso en ambas direcciones para las 3 combinaciones de actor, y el candado de orden — incluyendo un test de regresión dedicado para el único bug real encontrado durante el rediseño (`panel_calidad` filtrando por la señal equivocada, sesión 30b).
