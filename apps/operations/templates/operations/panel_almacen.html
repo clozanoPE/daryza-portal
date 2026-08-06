@@ -36,8 +36,9 @@
   </div>
 </div>
 
-{# ── Filtros ─────────────────────────────────────────────────────────────── #}
-<form method="get" class="row g-2 mb-4">
+{# ── Filtros (aplican tanto a "Pendientes" como a "Historial") ────────────── #}
+<form method="get" class="row g-2 mb-2">
+  <input type="hidden" name="periodo" value="{{ periodo }}">
   <div class="col-md-4">
     <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm rounded-3 bg-white"
            placeholder="Buscar por ID, OC o proveedor…">
@@ -64,6 +65,27 @@
     {% endif %}
   </div>
 </form>
+<p class="text-muted text-xxs mb-4">
+  <i class="bi bi-info-circle me-1"></i>El filtro de fecha/proveedor aplica a "Pendientes"; el estado solo aplica a "Pendientes" (no existe en el Historial de Tickets).
+</p>
+
+{# ── Pestañas: Pendientes / Historial (sesión 32 — mismo patrón de la Fase 6/9) #}
+<ul class="nav nav-tabs mb-3" id="almacenTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="tab-pendientes-btn" data-bs-toggle="tab" data-bs-target="#tab-pendientes" type="button" role="tab" aria-selected="true">
+      <i class="bi bi-hourglass-split me-1"></i>Pendientes
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="tab-historial-btn" data-bs-toggle="tab" data-bs-target="#tab-historial" type="button" role="tab" aria-selected="false">
+      <i class="bi bi-clock-history me-1"></i>Historial
+      <span class="badge bg-light text-dark border rounded-pill ms-1 text-xxs">{{ tickets_historial|length }}</span>
+    </button>
+  </li>
+</ul>
+
+<div class="tab-content" id="almacenTabsContent">
+<div class="tab-pane fade show active" id="tab-pendientes" role="tabpanel">
 
 {# ── Kanban 3 columnas ────────────────────────────────────────────────────── #}
 <div class="row g-3">
@@ -189,6 +211,15 @@
 
 </div>
 
+</div>{# /tab-pendientes #}
+
+{# ── Pestaña: Historial (sesión 32) — TODOS los tickets, solo lectura ────── #}
+<div class="tab-pane fade" id="tab-historial" role="tabpanel">
+  {% include "operations/_partials/historial_tickets.html" with tickets_historial=tickets_historial historial_export_url_name='operations:exportar_historial_almacen' %}
+</div>{# /tab-historial #}
+
+</div>{# /almacenTabsContent #}
+
 {# ── Modal de Observaciones (compartido con panel_compras.js) ─────────── #}
 <div class="modal fade" id="modalObservaciones" tabindex="-1" aria-labelledby="modalObsTitle">
   <div class="modal-dialog modal-dialog-centered modal-sm">
@@ -213,4 +244,5 @@
 
 {% block extra_js %}
 <script src="{% static 'js/panels/ticket_actions.js' %}?v=2.1"></script>
+<script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 {% endblock %}

@@ -60,10 +60,18 @@ urlpatterns = [
          views.ajax_autorizar_almacen,
          name='ajax_autorizar_almacen'),
 
-    # ── Panel Materia Prima (Fase 2 del rediseño, sesión 29) ───────────────
+    path('almacen/historial/exportar/<str:formato>/',
+         views.exportar_historial_almacen,
+         name='exportar_historial_almacen'),
+
+    # ── Panel Materia Prima (Fase 2 del rediseño, sesión 29; Historial/Reporte sesión 32) ──
     path('materia-prima/',
          views.panel_materia_prima,
          name='panel_materia_prima'),
+
+    path('materia-prima/historial/exportar/<str:formato>/',
+         views.exportar_historial_materia_prima,
+         name='exportar_historial_materia_prima'),
 
     # ── Panel Vigilancia ─────────────────────────────────────────────────
     path('vigilancia/',

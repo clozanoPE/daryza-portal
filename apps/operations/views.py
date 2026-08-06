@@ -307,6 +307,15 @@ def ajax_rechazar_cita_compras(request):
 def panel_almacen(request):
     """
     Panel Almacén: vista Kanban con solicitudes pendientes, confirmadas y rechazadas.
+
+    Sesión 32: se agrega la pestaña "Historial" (brecha señalada en el
+    análisis de la sesión 27 — este panel nunca la había recibido, a
+    diferencia de Compras/Vigilancia/Calidad). Reutiliza _historial_compras_qs
+    tal cual (sin duplicar una función equivalente): su lógica de filtrado
+    (q/fecha/periodo sobre Ticket) es 100% genérica, no específica de
+    Compras — el filtro 'estado' del Kanban de citas de este panel es un
+    campo de Appointment.status, sin equivalente en el Historial (Ticket-
+    based), así que no se lee ahí, igual que en Compras.
     """
     q      = request.GET.get('q', '').strip()
     estado = request.GET.get('estado', '')
@@ -328,6 +337,9 @@ def panel_almacen(request):
     if fecha:
         qs = qs.filter(slot__date=fecha)
 
+    # ── Historial (sesión 32): mismo patrón/queryset que Compras ──
+    tickets_historial, periodo = _historial_compras_qs(request)
+
     context = {
         'solicitadas':     qs.filter(status='SOLICITADO'),
         'confirmadas':     qs.filter(status='CONFIRMADA'),
@@ -336,8 +348,25 @@ def panel_almacen(request):
         'estado_filtro':   estado,
         'fecha_filtro':    fecha,
         'estados_choices': Appointment.ESTADOS,
+        'tickets_historial': tickets_historial,
+        'periodo':            periodo,
     }
     return render(request, 'operations/panel_almacen.html', context)
+
+
+@almacen_required
+def exportar_historial_almacen(request, formato: str):
+    """
+    GET /operations/almacen/historial/exportar/<excel|pdf>/  (sesión 32)
+    Exporta EXACTAMENTE el mismo tickets_historial que ve Almacén en pantalla
+    (mismo queryset/filtros que Compras, ver panel_almacen).
+    """
+    tickets_qs, periodo = _historial_compras_qs(request)
+    return _exportar_tickets(
+        tickets_qs, formato,
+        filename=f'historial_almacen_{periodo}',
+        titulo=f'Historial de Tickets — Panel Almacén ({periodo})',
+    )
 
 
 @almacen_required
@@ -467,19 +496,77 @@ def _historial_por_periodo_qs(request):
 # PANEL MATERIA PRIMA — Fase 2 del rediseño de flujo Materia Prima (sesión 29)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _tickets_pendientes_materia_prima():
+    """
+    Tickets EN_PLANTA donde el turno actual (OperationsService.
+    grupo_requerido_por_etapa) es MATERIA_PRIMA — cubre tanto "Iniciar
+    Recepción" (etapa_actual=VIGILANCIA_INGRESO) como el cierre "Continuar
+    la Inspección sin Calidad" (etapa_actual=ALMACEN, requiere_calidad=
+    False y el actor es MATERIA_PRIMA). No existe una única expresión ORM
+    directa para esta condición combinada (depende del tipo de OC +
+    requiere_calidad + etapa_actual a la vez) — se filtra en Python sobre
+    un queryset ya acotado a EN_PLANTA, mismo criterio ya usado en
+    panel_vigilancia/panel_calidad para anotaciones por ticket (volumen
+    bajo de tickets EN_PLANTA en este sistema).
+    """
+    qs = Ticket.objects.filter(estado='EN_PLANTA').select_related(
+        'appointment__slot', 'appointment__user'
+    ).prefetch_related('appointment__purchase_orders', 'stages')
+
+    tickets = [t for t in qs if OperationsService.grupo_requerido_por_etapa(t) == 'MATERIA_PRIMA']
+
+    for t in tickets:
+        entrada = next((s for s in t.stages.all() if s.etapa == 'VIGILANCIA_ENTRADA'), None)
+        t.fecha_ingreso_planta = entrada.fecha_inicio if entrada else None
+        t.accion_pendiente = (
+            'Iniciar Recepción' if t.etapa_actual == Ticket.ETAPA_VIGILANCIA_INGRESO
+            else 'Continuar sin Calidad'
+        )
+    return tickets
+
+
 @materia_prima_required
 def panel_materia_prima(request):
     """
-    Panel del grupo MATERIA_PRIMA — actor nuevo, paralelo a ALMACEN, que
-    ejecutará "Iniciar Recepción" para tickets cuyas OCs sean tipo Materia
-    Prima (según PurchaseOrder.es_materia_prima), una vez que la Fase 4
-    del rediseño bifurque grupo_requerido_por_etapa y autorizar_almacen.
+    Panel del grupo MATERIA_PRIMA — actor paralelo a ALMACEN para tickets
+    cuyas OCs sean tipo Materia Prima (Ticket.es_materia_prima).
 
-    Esta fase (2) es solo el aterrizaje: login → panel propio. Sin
-    lógica de recepción, sin queryset de tickets pendientes todavía —
-    eso depende de la bifurcación de la Fase 4, que no se toca aquí.
+    Sesión 32 (cierra la Fase 6 pendiente desde la sesión 30/31): agrega
+    el listado de "Pendientes" (_tickets_pendientes_materia_prima) y la
+    pestaña "Historial" + Reporte, mismo patrón ya usado en Compras/
+    Vigilancia/Calidad. El "Pendientes" se modeló como una lista de
+    tarjetas que enlazan a detalle_ticket (mismo patrón que las columnas
+    Kanban de panel_vigilancia), NO como el formulario de inspección en
+    línea que usa panel_calidad — ese formulario ya existe completo en
+    detalle_ticket.html (pestaña "Mi Sesión", Fase 5/sesión 31);
+    duplicarlo aquí habría significado 2 copias del mismo formulario/JS
+    de inspección, contrario al principio de no duplicar ya establecido
+    en este proyecto (ver CLAUDE.md, sesión 21 y otras).
     """
-    return render(request, 'operations/panel_materia_prima.html', {})
+    tickets_pendientes = _tickets_pendientes_materia_prima()
+    tickets_historial, periodo = _historial_por_periodo_qs(request)
+
+    context = {
+        'tickets_pendientes': tickets_pendientes,
+        'tickets_historial':  tickets_historial,
+        'periodo':            periodo,
+    }
+    return render(request, 'operations/panel_materia_prima.html', context)
+
+
+@materia_prima_required
+def exportar_historial_materia_prima(request, formato: str):
+    """
+    GET /operations/materia-prima/historial/exportar/<excel|pdf>/  (sesión 32)
+    Exporta EXACTAMENTE el mismo tickets_historial que ve Materia Prima en
+    pantalla (mismo filtro de período ya aplicado vía querystring).
+    """
+    tickets_qs, periodo = _historial_por_periodo_qs(request)
+    return _exportar_tickets(
+        tickets_qs, formato,
+        filename=f'historial_materia_prima_{periodo}',
+        titulo=f'Historial de Tickets — Panel Materia Prima ({periodo})',
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

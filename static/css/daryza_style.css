@@ -91,6 +91,7 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
 .btn-materia-prima{background:var(--dz-materia-prima);border-color:var(--dz-materia-prima);color:#fff}
 .btn-materia-prima:hover,.btn-materia-prima:focus{background:var(--dz-materia-prima);border-color:var(--dz-materia-prima);color:#fff;filter:brightness(.92)}
 .text-materia-prima{color:var(--dz-materia-prima)!important}
+.badge-materia-prima-subtle{background:rgba(236,72,153,.1);color:var(--dz-materia-prima);border:1px solid rgba(236,72,153,.25)}
 
 .page-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.5rem}
 .page-header__title{font-size:1.35rem;font-weight:700;color:#1a1a2e;margin:0}

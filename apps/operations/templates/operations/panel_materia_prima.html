@@ -14,20 +14,107 @@
       Recepción de Órdenes de Compra tipo Materia Prima
     </p>
   </div>
-</div>
-
-<div class="dz-card p-4">
-  <div class="text-center py-5 text-muted">
-    <i class="bi bi-cone-striped fs-1 d-block mb-3 opacity-25"></i>
-    <p class="fw-bold mb-1">Panel en construcción</p>
-    <p class="small mb-0">
-      Esta es la Fase 2 del rediseño de flujo Materia Prima: por ahora solo
-      confirma que tu cuenta pertenece al grupo correcto y aterriza aquí al
-      iniciar sesión. La recepción de tickets (checkbox "Solicitar Inspección
-      Calidad", muelle, validación línea por línea) llega en una fase
-      posterior.
-    </p>
+  <div class="kpi-card">
+    <div class="kpi-card__icon" style="background:rgba(236,72,153,.12)">
+      <i class="bi bi-hourglass-split text-materia-prima"></i>
+    </div>
+    <div>
+      <div class="kpi-card__value text-materia-prima">{{ tickets_pendientes|length }}</div>
+      <div class="kpi-card__label">Pendientes</div>
+    </div>
   </div>
 </div>
 
+{# ── Pestañas: Pendientes / Historial (sesión 32 — mismo patrón de la Fase 6/9) #}
+<ul class="nav nav-tabs mb-3" id="materiaPrimaTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="tab-pendientes-btn" data-bs-toggle="tab" data-bs-target="#tab-pendientes" type="button" role="tab" aria-selected="true">
+      <i class="bi bi-hourglass-split me-1"></i>Pendientes
+      <span class="badge rounded-pill ms-1 text-xxs badge-materia-prima-subtle">{{ tickets_pendientes|length }}</span>
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="tab-historial-btn" data-bs-toggle="tab" data-bs-target="#tab-historial" type="button" role="tab" aria-selected="false">
+      <i class="bi bi-clock-history me-1"></i>Historial
+      <span class="badge bg-light text-dark border rounded-pill ms-1 text-xxs">{{ tickets_historial|length }}</span>
+    </button>
+  </li>
+</ul>
+
+<div class="tab-content" id="materiaPrimaTabsContent">
+<div class="tab-pane fade show active" id="tab-pendientes" role="tabpanel">
+
+{# ── Buscador de QR propio (mismo patrón que panel_vigilancia) ───────────── #}
+<div class="dz-card dz-card--accent-pink p-4 mb-4">
+  <p class="text-muted text-xs mb-2">
+    <i class="bi bi-qr-code-scan me-1 text-materia-prima"></i>
+    Escanea o ingresa el código QR del proveedor para acceder a su ticket:
+  </p>
+  <form action="{% url 'operations:scan_qr' %}" method="get" class="d-flex gap-2">
+    <input type="text" name="codigo"
+           class="form-control rounded-3 qr-input"
+           placeholder="DYZ-123-260401-AB4F2C"
+           autocomplete="off" autofocus
+           aria-label="Código QR del ticket">
+    <button type="submit" class="btn btn-materia-prima rounded-3 px-4 shadow-sm">
+      <i class="bi bi-search me-1"></i>Buscar
+    </button>
+  </form>
+</div>
+
+{# ── Listado de tickets pendientes (Iniciar Recepción / Continuar sin Calidad) ── #}
+<div class="d-flex flex-column gap-3">
+  {% for ticket in tickets_pendientes %}
+  <div class="dz-card dz-card--accent-pink p-4 animate-fadein">
+    <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
+      <div>
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="fw-bold fs-5">Ticket #{{ ticket.id }}</span>
+          <span class="badge badge-materia-prima-subtle text-xxs">
+            <i class="bi bi-flask me-1"></i>{{ ticket.accion_pendiente }}
+          </span>
+        </div>
+        <div class="text-muted text-xs">
+          <i class="bi bi-person me-1"></i>
+          {{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}
+          <span class="mx-2">·</span>
+          <i class="bi bi-calendar3 me-1"></i>{{ ticket.appointment.slot.date|date:"d/m/Y" }}
+          <span class="mx-2">·</span>
+          <i class="bi bi-clock me-1"></i>{{ ticket.appointment.slot.start_time|date:"H:i" }}
+        </div>
+        <div class="d-flex flex-wrap gap-1 mt-2">
+          {% for po in ticket.appointment.purchase_orders.all %}
+          <span class="badge text-xxs bg-info-subtle text-info border border-info-subtle">
+            OC {{ po.doc_num }}
+          </span>
+          {% endfor %}
+        </div>
+      </div>
+      <a href="{% url 'operations:detalle_ticket' ticket.id %}"
+         class="btn btn-materia-prima btn-sm rounded-3 shadow-sm">
+        <i class="bi bi-arrow-right me-1"></i>Ir al Ticket
+      </a>
+    </div>
+  </div>
+  {% empty %}
+  <div class="text-center py-5 text-muted">
+    <i class="bi bi-clipboard2-check fs-1 d-block mb-2 opacity-25"></i>
+    <p class="small mb-0">No hay tickets de Materia Prima pendientes de recepción.</p>
+  </div>
+  {% endfor %}
+</div>
+
+</div>{# /tab-pendientes #}
+
+{# ── Pestaña: Historial (sesión 32) — TODOS los tickets, solo lectura ────── #}
+<div class="tab-pane fade" id="tab-historial" role="tabpanel">
+  {% include "operations/_partials/historial_tickets.html" with tickets_historial=tickets_historial historial_export_url_name='operations:exportar_historial_materia_prima' %}
+</div>{# /tab-historial #}
+
+</div>{# /materiaPrimaTabsContent #}
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 {% endblock %}
