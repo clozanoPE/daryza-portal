@@ -50,6 +50,67 @@ async function accionTicket(accion, ticketId, mensaje, _csrf) {
   }
 }
 
+/**
+ * "Iniciar Recepción" (ALMACEN o MATERIA_PRIMA, Fase 5 — sesión 31).
+ *
+ * Lee muelle (#input-muelle) y el checkbox "Solicitar Inspección Calidad"
+ * (#chk-requiere-calidad) del formulario en la tarjeta de acción, y los
+ * envía junto con confirmado al mismo endpoint que ya usaba el botón
+ * simple de Almacén (/operations/api/autorizar-almacen/, reescrito en el
+ * backend en la Fase 3+4 para aceptar ambos actores).
+ *
+ * Para Materia Prima el backend EXIGE confirmado:true o rechaza con 400
+ * (OperationsService.autorizar_almacen) — por eso se muestra un diálogo de
+ * confirmación explícito adicional antes de enviar; si el usuario cancela,
+ * no se envía ninguna petición. Almacén no necesita este paso extra.
+ *
+ * @param {number} ticketId
+ * @param {boolean} esMateriaPrima - true si el actor con el turno es MATERIA_PRIMA
+ */
+async function iniciarRecepcion(ticketId, esMateriaPrima) {
+  const { confirmDialog, showToast, btnLoading } = DzUI;
+  const { postJSON } = DzApi;
+
+  const muelle = document.getElementById('input-muelle')?.value?.trim() || '';
+  const requiereCalidad = document.getElementById('chk-requiere-calidad')?.checked ?? false;
+
+  if (esMateriaPrima) {
+    const confirmado = await confirmDialog(
+      'Confirmar Iniciar Recepción — Materia Prima',
+      `Vas a iniciar la recepción como Materia Prima para el Ticket #${ticketId}` +
+        (requiereCalidad ? ', con Inspección de Calidad.' : ', SIN Inspección de Calidad.') +
+        ' Esta acción requiere tu confirmación explícita antes de continuar. ¿Confirmas?',
+      'warning'
+    );
+    if (!confirmado) return;
+  } else {
+    const confirmado = await confirmDialog(
+      'Confirmar acción',
+      `¿Iniciar recepción en Almacén para Ticket #${ticketId}?`,
+      'question'
+    );
+    if (!confirmado) return;
+  }
+
+  const btn = document.getElementById('btn-iniciar-recepcion');
+  const restoreBtn = btn ? btnLoading(btn, 'Iniciando...') : () => {};
+
+  try {
+    const data = await postJSON('/operations/api/autorizar-almacen/', {
+      ticket_id: ticketId,
+      muelle,
+      requiere_calidad: requiereCalidad,
+      confirmado: esMateriaPrima,
+    });
+    showToast(data.msg || 'Recepción iniciada.', 'success');
+    setTimeout(() => window.location.reload(), 900);
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    restoreBtn();
+  }
+}
+
 /* ─── Panel de Inspección (Almacén / Calidad) ────────────────────────────── */
 
 /**

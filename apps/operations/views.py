@@ -846,13 +846,18 @@ def detalle_ticket(request, pk: int):
     )
 
     etapas_completadas = set(ticket.stages.values_list('etapa', flat=True))
-    es_flujo_calidad   = (ticket.tipo_flujo == 'CON_CALIDAD')
+    # Sesión 31: es_flujo_calidad ahora se calcula desde ticket.requiere_calidad
+    # (la señal operativa real, capturada al "Iniciar Recepción" — sesión 30),
+    # no desde tipo_flujo (legacy). Solo se usa más abajo para puede_registrar_salida,
+    # que únicamente se evalúa una vez que ALMACEN_RECEPCION ya existe — es decir,
+    # después de que autorizar_almacen ya fijó requiere_calidad explícitamente,
+    # así que no hay ventana en la que este valor sea el default sin decidir.
+    es_flujo_calidad   = ticket.requiere_calidad
 
     # ── Estado del COA (independiente de las etapas, vía TicketLineCOA) ──
     coa_completo = OperationsService.calcular_coa_completo(ticket)
 
     es_vigilancia = request.user.groups.filter(name='VIGILANCIA').exists() or request.user.is_superuser
-    es_almacen = request.user.groups.filter(name='ALMACEN').exists()
     es_calidad = request.user.groups.filter(name='CALIDAD').exists()
 
     # ── Gate de edición de "mi sesión" (vía Ticket.etapa_actual) ──
@@ -878,13 +883,22 @@ def detalle_ticket(request, pk: int):
     acciones = {
         'puede_autorizar_ingreso': (es_vigilancia and ticket.estado == 'PROGRAMADO'),
         'puede_autorizar_almacen': (
-            es_almacen and ticket.estado == 'EN_PLANTA' and
+            # Sesión 31: 'Iniciar Recepción' ya no exige el grupo ALMACEN
+            # hardcodeado — reutiliza es_su_turno (ya calculado arriba desde
+            # grupo_requerido_por_etapa), que en este punto del flujo
+            # (VIGILANCIA_ENTRADA completa, ALMACEN_RECEPCION todavía no)
+            # ya bifurca entre ALMACEN y MATERIA_PRIMA según el ticket.
+            es_su_turno and ticket.estado == 'EN_PLANTA' and
             'VIGILANCIA_ENTRADA' in etapas_completadas and
             'ALMACEN_RECEPCION' not in etapas_completadas
         ),
         'puede_editar_mi_sesion': puede_editar_mi_sesion,
         'puede_registrar_calidad': puede_editar_mi_sesion and grupo_etapa_activa == 'CALIDAD',
-        'puede_registrar_almacen': puede_editar_mi_sesion and grupo_etapa_activa == 'ALMACEN',
+        # Sesión 31: antes solo 'ALMACEN' — ahora también 'MATERIA_PRIMA', el
+        # otro actor posible de cierre de recepción cuando requiere_calidad=False
+        # (grupo_requerido_por_etapa nunca devuelve ambos a la vez, así que
+        # puede_registrar_calidad/almacen siguen siendo mutuamente excluyentes).
+        'puede_registrar_almacen': puede_editar_mi_sesion and grupo_etapa_activa in ('ALMACEN', 'MATERIA_PRIMA'),
         'puede_registrar_salida': (
             es_vigilancia and # <--- Agregamos esta condición obligatoria quito es_staff_interno and
              ticket.estado == 'EN_PLANTA' and
@@ -895,6 +909,10 @@ def detalle_ticket(request, pk: int):
             )
         ),
         'es_flujo_calidad': es_flujo_calidad,
+        # Expuesto para que el template sepa qué actor tiene el turno (ALMACEN,
+        # MATERIA_PRIMA o CALIDAD) y arme etiquetas/valores por defecto correctos
+        # en el formulario de "Iniciar Recepción" y en la pestaña "Mi Sesión".
+        'grupo_etapa_activa': grupo_etapa_activa,
         'coa_completo': coa_completo,
     }
 

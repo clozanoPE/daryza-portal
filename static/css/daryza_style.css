@@ -33,6 +33,7 @@
   --dz-prog:         #0d6efd;
   --dz-planta:       #fd7e14;
   --dz-fin:          #198754;
+  --dz-materia-prima: #ec4899;
 }
 
 /* ─── 2. BASE ─────────────────────────────────────────────────────────────── */
@@ -85,6 +86,11 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
 .dz-card--accent-green{border-left:4px solid var(--dz-green)!important}
 .dz-card--accent-blue{border-left:4px solid var(--dz-prog)!important}
 .dz-card--accent-orange{border-left:4px solid var(--dz-planta)!important}
+.dz-card--accent-pink{border-left:4px solid var(--dz-materia-prima)!important}
+
+.btn-materia-prima{background:var(--dz-materia-prima);border-color:var(--dz-materia-prima);color:#fff}
+.btn-materia-prima:hover,.btn-materia-prima:focus{background:var(--dz-materia-prima);border-color:var(--dz-materia-prima);color:#fff;filter:brightness(.92)}
+.text-materia-prima{color:var(--dz-materia-prima)!important}
 
 .page-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.5rem}
 .page-header__title{font-size:1.35rem;font-weight:700;color:#1a1a2e;margin:0}

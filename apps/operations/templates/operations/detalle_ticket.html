@@ -27,13 +27,13 @@
     <p class="page-header__subtitle">
       Creado el {{ ticket.fecha_creacion|date:"d/m/Y H:i" }}
       &nbsp;·&nbsp;
-      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+      {% if ticket.es_materia_prima %}
         <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
-          <i class="bi bi-flask me-1"></i>Materia Prima · Con Calidad
+          <i class="bi bi-flask me-1"></i>Materia Prima
         </span>
       {% else %}
         <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
-          <i class="bi bi-cart me-1"></i>Comercial · Solo Almacén
+          <i class="bi bi-cart me-1"></i>Comercial
         </span>
       {% endif %}
     </p>
@@ -73,7 +73,7 @@
         <i class="bi bi-box-arrow-in-right text-primary me-2"></i>Acción Pendiente: Autorizar Ingreso a Planta
       </h6>
 
-      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+      {% if ticket.es_materia_prima %}
       <div class="mb-3">
         <h6 class="text-xs fw-bold text-uppercase text-muted mb-2">
           <i class="bi bi-file-earmark-check me-1"></i>Estado de Certificados (COA)
@@ -149,14 +149,33 @@
     </div>
     {% endif %}
 
-    {# ═══ ACCIÓN: ALMACÉN — INICIAR RECEPCIÓN ═══ #}
+    {# ═══ ACCIÓN: ALMACÉN o MATERIA PRIMA — INICIAR RECEPCIÓN ═══ #}
     {% if acciones.puede_autorizar_almacen %}
-    <div class="dz-card dz-card--accent-green p-4 mb-3">
+    <div class="dz-card {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}dz-card--accent-pink{% else %}dz-card--accent-green{% endif %} p-4 mb-3">
       <h6 class="fw-bold mb-3">
-        <i class="bi bi-inboxes text-success me-2"></i>Acción Pendiente: Almacén — Iniciar Recepción
+        <i class="bi bi-inboxes {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}text-materia-prima{% else %}text-success{% endif %} me-2"></i>
+        Acción Pendiente: {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}Materia Prima{% else %}Almacén{% endif %} — Iniciar Recepción
       </h6>
-      <button class="btn btn-success rounded-3 shadow-sm px-4"
-              onclick="accionTicket('autorizar-almacen', {{ ticket.id }}, '¿Iniciar recepción en Almacén para Ticket #{{ ticket.id }}?')">
+
+      <div class="row g-3 mb-3">
+        <div class="col-sm-6">
+          <label for="input-muelle" class="form-label text-xs fw-bold text-muted">Muelle / Puerta de descarga</label>
+          <input type="text" id="input-muelle" class="form-control rounded-3" placeholder="Ej: M-1" maxlength="50">
+        </div>
+        <div class="col-sm-6 d-flex align-items-end">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="chk-requiere-calidad"
+                   {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}checked{% endif %}>
+            <label class="form-check-label text-xs fw-bold" for="chk-requiere-calidad">
+              Solicitar Inspección Calidad
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <button id="btn-iniciar-recepcion"
+              class="btn {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}btn-materia-prima{% else %}btn-success{% endif %} rounded-3 shadow-sm px-4"
+              onclick="iniciarRecepcion({{ ticket.id }}, {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}true{% else %}false{% endif %})">
         <i class="bi bi-inboxes me-2"></i>Iniciar Recepción
       </button>
     </div>
@@ -175,7 +194,13 @@
           <button class="nav-link active" id="tab-mi-sesion-btn" data-bs-toggle="tab" data-bs-target="#tab-mi-sesion" type="button" role="tab" aria-selected="true">
             <i class="bi bi-pencil-square me-1"></i>Mi Sesión
             {% if acciones.puede_registrar_calidad %}<span class="badge bg-info-subtle text-info border border-info-subtle ms-1 text-xxs">Calidad</span>{% endif %}
-            {% if acciones.puede_registrar_almacen %}<span class="badge bg-success-subtle text-success border border-success-subtle ms-1 text-xxs">Almacén</span>{% endif %}
+            {% if acciones.puede_registrar_almacen %}
+              {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}
+                <span class="badge group-MATERIA_PRIMA ms-1 text-xxs">Materia Prima</span>
+              {% else %}
+                <span class="badge bg-success-subtle text-success border border-success-subtle ms-1 text-xxs">Almacén</span>
+              {% endif %}
+            {% endif %}
           </button>
         </li>
         <li class="nav-item" role="presentation">
@@ -197,7 +222,7 @@
               </button>
             {% elif acciones.puede_registrar_almacen %}
               <button id="btn-guardar-inspeccion-almacen" class="btn btn-primary text-white rounded-3 shadow-sm px-4" onclick="guardarInspeccion({{ ticket.id }}, 'almacen')">
-                <i class="bi bi-save me-2"></i>Guardar Inspección Almacén
+                <i class="bi bi-save me-2"></i>Continuar la Inspección sin Calidad
               </button>
             {% endif %}
           </div>
@@ -231,5 +256,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.1"></script>
 {% endblock %}

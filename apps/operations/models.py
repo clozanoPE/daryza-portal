@@ -118,6 +118,27 @@ class Ticket(models.Model):
         )
     )
 
+    @property
+    def es_materia_prima(self):
+        """
+        True si alguna OC vinculada a la cita es tipo Materia Prima
+        (PurchaseOrder.es_materia_prima, vía el UDF de SAP u_mss_tdb).
+
+        Hecho ESTRUCTURAL sobre las OCs de la cita — fijo desde que se
+        solicita (las OCs vinculadas no cambian después), a diferencia de
+        requiere_calidad (decisión OPERATIVA, capturada explícitamente al
+        "Iniciar Recepción", que puede o no coincidir con el tipo de OC).
+        Reemplaza a tipo_flujo=='CON_CALIDAD' como señal para la UI/rutas
+        que describen el TIPO de OC (sesión 31) — matemáticamente
+        equivalente hoy (confirmar_cita calcula tipo_flujo con la misma
+        condición), pero desacoplado del campo legacy.
+
+        Usa .all() sobre el M2M ya prefetched cuando esté disponible
+        (mismo patrón que el resto del proyecto) en vez de .filter().exists(),
+        que siempre dispara una query nueva sin importar el prefetch.
+        """
+        return any(po.es_materia_prima for po in self.appointment.purchase_orders.all())
+
     def close_ticket(self):
         """Calcula y guarda el tiempo total en planta al finalizar."""
         if self.estado == 'FINALIZADO':

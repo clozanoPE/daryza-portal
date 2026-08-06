@@ -30,13 +30,13 @@
     <p class="page-header__subtitle">
       Creado el {{ ticket.fecha_creacion|date:"d/m/Y H:i" }}
       &nbsp;·&nbsp;
-      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+      {% if ticket.es_materia_prima %}
         <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
-          <i class="bi bi-flask me-1"></i>Materia Prima · Con Calidad
+          <i class="bi bi-flask me-1"></i>Materia Prima
         </span>
       {% else %}
         <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
-          <i class="bi bi-cart me-1"></i>Comercial · Solo Almacén
+          <i class="bi bi-cart me-1"></i>Comercial
         </span>
       {% endif %}
     </p>

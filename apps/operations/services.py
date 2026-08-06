@@ -45,18 +45,18 @@ class OperationsService:
         """
         Devuelve el grupo (ALMACEN o MATERIA_PRIMA) al que le corresponde
         ejecutar la recepción física de este ticket, según el tipo de OC
-        vinculada (PurchaseOrder.es_materia_prima, vía el UDF de SAP
-        u_mss_tdb — ver análisis de la sesión 27).
+        vinculada (Ticket.es_materia_prima — ver análisis de la sesión 27).
 
         Determinístico: desde la Decisión 1 (sesión 28), el portal del
         proveedor bloquea combinar OCs Materia Prima con OCs comerciales en
         la misma solicitud, así que ya no existen tickets con OCs mixtas —
         basta con verificar si ALGUNA OC del ticket es tipo MP.
+
+        Sesión 31: reutiliza Ticket.es_materia_prima (single source of
+        verdad, ahora también consumida por las plantillas para las mismas
+        preguntas de "tipo de OC") en vez de repetir la query aquí.
         """
-        tiene_materia_prima = ticket.appointment.purchase_orders.filter(
-            u_mss_tdb='MP'
-        ).exists()
-        return 'MATERIA_PRIMA' if tiene_materia_prima else 'ALMACEN'
+        return 'MATERIA_PRIMA' if ticket.es_materia_prima else 'ALMACEN'
 
     @staticmethod
     def grupo_requerido_por_etapa(ticket: Ticket) -> str | None:

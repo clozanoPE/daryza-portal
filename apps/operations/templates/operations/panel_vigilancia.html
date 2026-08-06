@@ -102,21 +102,21 @@
         <i class="bi bi-person me-1"></i>{{ ticket.appointment.user.get_full_name|default:ticket.appointment.user.username }}
       </div>
 
-      {# Tipo de flujo #}
+      {# Tipo de OC #}
       <div class="mb-2">
-        {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+        {% if ticket.es_materia_prima %}
         <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
-          <i class="bi bi-flask me-1"></i>Materia Prima · Con Calidad
+          <i class="bi bi-flask me-1"></i>Materia Prima
         </span>
         {% else %}
         <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
-          <i class="bi bi-cart me-1"></i>Comercial · Solo Almacén
+          <i class="bi bi-cart me-1"></i>Comercial
         </span>
         {% endif %}
       </div>
 
       {# Estado de COA #}
-      {% if ticket.tipo_flujo == 'CON_CALIDAD' %}
+      {% if ticket.es_materia_prima %}
       <div class="text-xs mb-2">
         {% with total_req=ticket.appointment.purchase_orders.all|length %}
         <i class="bi bi-file-earmark-check me-1
@@ -253,7 +253,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.1"></script>
 <script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 <script>
   /**

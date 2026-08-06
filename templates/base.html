@@ -93,6 +93,15 @@
         </li>
         {% endif %}
 
+        {% if "MATERIA_PRIMA" in request.user.groups.all|stringformat:"s" or request.user.is_superuser %}
+        <li>
+          <a href="{% url 'operations:panel_materia_prima' %}"
+             class="sidebar-nav__link {% if request.resolver_match.url_name == 'panel_materia_prima' %}active{% endif %}">
+            <i class="bi bi-flask"></i>Materia Prima
+          </a>
+        </li>
+        {% endif %}
+
         {% if "VIGILANCIA" in request.user.groups.all|stringformat:"s" or request.user.is_superuser %}
         <li>
           <a href="{% url 'operations:panel_vigilancia' %}"
