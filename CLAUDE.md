@@ -2,6 +2,11 @@
 
 Guía de referencia rápida para trabajar en este repositorio. Generado a partir de un análisis completo del código el **2026-07-30**. Ver también `INFORME_ANALISIS.md` para el detalle de inconsistencias y prioridades.
 
+## Reglas de esta sesión en adelante (sesión 26)
+
+- **Las notas de implementación NUNCA van como comentario dentro de un `.html` de template** — ni `{# ... #}`, ni `{% comment %}...{% endcomment %}`, ni ninguna otra forma. Ese contenido vive únicamente en `CLAUDE.md` (historial de sesiones) o en el resumen entregado en el chat. Motivo: el patrón `{# ... #}` escrito en varias líneas ya causó texto de implementación visible en pantalla **dos veces** (sesión 20, reincidencia en la sesión 25) — el tokenizer de Django (`django/template/base.py::tag_re = re.compile(r"({%.*?%}|{{.*?}}|{#.*?#})")`, sin la flag `re.DOTALL`) no reconoce un comentario `{# #}` cuyo contenido cruza un salto de línea: en vez de descartarlo, lo trata como texto literal y lo renderiza tal cual. La única forma segura de anotar código con contexto de sesión sin este riesgo es no ponerlo en el `.html` en absoluto.
+- **Antes de cerrar cualquier sesión que haya tocado archivos `.html`**, correr como último chequeo un barrido de `{#` con contenido multilínea en los archivos tocados (no basta con "creo que esta vez lo escribí en una sola línea" — ya fue la causa de la reincidencia). Ver el script de verificación documentado en la sesión 20/26.
+
 ## Descripción del negocio
 
 Portal Django para que proveedores agenden citas de entrega a las plantas de Daryza. Flujo funcional:
@@ -690,4 +695,45 @@ Antes solo vivía en `detalle_ticket.html`, dentro del bloque `{% if acciones.pu
 - `detalle_ticket` para el Ticket #12 (con `estado` temporalmente forzado a `PROGRAMADO` y revertido de inmediato): el partial `datos_ingreso.html` sigue renderizando igual que antes de factorizarlo — sin regresión.
 
 **Fuera de alcance de esta sesión (no tocado, según lo pedido):** no se tocó `etapa_actual`, `_validar_etapa`, `grupo_requerido_por_etapa` ni ningún permiso — los 3 fixes son de lectura (2 de plantillas/vista, 1 de link). No se revisaron los otros puntos del inventario de deuda técnica entregado tras la sesión 24 (bug de login histórico, `TicketDatosIngreso` ausente en otros historiales, naming de otros botones) — quedan pendientes de que el usuario decida cuáles cerrar.
+
+### 2026-08-04 (sesión 26) — Parte A: cierre de raíz del patrón `{# #}` multilínea + regla nueva. Parte B: bloque "Datos del Vehículo / Conductor" faltante en `detalle_ticket.html`
+
+**PARTE A — Punto 1: causa raíz exacta determinada en la sesión 20 (no una simple limpieza a mano).**
+La sesión 20 sí llegó a una causa raíz técnica concreta, no solo borró texto: la sintaxis corta de comentario de Django, `{# ... #}`, no soporta contenido que cruce un salto de línea, porque el tokenizer del motor de plantillas (`django/template/base.py`, línea 92) usa `tag_re = re.compile(r"({%.*?%}|{{.*?}}|{#.*?#})")` **sin la flag `re.DOTALL`** — el `.` de esa expresión regular no matchea `\n`. Cuando el contenido entre `{#` y `#}` incluye un salto de línea, la regex nunca encuentra el cierre, el lexer no reconoce ningún token de comentario ahí, y el bloque completo cae como `TOKEN_TEXT` literal: se renderiza tal cual en la página. Esta sesión (26) **re-verificó esa causa directamente contra el código fuente de Django instalado en el `venv`** (`env/Lib/site-packages/django/template/base.py:92`), no solo se confió en lo ya escrito en la sesión 20 — confirmado byte a byte, la explicación de la sesión 20 era correcta y completa.
+
+**Punto 2 y 3 — Barrido completo del proyecto.**
+Script Python (mismo enfoque que la sesión 20, ahora archivado como referencia): recorre todo `.html` bajo cualquier directorio `templates/` del proyecto, extrae cada `{# ... #}` con `re.DOTALL` (para encontrar el comentario tal como el autor lo escribió, no como Django lo parsea) y reporta los que contienen `\n` en su interior. **2 instancias encontradas**, ambas nuevas, ambas introducidas en la sesión 25 — ninguna preexistente sobrevivió desde la sesión 20:
+
+| Archivo | Línea | Contenido (truncado) |
+|---|---|---|
+| `apps/operations/templates/operations/panel_vigilancia.html` | 180 | *"Cronómetro de tiempo en planta (sesión 25: mismo fix de la sesión 23 — formato ISO 8601 vía `\|date:'c'`..."* |
+| `apps/operations/templates/operations/trazabilidad_ticket.html` | 57 | *"Datos del Vehículo / Conductor (Fase 11): solo lectura, sin gate de rol — visible para Compras/Vigilancia/Calidad..."* |
+
+Ninguna de las dos estaba dentro de `{% verbatim %}` (confirmado de nuevo: `grep verbatim` en todo `templates/` — cero resultados, igual que en la sesión 20) ni dentro de ningún `{% include %}` que "rompiera el contexto" — Django tokeniza cada archivo de plantilla de forma independiente sin importar cuántos `{% include %}` lo envuelvan, así que esa hipótesis del mecanismo no aplica aquí ni en ningún caso: la única causa, en ambas instancias, es la misma regex sin `re.DOTALL` de la sesión 20. **Verificado empíricamente antes de corregir** (no solo por lectura de código): la de `panel_vigilancia.html` solo se filtra cuando hay al menos un ticket real en la columna "En Planta ahora" (el bloque roto vive dentro de ese `{% for %}`) — reproducido reasignando temporalmente el Ticket #12 a un slot de hoy; la de `trazabilidad_ticket.html` se filtraba siempre, confirmado contra el Ticket #12 real (texto roto presente en el HTML).
+
+**Punto 4 — Eliminadas las 2 instancias** (su contenido ya vive en `CLAUDE.md`, sesión 25). Re-escaneo posterior con el mismo script: **0 instancias multilínea en todo el proyecto**.
+
+**Punto 5 — Regla nueva agregada al inicio de `CLAUDE.md`** (sección "Reglas de esta sesión en adelante", antes de "Descripción del negocio" — la primera sección visible del archivo): las notas de implementación no van como comentario de ningún tipo dentro de un `.html`, solo en `CLAUDE.md`/chat; y antes de cerrar cualquier sesión que haya tocado `.html`, correr el barrido de `{#` multilínea sobre los archivos tocados como último chequeo — no asumir que "esta vez se escribió bien" (la sesión 25 asumió justamente eso, y fue la causa de esta reincidencia).
+
+---
+
+**PARTE B — "Datos del Vehículo / Conductor" faltante en `detalle_ticket.html`.**
+
+Diagnóstico confirmado: el bloque **sí** existía en `detalle_ticket.html` desde la sesión 25, pero anidado dentro de `{% if acciones.puede_autorizar_ingreso %}` (`es_vigilancia and ticket.estado == 'PROGRAMADO'`) — visible solo para Vigilancia, y solo mientras el ticket sigue `PROGRAMADO`. Para el Ticket #12 (`EN_PLANTA`), visto por `ALMACEN` vía Panel Almacén → Confirmadas → "Ver Ticket", ese `if` es falso, así que el bloque completo no se renderizaba — exactamente el síntoma reportado con captura real, mientras que `trazabilidad_ticket.html` (agregado en la misma sesión 25, sin ningún gate) sí lo mostraba para el mismo ticket.
+
+**Fix — mismo criterio ya aplicado al bloque de QR en la sesión 22 (factorizar, no duplicar a mano):**
+- Se quitó el `{% include "operations/_partials/datos_ingreso.html" %}` que vivía dentro de la tarjeta de acción "Autorizar Ingreso a Planta" (evita mostrarlo dos veces cuando Vigilancia sí tiene el turno pendiente).
+- Se agregó una tarjeta nueva, siempre visible, en la **columna izquierda** de `detalle_ticket.html` (mismo lugar que en `trazabilidad_ticket.html`: entre "Datos de la Cita" y "Trazabilidad de Etapas"), con el mismo `{% include "operations/_partials/datos_ingreso.html" %}` — sin condición de rol ni de estado, visible para cualquiera de los 4 roles que ya acceden a `detalle_ticket` (Almacén/Calidad/Vigilancia/Compras) y el proveedor dueño.
+- El partial `_partials/datos_ingreso.html` (creado en la sesión 25) ya era la única fuente de verdad para ambos templates — no hubo que crear ningún partial nuevo, solo mover su punto de inclusión en `detalle_ticket.html` fuera del gate de acción.
+
+**Validación realizada** (contra el Ticket #12 real — placa `F5J-011`, DNI `40243876`, nombre `CARLOS LOZANO ARANCIAGA` —, `Client` de pruebas):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo). `manage.py test apps.operations`: **5/5 OK**.
+- `detalle_ticket` para el Ticket #12 con `ualmacen` (el caso exacto reportado): ahora muestra los 3 datos reales — antes no mostraba nada.
+- `detalle_ticket` con `ucalidad` (otro rol que antes tampoco veía el bloque, al no ser Vigilancia): también muestra los 3 datos.
+- **Sin duplicación**: se forzó temporalmente el Ticket #12 a `estado='PROGRAMADO'` (mismo patrón de prueba con reversión inmediata de la sesión 13) para simular el caso en que Vigilancia SÍ tiene la acción "Autorizar Ingreso" pendiente — el texto "Datos del Veh" y la placa `F5J-011` aparecen **exactamente 1 vez** cada uno, no 2; ticket revertido a `EN_PLANTA` de inmediato.
+- `trazabilidad_ticket` para el mismo ticket (vía `ucompras`) sigue mostrando los mismos 3 datos, sin cambios — mismos datos, mismo lugar en el layout, en ambas vistas.
+
+**Validación general de la sesión** (Partes A y B): `manage.py check`, `makemigrations --check --dry-run` y `manage.py test apps.operations` (**5/5 OK**) corridos una vez más al final, después de todos los cambios; barrido de `{#` multilínea repetido por última vez: **0 instancias**.
+
+**Fuera de alcance de esta sesión (no tocado, según lo pedido):** no se tocó `etapa_actual`, permisos ni ningún modelo — todos los cambios son de plantillas (eliminación de comentarios rotos + reubicación de un `{% include %}` ya existente). No se revisaron los demás puntos del inventario de deuda técnica de la sesión 24 (siguen pendientes de que el usuario decida cuáles cerrar).
 

@@ -51,6 +51,10 @@
       {% include "operations/_partials/datos_cita.html" %}
     </div>
 
+    <div class="dz-card p-4 mb-3">
+      {% include "operations/_partials/datos_ingreso.html" %}
+    </div>
+
     <div class="dz-card p-4">
       <h6 class="fw-bold mb-3">
         <i class="bi bi-diagram-3 text-success me-2"></i>Trazabilidad de Etapas
@@ -137,10 +141,6 @@
         {% endwith %}
       </div>
       {% endif %}
-
-      <div class="mb-3">
-        {% include "operations/_partials/datos_ingreso.html" %}
-      </div>
 
       <button class="btn btn-primary rounded-3 shadow-sm px-4"
               onclick="accionTicket('autorizar-ingreso', {{ ticket.id }}, '¿Autorizar ingreso a planta para Ticket #{{ ticket.id }}?')">
