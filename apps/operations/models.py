@@ -94,6 +94,30 @@ class Ticket(models.Model):
         )
     )
 
+    # ── Rediseño de flujo Materia Prima (Fase 1 — solo modelo, sin lógica todavía) ──
+    # tipo_flujo se mantiene sin cambios (sigue siendo la fuente real hasta que las
+    # fases de servicio/vistas migren a estos 2 campos y se retire).
+    muelle = models.CharField(
+        max_length=50, blank=True, default='',
+        help_text=(
+            "Muelle/puerta de descarga real, capturado al 'Iniciar Recepción' "
+            "por Almacén o Materia Prima. Campo propio del Ticket — no reutiliza "
+            "AppointmentSlot.dock (ese es el muelle asignado por Programación/"
+            "Compras al horario; este es el muelle real usado en la recepción "
+            "de este Ticket específico)."
+        )
+    )
+
+    requiere_calidad = models.BooleanField(
+        default=False,
+        help_text=(
+            "Decide si el ticket pasa a CALIDAD tras la recepción. Reemplaza a "
+            "tipo_flujo como señal operativa: se captura explícitamente al "
+            "'Iniciar Recepción' (Almacén o Materia Prima), no se infiere "
+            "automáticamente de las OCs vinculadas."
+        )
+    )
+
     def close_ticket(self):
         """Calcula y guarda el tiempo total en planta al finalizar."""
         if self.estado == 'FINALIZADO':
