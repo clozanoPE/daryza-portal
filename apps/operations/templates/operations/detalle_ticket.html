@@ -235,9 +235,6 @@
       </h6>
 
       {% if acciones.puede_editar_mi_sesion %}
-      {# Hay una acción editable pendiente para el usuario actual: se muestran
-         ambas vistas como pestañas — "Mi Sesión" (editable) y "Estado Actual"
-         (solo lectura, con el resultado más reciente de cada línea). #}
       <ul class="nav nav-tabs mb-3" id="inspeccionTabs" role="tablist">
         <li class="nav-item" role="presentation">
           <button class="nav-link active" id="tab-mi-sesion-btn" data-bs-toggle="tab" data-bs-target="#tab-mi-sesion" type="button" role="tab" aria-selected="true">
@@ -276,8 +273,6 @@
       </div>
 
       {% else %}
-      {# No es el turno del usuario actual (o la etapa activa ya avanzó): solo
-         se muestra "Estado Actual", de solo lectura y sin formularios. #}
       {% include "operations/_partials/tabla_inspeccion.html" with ocs_agrupadas=estado_actual_agrupada editable=False collapse_prefix="Estado" mostrar_etapa=True %}
       {% endif %}
     </div>

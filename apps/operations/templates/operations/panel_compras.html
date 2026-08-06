@@ -49,9 +49,6 @@
 
 {# ── Filtros (aplican tanto a "Pendientes" como a "Historial") ───────────── #}
 <form method="get" class="row g-2 mb-2">
-  {# El período (mes/año, Fase 10) se filtra desde su propio campo dentro de
-     la pestaña "Historial" — se reenvía aquí como oculto para no perderlo
-     al usar este filtro de arriba (que solo tiene sentido para Pendientes). #}
   <input type="hidden" name="periodo" value="{{ periodo }}">
   <div class="col-md-5">
     <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm rounded-3 bg-white"
@@ -222,6 +219,7 @@
 
 {% block extra_js %}
 <script src="{% static 'js/panels/ticket_actions.js' %}?v=2.0"></script>
+<script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 <script>
   /**
    * Abre el panel de configuración COA para una cita.

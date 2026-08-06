@@ -1,14 +1,4 @@
 {% load static %}
-{#
-  SIDEBAR — navegación por GRUPO del usuario.
-
-  URLs reales que existen en el proyecto:
-    appointments: portal_proveedor, historial_entregas, solicitar_cita, subir_coa
-    operations:   panel_almacen, panel_calidad, panel_vigilancia
-                  (y las que se agregarán con las mejoras)
-
-  GRUPOS: COMPRAS | VIGILANCIA | ALMACEN | CALIDAD | PROVEEDORES
-#}
 
 {% with grupo=request.user.groups.first.name|default:"" %}
 

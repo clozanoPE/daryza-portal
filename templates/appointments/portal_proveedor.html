@@ -179,12 +179,6 @@
             {% endfor %}
           </div>
 
-          {# Ticket generado: QR + carga de COA (solo mientras la cita sigue activa) +
-             acceso a trazabilidad (Fase 5), SIEMPRE disponible mientras exista Ticket.
-             Antes todo este bloque —incluido "Ver mi Ticket"— dependía de
-             cita.status == 'CONFIRMADA'; como registrar_salida cambia
-             Appointment.status a 'FINALIZADA' al cerrar el ticket, el proveedor
-             perdía el acceso justo cuando el ticket terminaba (Fase 11). #}
           {% if cita.token_qr %}
           <div class="p-3 rounded-3 bg-success-subtle border border-success-subtle text-center mb-2">
             {% if cita.status == 'CONFIRMADA' %}
@@ -207,9 +201,6 @@
             </div>
             {% endif %}
 
-            {# Datos de Ingreso: placa del vehículo y conductor (sesión 13).
-               Informativo para Vigilancia, no bloqueante — editable mientras
-               el ticket sigue PROGRAMADO (mismo criterio que el COA). #}
             <button onclick="toggleDatosIngreso({{ cita.id }})"
                     class="btn btn-outline-success btn-sm w-100 rounded-3 mb-2 text-xxs">
               <i class="bi bi-truck me-1"></i>Datos del Vehículo / Conductor
