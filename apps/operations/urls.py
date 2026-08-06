@@ -39,6 +39,10 @@ urlpatterns = [
          views.ajax_rechazar_cita_compras,
          name='ajax_rechazar_cita_compras'),
 
+    path('compras/historial/exportar/<str:formato>/',
+         views.exportar_historial_compras,
+         name='exportar_historial_compras'),
+
     # ── Panel Almacén ────────────────────────────────────────────────────
     path('almacen/',
          views.panel_almacen,
@@ -73,6 +77,10 @@ urlpatterns = [
          views.ajax_registrar_salida,
          name='ajax_registrar_salida'),
 
+    path('vigilancia/historial/exportar/<str:formato>/',
+         views.exportar_historial_vigilancia,
+         name='exportar_historial_vigilancia'),
+
     # ── Panel Calidad ────────────────────────────────────────────────────
     path('calidad/',
          views.panel_calidad,
@@ -81,6 +89,10 @@ urlpatterns = [
     path('api/registrar-inspeccion/',
          views.ajax_registrar_inspeccion,
          name='ajax_registrar_inspeccion'),
+
+    path('calidad/historial/exportar/<str:formato>/',
+         views.exportar_historial_calidad,
+         name='exportar_historial_calidad'),
 
     # ── Detalle del Ticket ───────────────────────────────────────────────
     path('ticket/<int:pk>/',

@@ -18,15 +18,43 @@ Parámetros esperados en el contexto del {% include %}:
                        appointment__user precargados, y
                        appointment__purchase_orders prefetched)
   periodo            : string 'YYYY-MM' (vía resolver_periodo)
+  historial_export_url_name : nombre de la URL de exportación de ESTE panel
+                       (Fase 15, sesión 21) — cada panel pasa la suya
+                       ('operations:exportar_historial_compras'/
+                       '_vigilancia'/'_calidad') para que el botón "Reporte"
+                       reutilice el mismo queryset ya filtrado, sin
+                       duplicar lógica de filtrado por panel.
 {% endcomment %}
-<form method="get" class="d-flex align-items-end gap-2 mb-3">
-  {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
-  {% if fecha_filtro %}<input type="hidden" name="fecha" value="{{ fecha_filtro }}">{% endif %}
-  {% include "partials/campo_filtro_periodo.html" %}
-  <button type="submit" class="btn btn-success btn-sm rounded-3 shadow-sm">
-    <i class="bi bi-funnel me-1"></i>Filtrar
-  </button>
-</form>
+<div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-3">
+  <form method="get" class="d-flex align-items-end gap-2">
+    {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+    {% if fecha_filtro %}<input type="hidden" name="fecha" value="{{ fecha_filtro }}">{% endif %}
+    {% include "partials/campo_filtro_periodo.html" %}
+    <button type="submit" class="btn btn-success btn-sm rounded-3 shadow-sm">
+      <i class="bi bi-funnel me-1"></i>Filtrar
+    </button>
+  </form>
+
+  {# ── Botón "Reporte" (Fase 15): exporta EXACTAMENTE el listado filtrado ── #}
+  <div class="dropdown">
+    <button class="btn btn-outline-success btn-sm rounded-3 shadow-sm dropdown-toggle" type="button"
+            data-bs-toggle="dropdown" aria-expanded="false">
+      <i class="bi bi-download me-1"></i>Reporte
+    </button>
+    <ul class="dropdown-menu dropdown-menu-end shadow border-0 rounded-3">
+      <li>
+        <a class="dropdown-item py-2" href="{% url historial_export_url_name formato='excel' %}?{{ request.GET.urlencode }}">
+          <i class="bi bi-file-earmark-excel me-2 text-success"></i>Exportar a Excel
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item py-2" href="{% url historial_export_url_name formato='pdf' %}?{{ request.GET.urlencode }}">
+          <i class="bi bi-file-earmark-pdf me-2 text-danger"></i>Exportar a PDF
+        </a>
+      </li>
+    </ul>
+  </div>
+</div>
 
 <div class="dz-card p-0 overflow-hidden">
   <div class="table-responsive">

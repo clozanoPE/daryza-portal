@@ -1,0 +1,56 @@
+{% comment %}
+Reporte de Historial (Fase 15, sesión 21) — documento standalone, mismo
+enfoque que operations/cargo_ticket_pdf.html (Fase 12): NO extiende
+base.html, xhtml2pdf solo soporta un subconjunto de CSS 2.1 (sin
+flexbox/grid/box-shadow), así que se usan solo tablas y bloques simples.
+
+Reutilizado por los 3 paneles internos (Compras/Vigilancia/Calidad) y por
+el Historial de Entregas del proveedor — el título y el filtro aplicado
+cambian según quién exporta, la tabla es siempre la misma.
+{% endcomment %}
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ titulo }}</title>
+  <style>
+    @page { size: A4 landscape; margin: 1.5cm; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #222222; }
+    h1 { font-size: 15pt; margin: 0 0 2px 0; }
+    .subtitle { font-size: 9pt; color: #666666; margin: 0 0 16px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th { background-color: #198754; color: #ffffff; text-align: left; font-size: 9pt;
+               padding: 6px 8px; }
+    tbody td { padding: 5px 8px; font-size: 9pt; border-bottom: 1px solid #dddddd; }
+    tbody tr:nth-child(even) { background-color: #f7f7f7; }
+    .footer { margin-top: 20px; font-size: 8pt; color: #999999; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>{{ titulo }}</h1>
+  <p class="subtitle">Daryza S.A.C. &middot; Generado el {{ fecha_generacion|date:"d/m/Y H:i" }} &middot; {{ filas|length }} registro(s)</p>
+
+  <table>
+    <thead>
+      <tr>
+        {% for columna in columnas %}
+        <th>{{ columna }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for fila in filas %}
+      <tr>
+        {% for valor in fila %}
+        <td>{{ valor }}</td>
+        {% endfor %}
+      </tr>
+      {% empty %}
+      <tr><td colspan="{{ columnas|length }}">No hay registros que coincidan con el filtro aplicado.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="footer">Documento generado automáticamente por Daryza VBS a partir del listado filtrado en pantalla.</p>
+</body>
+</html>

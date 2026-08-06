@@ -17,7 +17,7 @@ from io import BytesIO
 
 from django.core.exceptions import ValidationError
 from django.db.models import Q
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import render, get_object_or_404, redirect
 from django.template.loader import render_to_string
 from django.views.decorators.http import require_POST
@@ -34,6 +34,7 @@ from apps.base.decorators import (
     compras_required, staff_interno_required, staff_o_proveedor_required,
 )
 from apps.base.filters import resolver_periodo
+from apps.base.reporting import ticket_a_row, exportar_excel, exportar_pdf
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -70,42 +71,18 @@ def _safe_post(request, func):
 # PANEL COMPRAS — Revisión, configuración COA, aprobación
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@compras_required
-def panel_compras(request):
+def _historial_compras_qs(request):
     """
-    Panel de Compras:
-      - Pestaña "Pendientes": citas SOLICITADAS para validar OCs y
-        configurar qué líneas requieren COA antes de aprobar o rechazar.
-      - Pestaña "Historial" (Fase 6): TODOS los Tickets del sistema (no
-        solo los que confirmó este usuario), cada uno enlazando a
-        operations:trazabilidad_ticket (Fase 5) para su detalle de solo
-        lectura. No se modifica ninguna lógica de etapa_actual ni de
-        permisos — solo se agrega un punto de entrada de consulta.
-    Los filtros (q, fecha) ya existentes aplican a ambas pestañas. El
-    filtro de período (mes/año, Fase 10) solo aplica al Historial —
-    "Pendientes" es la cola activa, no tiene sentido acotarla por mes.
+    Queryset de tickets_historial de panel_compras, ya filtrado (q/fecha/
+    periodo) — extraído a función propia (Fase 15, sesión 21) para que
+    exportar_historial_compras exporte EXACTAMENTE lo mismo que ve el
+    usuario en pantalla, sin duplicar la lógica de filtrado.
+    Devuelve (queryset, periodo) — periodo se usa para el nombre del archivo.
     """
     q     = request.GET.get('q', '').strip()
     fecha = request.GET.get('fecha', '')
     anio, mes, periodo = resolver_periodo(request)
 
-    qs = Appointment.objects.filter(
-        status='SOLICITADO'
-    ).select_related('slot', 'user').prefetch_related(
-        'purchase_orders__lines'
-    ).order_by('-created_at')
-
-    if q:
-        qs = qs.filter(
-            Q(id__icontains=q) |
-            Q(purchase_orders__doc_num__icontains=q) |
-            Q(user__username__icontains=q)
-        ).distinct()
-
-    if fecha:
-        qs = qs.filter(slot__date=fecha)
-
-    # ── Historial (Fase 6): todos los tickets, sin filtrar por confirmante ──
     tickets_qs = Ticket.objects.select_related(
         'appointment__slot', 'appointment__user'
     ).prefetch_related(
@@ -126,6 +103,58 @@ def panel_compras(request):
         appointment__slot__date__year=anio,
         appointment__slot__date__month=mes,
     )
+    return tickets_qs, periodo
+
+
+def _exportar_tickets(tickets_qs, formato, filename, titulo):
+    """
+    Despacho compartido Excel/PDF (Fase 15) para los 3 paneles internos —
+    evita repetir el if/elif de formato en cada vista de exportación.
+    """
+    rows = [ticket_a_row(t) for t in tickets_qs]
+    if formato == 'excel':
+        return exportar_excel(rows, filename, titulo)
+    if formato == 'pdf':
+        return exportar_pdf(rows, filename, titulo)
+    return HttpResponseBadRequest('Formato de reporte no soportado. Use "excel" o "pdf".')
+
+
+@compras_required
+def panel_compras(request):
+    """
+    Panel de Compras:
+      - Pestaña "Pendientes": citas SOLICITADAS para validar OCs y
+        configurar qué líneas requieren COA antes de aprobar o rechazar.
+      - Pestaña "Historial" (Fase 6): TODOS los Tickets del sistema (no
+        solo los que confirmó este usuario), cada uno enlazando a
+        operations:trazabilidad_ticket (Fase 5) para su detalle de solo
+        lectura. No se modifica ninguna lógica de etapa_actual ni de
+        permisos — solo se agrega un punto de entrada de consulta.
+    Los filtros (q, fecha) ya existentes aplican a ambas pestañas. El
+    filtro de período (mes/año, Fase 10) solo aplica al Historial —
+    "Pendientes" es la cola activa, no tiene sentido acotarla por mes.
+    """
+    q     = request.GET.get('q', '').strip()
+    fecha = request.GET.get('fecha', '')
+
+    qs = Appointment.objects.filter(
+        status='SOLICITADO'
+    ).select_related('slot', 'user').prefetch_related(
+        'purchase_orders__lines'
+    ).order_by('-created_at')
+
+    if q:
+        qs = qs.filter(
+            Q(id__icontains=q) |
+            Q(purchase_orders__doc_num__icontains=q) |
+            Q(user__username__icontains=q)
+        ).distinct()
+
+    if fecha:
+        qs = qs.filter(slot__date=fecha)
+
+    # ── Historial (Fase 6): todos los tickets, sin filtrar por confirmante ──
+    tickets_qs, periodo = _historial_compras_qs(request)
 
     context = {
         'solicitudes':       qs,
@@ -135,6 +164,21 @@ def panel_compras(request):
         'periodo':           periodo,
     }
     return render(request, 'operations/panel_compras.html', context)
+
+
+@compras_required
+def exportar_historial_compras(request, formato: str):
+    """
+    GET /operations/compras/historial/exportar/<excel|pdf>/  (Fase 15)
+    Exporta EXACTAMENTE el mismo tickets_historial que ve Compras en pantalla
+    (mismos filtros q/fecha/periodo ya aplicados vía querystring).
+    """
+    tickets_qs, periodo = _historial_compras_qs(request)
+    return _exportar_tickets(
+        tickets_qs, formato,
+        filename=f'historial_compras_{periodo}',
+        titulo=f'Historial de Tickets — Panel Compras ({periodo})',
+    )
 
 
 @compras_required
@@ -362,6 +406,28 @@ def ajax_autorizar_almacen(request):
     return _safe_post(request, handle)
 
 
+def _historial_por_periodo_qs(request):
+    """
+    Queryset de tickets_historial compartido por panel_vigilancia y
+    panel_calidad: TODOS los tickets, acotados solo por el filtro de
+    período (mes/año, Fase 10) — ninguno de los 2 paneles tiene filtro
+    q/fecha propio (a diferencia de Compras, ver _historial_compras_qs).
+    Extraído (Fase 15, sesión 21) para que exportar_historial_vigilancia y
+    exportar_historial_calidad exporten exactamente lo que ve cada panel.
+    Devuelve (queryset, periodo).
+    """
+    anio, mes, periodo = resolver_periodo(request)
+    tickets_qs = Ticket.objects.select_related(
+        'appointment__slot', 'appointment__user'
+    ).prefetch_related(
+        'appointment__purchase_orders'
+    ).filter(
+        appointment__slot__date__year=anio,
+        appointment__slot__date__month=mes,
+    ).order_by('-fecha_creacion')
+    return tickets_qs, periodo
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PANEL VIGILANCIA — Ingreso y salida por QR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -405,14 +471,7 @@ def panel_vigilancia(request):
         ticket.coa_completo = OperationsService.calcular_coa_completo(ticket)
 
     # ── Historial (Fase 11): todos los tickets, acotados al período (Fase 10) ──
-    tickets_historial = Ticket.objects.select_related(
-        'appointment__slot', 'appointment__user'
-    ).prefetch_related(
-        'appointment__purchase_orders'
-    ).filter(
-        appointment__slot__date__year=anio,
-        appointment__slot__date__month=mes,
-    ).order_by('-fecha_creacion')
+    tickets_historial, periodo = _historial_por_periodo_qs(request)
 
     context = {
         'tickets_programados': tickets_prog,
@@ -423,6 +482,21 @@ def panel_vigilancia(request):
         'hoy': hoy,
     }
     return render(request, 'operations/panel_vigilancia.html', context)
+
+
+@vigilancia_required
+def exportar_historial_vigilancia(request, formato: str):
+    """
+    GET /operations/vigilancia/historial/exportar/<excel|pdf>/  (Fase 15)
+    Exporta EXACTAMENTE el mismo tickets_historial que ve Vigilancia en
+    pantalla (mismo filtro de período ya aplicado vía querystring).
+    """
+    tickets_qs, periodo = _historial_por_periodo_qs(request)
+    return _exportar_tickets(
+        tickets_qs, formato,
+        filename=f'historial_vigilancia_{periodo}',
+        titulo=f'Historial de Tickets — Panel Vigilancia ({periodo})',
+    )
 
 
 @staff_o_proveedor_required
@@ -539,8 +613,6 @@ def panel_calidad(request):
     El filtro de período (mes/año, Fase 10) solo aplica al Historial —
     "Pendientes" es la cola activa, no tiene sentido acotarla por mes.
     """
-    anio, mes, periodo = resolver_periodo(request)
-
     tickets_para_calidad = Ticket.objects.filter(
         estado='EN_PLANTA',
         tipo_flujo='CON_CALIDAD',
@@ -555,14 +627,7 @@ def panel_calidad(request):
     ).distinct()
 
     # ── Historial (Fase 11): todos los tickets, acotados al período (Fase 10) ──
-    tickets_historial = Ticket.objects.select_related(
-        'appointment__slot', 'appointment__user'
-    ).prefetch_related(
-        'appointment__purchase_orders'
-    ).filter(
-        appointment__slot__date__year=anio,
-        appointment__slot__date__month=mes,
-    ).order_by('-fecha_creacion')
+    tickets_historial, periodo = _historial_por_periodo_qs(request)
 
     context = {
         'tickets':            tickets_para_calidad,
@@ -570,6 +635,21 @@ def panel_calidad(request):
         'periodo':            periodo,
     }
     return render(request, 'operations/panel_calidad.html', context)
+
+
+@calidad_required
+def exportar_historial_calidad(request, formato: str):
+    """
+    GET /operations/calidad/historial/exportar/<excel|pdf>/  (Fase 15)
+    Exporta EXACTAMENTE el mismo tickets_historial que ve Calidad en
+    pantalla (mismo filtro de período ya aplicado vía querystring).
+    """
+    tickets_qs, periodo = _historial_por_periodo_qs(request)
+    return _exportar_tickets(
+        tickets_qs, formato,
+        filename=f'historial_calidad_{periodo}',
+        titulo=f'Historial de Tickets — Panel Calidad ({periodo})',
+    )
 
 
 @staff_interno_required

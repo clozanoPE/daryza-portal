@@ -247,7 +247,7 @@
 
 {# ── Pestaña: Historial (Fase 11) — TODOS los tickets, solo lectura ──────── #}
 <div class="tab-pane fade" id="tab-historial" role="tabpanel">
-  {% include "operations/_partials/historial_tickets.html" with tickets_historial=tickets_historial %}
+  {% include "operations/_partials/historial_tickets.html" with tickets_historial=tickets_historial historial_export_url_name='operations:exportar_historial_vigilancia' %}
 </div>{# /tab-historial #}
 
 </div>{# /vigilanciaTabsContent #}

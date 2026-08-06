@@ -10,7 +10,7 @@ Vistas del portal del proveedor:
   - subir_coa_linea_ajax: POST — cargar COA por línea (OneDrive)
 """
 from django.views.generic import TemplateView, ListView
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponseBadRequest
 from django.utils import timezone
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -23,6 +23,7 @@ from .services import SlotService, AppointmentService
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 from apps.base.decorators import proveedor_required
 from apps.base.filters import resolver_periodo
+from apps.base.reporting import cita_a_row, exportar_excel, exportar_pdf
 
 
 def _json_ok(**kwargs):
@@ -98,6 +99,39 @@ class PortalProveedorView(TemplateView):
         return context
 
 
+def _historial_citas_qs(request):
+    """
+    Queryset de citas del proveedor filtrado por q/status/sede — extraído de
+    HistorialCitasView.get_queryset (Fase 15, sesión 21) para que
+    exportar_historial_citas exporte EXACTAMENTE lo mismo que ve el
+    proveedor en pantalla, sin duplicar la lógica de filtrado. Esta vista
+    no tiene filtro de período (confirmado sesión 15: fuera del alcance de
+    la Fase 10, ya tiene su propia paginación).
+    """
+    qs = Appointment.objects.filter(
+        user=request.user
+    ).select_related('slot').prefetch_related(
+        'purchase_orders', 'ticket'
+    ).order_by('-created_at')
+
+    q = request.GET.get('q')
+    if q:
+        qs = qs.filter(
+            Q(id__icontains=q) |
+            Q(purchase_orders__doc_num__icontains=q)
+        ).distinct()
+
+    status = request.GET.get('status')
+    if status:
+        qs = qs.filter(status=status)
+
+    sede = request.GET.get('sede')
+    if sede:
+        qs = qs.filter(lugar_entrega=sede)
+
+    return qs
+
+
 @method_decorator(proveedor_required, name='dispatch')
 class HistorialCitasView(ListView):
     """Historial paginado de citas del proveedor."""
@@ -107,28 +141,7 @@ class HistorialCitasView(ListView):
     paginate_by          = 10
 
     def get_queryset(self):
-        qs = Appointment.objects.filter(
-            user=self.request.user
-        ).select_related('slot').prefetch_related(
-            'purchase_orders', 'ticket'
-        ).order_by('-created_at')
-
-        q = self.request.GET.get('q')
-        if q:
-            qs = qs.filter(
-                Q(id__icontains=q) |
-                Q(purchase_orders__doc_num__icontains=q)
-            ).distinct()
-
-        status = self.request.GET.get('status')
-        if status:
-            qs = qs.filter(status=status)
-
-        sede = self.request.GET.get('sede')
-        if sede:
-            qs = qs.filter(lugar_entrega=sede)
-
-        return qs
+        return _historial_citas_qs(self.request)
 
     def get_context_data(self, **kwargs):
         """
@@ -147,6 +160,28 @@ class HistorialCitasView(ListView):
                 if hasattr(cita, 'ticket') else None
             )
         return context
+
+
+@proveedor_required
+def exportar_historial_citas(request, formato: str):
+    """
+    GET /appointments/historial/exportar/<excel|pdf>/  (Fase 15, sesión 21)
+    Exporta EXACTAMENTE el mismo listado que ve el proveedor en
+    /appointments/historial/ (mismos filtros q/status/sede ya aplicados vía
+    querystring), restringido por diseño a sus propias citas
+    (_historial_citas_qs ya filtra por user=request.user, igual que
+    HistorialCitasView — no se duplica ninguna lógica de permisos nueva).
+    """
+    citas_qs = _historial_citas_qs(request)
+    rows = [cita_a_row(c) for c in citas_qs]
+    titulo = f'Historial de Entregas — {request.user.get_full_name() or request.user.username}'
+    filename = f'historial_entregas_{request.user.username}'
+
+    if formato == 'excel':
+        return exportar_excel(rows, filename, titulo)
+    if formato == 'pdf':
+        return exportar_pdf(rows, filename, titulo)
+    return HttpResponseBadRequest('Formato de reporte no soportado. Use "excel" o "pdf".')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

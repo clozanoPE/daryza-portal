@@ -3,6 +3,7 @@ Django==6.0.3
 django-cors-headers==4.9.0
 django-extensions==4.1
 djangorestframework==3.17.0
+openpyxl==3.1.5
 pillow==12.1.1
 psycopg2-binary==2.9.11
 python-dotenv==1.2.2

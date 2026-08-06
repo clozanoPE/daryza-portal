@@ -12,6 +12,7 @@ from .views import (
     subir_coa_linea_ajax,
     api_lineas_cita,          # ← nuevo endpoint para panel COA del proveedor
     registrar_datos_ingreso_ajax,
+    exportar_historial_citas,
 )
 
 app_name = 'appointments'
@@ -25,6 +26,10 @@ urlpatterns = [
     path('historial/',
          HistorialCitasView.as_view(),
          name='historial_entregas'),
+
+    path('historial/exportar/<str:formato>/',
+         exportar_historial_citas,
+         name='exportar_historial_citas'),
 
     # ── AJAX: solicitar cita ─────────────────────────────────────────────
     path('api/solicitar-cita/',

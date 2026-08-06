@@ -16,10 +16,29 @@
                     <p class="text-muted mb-0">Consulta y descarga la trazabilidad de tus tickets con Daryza S.A.C.</p>
                 </div>
             </div>
-            <div class="d-none d-md-block">
-                <span class="badge bg-light text-dark border p-2 px-3 rounded-pill">
+            <div class="d-flex align-items-center gap-2">
+                <span class="badge bg-light text-dark border p-2 px-3 rounded-pill d-none d-md-inline-block">
                     <i class="bi bi-filter me-1"></i> {{ citas|length }} Registros encontrados
                 </span>
+                {# ── Botón "Reporte" (Fase 15): exporta EXACTAMENTE el listado filtrado (q/status/sede) ── #}
+                <div class="dropdown">
+                    <button class="btn btn-success btn-sm rounded-pill px-3 dropdown-toggle" type="button"
+                            data-bs-toggle="dropdown" aria-expanded="false">
+                        <i class="bi bi-download me-1"></i>Reporte
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end shadow border-0 rounded-3">
+                        <li>
+                            <a class="dropdown-item py-2" href="{% url 'appointments:exportar_historial_citas' formato='excel' %}?{{ request.GET.urlencode }}">
+                                <i class="bi bi-file-earmark-excel me-2 text-success"></i>Exportar a Excel
+                            </a>
+                        </li>
+                        <li>
+                            <a class="dropdown-item py-2" href="{% url 'appointments:exportar_historial_citas' formato='pdf' %}?{{ request.GET.urlencode }}">
+                                <i class="bi bi-file-earmark-pdf me-2 text-danger"></i>Exportar a PDF
+                            </a>
+                        </li>
+                    </ul>
+                </div>
             </div>
         </div>
     </div>
