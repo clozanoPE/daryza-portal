@@ -76,6 +76,22 @@ class AppointmentService:
                         "Revise su historial de citas."
                     )
 
+                # 2b. VALIDACIÓN: no mezclar OC Materia Prima con OC comerciales
+                # en la misma solicitud (regla de negocio del rediseño de flujo
+                # Materia Prima — el ticket resultante debe rutear a un solo
+                # actor, ALMACEN o MATERIA_PRIMA, según el tipo de OC). Esta es
+                # la capa que realmente importa: el picker del portal solo
+                # deshabilita visualmente el tipo contrario, pero cualquier vía
+                # que llegue directo aquí (bug de JS, request manual) queda
+                # bloqueada igual, sin guardar nada.
+                ocs_seleccionadas = PurchaseOrder.objects.filter(id__in=oc_ids)
+                tipos_seleccionados = {po.es_materia_prima for po in ocs_seleccionadas}
+                if len(tipos_seleccionados) > 1:
+                    raise ValidationError(
+                        "No se puede combinar Materia Prima con OC comerciales "
+                        "en la misma solicitud."
+                    )
+
             # 3. Creación del objeto Appointment (Atómico)
             appointment = Appointment.objects.create(
                 user=user, 

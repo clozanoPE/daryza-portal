@@ -51,7 +51,8 @@
             <label class="d-flex align-items-start gap-3 p-3 border-bottom hover-bg cursor-pointer"
                    style="cursor:pointer">
               <input type="checkbox" class="oc-checkbox form-check-input mt-0 flex-shrink-0"
-                     value="{{ oc.id }}">
+                     value="{{ oc.id }}"
+                     data-tipo="{% if oc.u_mss_tdb == 'MP' %}MP{% else %}COM{% endif %}">
               <div class="flex-grow-1">
                 <div class="d-flex align-items-center gap-2 mb-1">
                   <span class="fw-bold text-xs">OC {{ oc.doc_num }}</span>

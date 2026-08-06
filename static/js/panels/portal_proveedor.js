@@ -65,7 +65,40 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnEnviar) {
     btnEnviar.addEventListener('click', enviarSolicitud);
   }
+
+  // Bloqueo de mezcla MP/comercial en el picker de OCs (rediseño Materia Prima)
+  document.querySelectorAll('.oc-checkbox').forEach(cb => {
+    cb.addEventListener('change', actualizarDisponibilidadOCs);
+  });
 });
+
+/**
+ * No permite combinar OCs tipo Materia Prima con OCs comerciales en la misma
+ * solicitud (regla de negocio del rediseño de flujo Materia Prima). En cuanto
+ * se marca la primera OC, las del tipo contrario (según data-tipo, derivado
+ * de PurchaseOrder.u_mss_tdb) quedan deshabilitadas; al desmarcar todas,
+ * vuelven a estar disponibles. Esto es solo UX — la validación que realmente
+ * importa vive en el backend (AppointmentService.solicitar_cita_borrador).
+ */
+function actualizarDisponibilidadOCs() {
+  const checkboxes = document.querySelectorAll('.oc-checkbox');
+  const marcadas = Array.from(checkboxes).filter(cb => cb.checked);
+
+  if (!marcadas.length) {
+    checkboxes.forEach(cb => {
+      cb.disabled = false;
+      cb.closest('label')?.classList.remove('opacity-50');
+    });
+    return;
+  }
+
+  const tipoBloqueado = marcadas[0].dataset.tipo;
+  checkboxes.forEach(cb => {
+    const esDelTipoBloqueado = cb.dataset.tipo === tipoBloqueado;
+    cb.disabled = !cb.checked && !esDelTipoBloqueado;
+    cb.closest('label')?.classList.toggle('opacity-50', cb.disabled);
+  });
+}
 
 async function enviarSolicitud() {
   const { showToast, btnLoading } = DzUI;

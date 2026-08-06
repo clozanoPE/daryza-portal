@@ -771,3 +771,29 @@ Diagnóstico confirmado: el bloque **sí** existía en `detalle_ticket.html` des
 
 **Fuera de alcance de esta sesión (confirmado explícitamente por el usuario, para fases posteriores):** no se tocó `tipo_flujo`, `services.py`, `views.py`, templates, permisos (`apps/base/decorators.py`), `redirect_by_role`, ni la bifurcación de `grupo_requerido_por_etapa`. El bloqueo de OCs mixtas en el portal del proveedor (decisión 1) tampoco se implementó todavía — sigue pendiente. Grupo Django `MATERIA_PRIMA`, panel nuevo, e Historial/Reporte para Almacén y Materia Prima: fases futuras, según el plan de ~6-8 sesiones propuesto en el análisis.
 
+### 2026-08-06 (sesión 28) — Decisión 1 del rediseño Materia Prima: bloqueo de OCs mixtas (MP + comercial) en el portal del proveedor
+
+Implementa la decisión 1 confirmada en la sesión 27 ("el bloqueo de no mezclar OC tipo MP con OC no-MP se implementa en el portal del proveedor, al solicitar la cita — no en `confirmar_cita`"). Alcance explícitamente acotado por el usuario: solo `apps.appointments`, nada de `apps.operations`.
+
+**Investigación previa (sin tocar código), según lo pedido:**
+- Flujo completo mapeado: picker `templates/appointments/modal_agendar.html` (checkboxes `.oc-checkbox`, uno por OC en `ocs_pendientes`, ya mostraba el badge MP/Comercial vía `oc.u_mss_tdb`) → JS `static/js/panels/portal_proveedor.js::enviarSolicitud()` (recolecta `.oc-checkbox:checked`, arma `oc_ids` en el `FormData`) → vista `apps/appointments/views.py::solicitar_cita_ajax` (wrapper delgado) → `AppointmentService.solicitar_cita_borrador` (`apps/appointments/services.py:55`), donde ya vivía la única validación existente (OC ya en uso por otra cita activa).
+- Cómo se listan las OCs hoy: `PortalProveedorView.get_context_data` filtra solo por `card_code=ruc_proveedor` y `status__in=['O','PENDIENTE']` — **sin excluir OCs ya atadas a una cita activa** (esa validación solo corre en el backend al enviar, no en el listado). Confirmado también que **no existía ningún deshabilitado dinámico en el picker por ningún motivo previo** — era una lista estática de checkboxes.
+
+**Capa A — UX proactiva (`templates/appointments/modal_agendar.html` + `static/js/panels/portal_proveedor.js`):**
+- Cada checkbox `.oc-checkbox` ahora trae `data-tipo="MP"` o `data-tipo="COM"` (derivado de `oc.u_mss_tdb` en el template, mismo criterio que el badge que ya se mostraba).
+- Nueva función `actualizarDisponibilidadOCs()`, enganchada al evento `change` de cada checkbox: si hay al menos una marcada, deshabilita (`disabled=true` + clase `opacity-50` en el `<label>`) todas las del tipo contrario al de la primera marcada; si se desmarcan todas, quita el deshabilitado de todas. Es solo UX — no reemplaza la validación real.
+
+**Capa B — validación dura (`apps/appointments/services.py::AppointmentService.solicitar_cita_borrador`):**
+- Nuevo paso "2b", inmediatamente después de la validación existente de "OC ya en uso" y antes de crear el `Appointment` (dentro del mismo `transaction.atomic()`, así que si falla no se guarda nada): `tipos_seleccionados = {po.es_materia_prima for po in PurchaseOrder.objects.filter(id__in=oc_ids)}` — si `len(tipos_seleccionados) > 1` (hay tanto `True` como `False` entre las OCs seleccionadas), lanza `ValidationError("No se puede combinar Materia Prima con OC comerciales en la misma solicitud.")`. Usa la property `es_materia_prima` (booleano derivado de `u_mss_tdb`), no el string crudo, mismo criterio que el resto del código.
+
+**Validación realizada** (contra la BD real, `Client` de pruebas, usando el proveedor QA `P20266614803` que tiene 2 OCs MP y 2 comerciales libres tras el reset de la sesión 27; sin dejar datos permanentes — los `Appointment` de prueba se eliminaron al cerrar):
+- `manage.py check` y `makemigrations --check --dry-run` limpios (no hay cambios de modelo, como se esperaba). `manage.py test apps.operations`: **5/5 OK**.
+- Picker renderizado: los 4 `data-tipo` (`MP`/`COM`/`MP`/`COM`) aparecen correctos en el HTML, alineados con el tipo real de cada OC.
+- **Combinación MP + MP**: `POST /appointments/api/solicitar-cita/` con 2 OCs Materia Prima → `200`, `Appointment` creado — sigue funcionando sin cambios.
+- **Combinación comercial + comercial**: mismo resultado, `200`, `Appointment` creado — sigue funcionando sin cambios.
+- **Combinación mixta (MP + comercial)**: `400`, `{'status': 'error', 'msg': 'No se puede combinar Materia Prima con OC comerciales en la misma solicitud.'}` — mensaje exacto, y se confirmó por conteo (`Appointment.objects.count()` antes/después) que **no se creó ningún registro**.
+- Capa A (deshabilitado dinámico en el picker) verificada por revisión de código, no de forma interactiva en navegador — la extensión de Chrome no estaba conectada en este entorno en el momento de la validación. La lógica es autocontenida y de bajo riesgo (un solo `change` listener, sin estado async), pero queda pendiente una verificación visual en vivo si el usuario quiere confirmarla manualmente.
+- Sin residuos al cerrar: `Appointment.objects.count()` en `0`, las 9 OCs (incluidas las QA) confirmadas libres de nuevo.
+- Barrido de `{#` multilínea (regla permanente desde la sesión 26): **0 instancias** en los archivos tocados.
+
+**Fuera de alcance de esta sesión (confirmado explícitamente por el usuario):** `confirmar_cita`, `tipo_flujo`, `grupo_requerido_por_etapa`, y cualquier cosa de `apps.operations` — sin tocar. El resto del plan de fases del rediseño Materia Prima (grupo Django, panel nuevo, bifurcación de `autorizar_almacen`, Historial/Reporte de Almacén) sigue pendiente.
