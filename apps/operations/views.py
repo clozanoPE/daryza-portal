@@ -134,6 +134,11 @@ def panel_compras(request):
     Los filtros (q, fecha) ya existentes aplican a ambas pestañas. El
     filtro de período (mes/año, Fase 10) solo aplica al Historial —
     "Pendientes" es la cola activa, no tiene sentido acotarla por mes.
+
+    Sesión 35: se anota `cita.proveedor_nombre` (PurchaseOrder.card_name
+    de la primera OC vinculada, mismo campo ya usado en detalle_ticket.html/
+    panel_calidad.html/modal_agendar.html) — antes "Pendientes" solo
+    mostraba el código de usuario (username = RUC), sin la razón social.
     """
     q     = request.GET.get('q', '').strip()
     fecha = request.GET.get('fecha', '')
@@ -154,11 +159,16 @@ def panel_compras(request):
     if fecha:
         qs = qs.filter(slot__date=fecha)
 
+    solicitudes = list(qs)
+    for cita in solicitudes:
+        primera_oc = next(iter(cita.purchase_orders.all()), None)
+        cita.proveedor_nombre = primera_oc.card_name if primera_oc else ''
+
     # ── Historial (Fase 6): todos los tickets, sin filtrar por confirmante ──
     tickets_qs, periodo = _historial_compras_qs(request)
 
     context = {
-        'solicitudes':       qs,
+        'solicitudes':       solicitudes,
         'tickets_historial': tickets_qs,
         'q':                 q,
         'fecha_filtro':      fecha,
@@ -316,14 +326,21 @@ def panel_almacen(request):
     Compras — el filtro 'estado' del Kanban de citas de este panel es un
     campo de Appointment.status, sin equivalente en el Historial (Ticket-
     based), así que no se lee ahí, igual que en Compras.
+
+    Sesión 35: el Kanban "Confirmadas" es la única pantalla donde Almacén
+    ve sus tickets EN_PLANTA (no existe una cola Ticket-based dedicada, a
+    diferencia de Materia Prima/Calidad) — se anota `cita.fecha_ingreso_planta`
+    (etapa VIGILANCIA_ENTRADA explícita, mismo mecanismo de la sesión 23/25)
+    únicamente cuando `cita.ticket.estado == 'EN_PLANTA'`, para mostrar el
+    cronómetro "Tiempo en planta" también aquí.
     """
     q      = request.GET.get('q', '').strip()
     estado = request.GET.get('estado', '')
     fecha  = request.GET.get('fecha', '')
 
     qs = Appointment.objects.select_related(
-        'slot', 'user'
-    ).prefetch_related('purchase_orders').order_by('-created_at')
+        'slot', 'user', 'ticket'
+    ).prefetch_related('purchase_orders', 'ticket__stages').order_by('-created_at')
 
     if q:
         qs = qs.filter(
@@ -337,12 +354,23 @@ def panel_almacen(request):
     if fecha:
         qs = qs.filter(slot__date=fecha)
 
+    confirmadas = list(qs.filter(status='CONFIRMADA'))
+    for cita in confirmadas:
+        ticket = getattr(cita, 'ticket', None)
+        cita.fecha_ingreso_planta = None
+        if ticket and ticket.estado == 'EN_PLANTA':
+            entrada = next(
+                (s for s in ticket.stages.all() if s.etapa == 'VIGILANCIA_ENTRADA'),
+                None
+            )
+            cita.fecha_ingreso_planta = entrada.fecha_inicio if entrada else None
+
     # ── Historial (sesión 32): mismo patrón/queryset que Compras ──
     tickets_historial, periodo = _historial_compras_qs(request)
 
     context = {
         'solicitadas':     qs.filter(status='SOLICITADO'),
-        'confirmadas':     qs.filter(status='CONFIRMADA'),
+        'confirmadas':     confirmadas,
         'rechazadas':      qs.filter(status__in=['RECHAZADO', 'CANCELADA']),
         'q':               q,
         'estado_filtro':   estado,

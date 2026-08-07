@@ -162,6 +162,17 @@
       </div>
       {% endif %}
 
+      {% if cita.fecha_ingreso_planta %}
+      <div class="text-xs text-muted mb-2">
+        <i class="bi bi-stopwatch me-1 text-warning"></i>
+        <span class="fw-bold" id="timer-almacen-{{ cita.id }}"
+              data-entrada="{{ cita.fecha_ingreso_planta|date:'c' }}">
+          —
+        </span>
+        en planta
+      </div>
+      {% endif %}
+
       {# Mostrar ticket vinculado si existe #}
       {% if cita.ticket %}
       <a href="{% url 'operations:detalle_ticket' cita.ticket.id %}"
@@ -245,4 +256,28 @@
 {% block extra_js %}
 <script src="{% static 'js/panels/ticket_actions.js' %}?v=2.1"></script>
 <script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
+<script>
+  /**
+   * Cronómetro de "Tiempo en planta" (mismo mecanismo de panel_vigilancia/
+   * panel_calidad, sesiones 23/25): data-entrada viene en ISO 8601 vía
+   * |date:'c' desde cita.fecha_ingreso_planta, anotada en la vista solo
+   * cuando el ticket vinculado está EN_PLANTA.
+   */
+  document.querySelectorAll('[data-entrada]').forEach(el => {
+    const entrada = el.dataset.entrada;
+    if (!entrada) return;
+    const start = new Date(entrada);
+    const tick = () => {
+      const diff = Math.floor((Date.now() - start) / 1000);
+      const h = Math.floor(diff / 3600);
+      const m = Math.floor((diff % 3600) / 60);
+      const s = diff % 60;
+      el.textContent = h > 0
+        ? `${h}h ${String(m).padStart(2,'0')}m`
+        : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    };
+    tick();
+    setInterval(tick, 1000);
+  });
+</script>
 {% endblock %}

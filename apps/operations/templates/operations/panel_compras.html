@@ -110,6 +110,9 @@
           <span class="mx-2">·</span>
           <i class="bi bi-person-badge me-1"></i>
           <strong>{{ cita.user.get_full_name|default:cita.user.username }}</strong>
+          {% if cita.proveedor_nombre %}
+          <span class="text-muted">— {{ cita.proveedor_nombre }}</span>
+          {% endif %}
           <span class="mx-2">·</span>
           <i class="bi bi-geo-alt me-1"></i>{{ cita.get_lugar_entrega_display }}
         </div>
