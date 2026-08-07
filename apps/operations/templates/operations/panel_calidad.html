@@ -135,7 +135,7 @@
             <td class="text-xs text-end" style="min-width:90px">
               <input type="number" step="0.0001"
                      class="form-control form-control-sm text-end insp-cantidad"
-                     value="{{ insp.cantidad_modificada }}"
+                     value="{{ insp.cantidad_modificada|stringformat:'.4f' }}"
                      style="min-width:80px">
             </td>
             <td class="text-center" style="min-width:120px">
