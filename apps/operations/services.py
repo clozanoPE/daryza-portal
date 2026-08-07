@@ -69,26 +69,34 @@ class OperationsService:
 
         Devuelve None si no queda ninguna acción de etapa pendiente (FINALIZADO).
 
-        Sesión 30 (rediseño Materia Prima, Fase 3+4):
-          - VIGILANCIA_INGRESO ya no es fijo a 'ALMACEN' — bifurca a
-            ALMACEN o MATERIA_PRIMA según _grupo_actor_recepcion (el actor
-            que ejecutará "Iniciar Recepción").
-          - ALMACEN bifurca a CALIDAD o al mismo actor de recepción según
-            ticket.requiere_calidad (capturado al Iniciar Recepción) en vez
-            de tipo_flujo — debe coincidir exactamente con el fork que
-            aplica registrar_calidad al cerrar la etapa, o el candado de
-            permiso quedaría desalineado con lo que realmente ocurre.
+        Sesión 37 — corrección de flujo (contradecía el diseño original de
+        la Fase 4/sesión 30, no un cambio de comportamiento nuevo): ALMACEN
+        ya NO bifurca según ticket.requiere_calidad — le corresponde
+        SIEMPRE al actor de recepción (_grupo_actor_recepcion), sin
+        importar requiere_calidad. Antes, con requiere_calidad=True, esta
+        etapa saltaba directo a 'CALIDAD' apenas se completaba "Iniciar
+        Recepción" — bloqueando por completo la propia inspección línea
+        por línea del actor (CANT. REAL/ESTADO/OBSERVACIÓN), confirmado en
+        prueba manual real con un ticket Materia Prima. requiere_calidad
+        decide únicamente si, DESPUÉS de que el actor guarda su propia
+        inspección, hay un paso ADICIONAL de Calidad (ETAPA_CALIDAD, ahora
+        una etapa activa genuina con su propio turno) o se salta directo a
+        VIGILANCIA_SALIDA — ver OperationsService.registrar_calidad, que
+        aplica el mismo fork en el mismo punto (debe coincidir siempre con
+        este mapa o el candado de permiso queda desalineado).
+
+        Sesión 30 (rediseño Materia Prima, Fase 3+4): VIGILANCIA_INGRESO ya
+        no es fijo a 'ALMACEN' — bifurca a ALMACEN o MATERIA_PRIMA según
+        _grupo_actor_recepcion (el actor que ejecutará "Iniciar Recepción").
         """
         mapa = {
             Ticket.ETAPA_PENDIENTE_INGRESO:  'VIGILANCIA',   # siguiente: iniciar_ingreso_planta
             Ticket.ETAPA_VIGILANCIA_INGRESO: OperationsService._grupo_actor_recepcion(ticket),
                                                               # siguiente: autorizar_almacen ("Iniciar Recepción")
-            Ticket.ETAPA_ALMACEN: (
-                'CALIDAD' if ticket.requiere_calidad
-                else OperationsService._grupo_actor_recepcion(ticket)
-            ),                                               # siguiente: registrar_calidad
-            Ticket.ETAPA_CALIDAD:            'VIGILANCIA',   # siguiente: registrar_salida (requiere_calidad=True)
-            Ticket.ETAPA_VIGILANCIA_SALIDA:  'VIGILANCIA',   # siguiente: registrar_salida (requiere_calidad=False)
+            Ticket.ETAPA_ALMACEN:            OperationsService._grupo_actor_recepcion(ticket),
+                                                              # siguiente: registrar_calidad (paso 1, SIEMPRE el actor)
+            Ticket.ETAPA_CALIDAD:            'CALIDAD',      # siguiente: registrar_calidad (paso 2, inspección ADICIONAL)
+            Ticket.ETAPA_VIGILANCIA_SALIDA:  'VIGILANCIA',   # siguiente: registrar_salida (ambos caminos convergen aquí)
         }
         return mapa.get(ticket.etapa_actual)
 
@@ -301,78 +309,152 @@ class OperationsService:
 
         return stage
 
-# ─── Etapa 3: Inspección Final (Adaptable para flujo CON_CALIDAD y SOLO_ALMACEN) ───
+# ─── Etapa 3: Inspección (2 pasos genuinamente separados desde la sesión 37) ───
     @staticmethod
     @transaction.atomic
     def registrar_calidad(ticket_id: int, usuario_calidad,
                           resultados: list[dict]) -> TicketStage:
         """
-        Registra resultados de inspección por línea de OC.
-        Si requiere_calidad=True: Registra como CALIDAD.
-        Si requiere_calidad=False: Registra como ALMACEN (Cierre de flujo).
+        Registra una inspección por línea de OC — despacha según la etapa
+        activa del ticket (mismo nombre/firma de siempre — el parámetro
+        sigue llamándose usuario_calidad porque ajax_registrar_inspeccion
+        ya lo invoca así; el nombre "registrar_calidad" se mantiene por
+        compatibilidad aunque hoy también cubre el paso del actor de
+        recepción).
 
-        Sesión 30: el fork ya no depende de tipo_flujo (legacy, fijado al
-        confirmar la cita) sino de Ticket.requiere_calidad, capturado
-        explícitamente en autorizar_almacen ("Iniciar Recepción") — debe
-        coincidir exactamente con el fork que ya aplica
-        grupo_requerido_por_etapa para la etapa ALMACEN, o el candado de
-        permiso quedaría desalineado con lo que aquí realmente ocurre.
+        Corrección de flujo (sesión 37): contradecía el diseño original de
+        la Fase 4/sesión 30, no un cambio de comportamiento nuevo. Antes,
+        este método conflaba 2 pasos en 1 solo: si requiere_calidad=True,
+        escribía directo una fila etapa='CALIDAD' con los datos de quien
+        llamara — y como grupo_requerido_por_etapa ya saltaba a 'CALIDAD'
+        apenas el ticket llegaba a ALMACEN, el actor de recepción (ALMACEN/
+        MATERIA_PRIMA) NUNCA llegaba a registrar su propia inspección
+        (CANT. REAL/ESTADO/OBSERVACIÓN) — bug confirmado en prueba manual
+        real con un ticket Materia Prima. Ahora son 2 pasos separados:
+
+          1. ETAPA_ALMACEN -> el actor de recepción registra SU PROPIA
+             inspección línea por línea, SIEMPRE, sin importar
+             requiere_calidad. Escribe/actualiza las filas etapa='ALMACEN'
+             in situ (_registrar_inspeccion_recepcion). Avanza a
+             ETAPA_CALIDAD si requiere_calidad=True (Calidad tiene una
+             inspección ADICIONAL pendiente), o directo a
+             ETAPA_VIGILANCIA_SALIDA si no.
+
+          2. ETAPA_CALIDAD (solo alcanzable si requiere_calidad=True) ->
+             Calidad registra SU PROPIA inspección adicional e
+             independiente, en filas NUEVAS etapa='CALIDAD'
+             (_registrar_inspeccion_calidad) — no sobreescribe ni depende
+             de los valores que el actor ya guardó en el paso 1 (etapa=
+             'ALMACEN', que queda intacto como registro de lo recibido
+             físicamente). Avanza a ETAPA_VIGILANCIA_SALIDA.
+
+        Cualquier otro etapa_actual (el ticket no llegó todavía a ALMACEN)
+        cae en el paso 1 por defecto, que rechaza con TicketEtapaError vía
+        _validar_etapa — mismo mensaje de siempre.
         """
         ticket = OperationsService._get_ticket_en_planta(ticket_id)
 
-        # Candado de etapa: tanto Calidad (requiere_calidad=True) como el
-        # cierre de Almacén (requiere_calidad=False) parten de la misma
-        # etapa previa: ALMACEN.
+        if ticket.etapa_actual == Ticket.ETAPA_CALIDAD:
+            return OperationsService._registrar_inspeccion_calidad(ticket, usuario_calidad, resultados)
+        return OperationsService._registrar_inspeccion_recepcion(ticket, usuario_calidad, resultados)
+
+    @staticmethod
+    def _registrar_inspeccion_recepcion(ticket: Ticket, usuario,
+                                         resultados: list[dict]) -> TicketStage:
+        """Paso 1 de registrar_calidad — ver su docstring."""
+        # Candado de etapa: el actor de recepción actúa siempre desde ALMACEN,
+        # sin importar requiere_calidad.
         OperationsService._validar_etapa(ticket, Ticket.ETAPA_ALMACEN)
 
-        # 1. Determinamos dinámicamente las etiquetas según requiere_calidad
-        es_mp = ticket.requiere_calidad
+        OperationsService._cerrar_etapa(ticket, 'ALMACEN_RECEPCION', usuario)
 
-        etapa_historial = 'CALIDAD_INSPECCION' if es_mp else 'ALMACEN_FINALIZADO'
-        etapa_linea = 'CALIDAD' if es_mp else 'ALMACEN'
-
-        # 2. Cierre y apertura de etapas en el historial
-        OperationsService._cerrar_etapa(ticket, 'ALMACEN_RECEPCION', usuario_calidad)
-
+        etapa_historial = 'CALIDAD_INSPECCION' if ticket.requiere_calidad else 'ALMACEN_FINALIZADO'
         stage, _ = TicketStage.objects.get_or_create(
             ticket=ticket,
             etapa=etapa_historial,
-            defaults={'usuario': usuario_calidad}
+            defaults={'usuario': usuario}
         )
 
         for resultado in resultados:
             try:
-                # Buscamos la línea base generada en el ingreso
-                insp_almacen = TicketLineInspection.objects.get(
+                # Fila base generada al "Iniciar Recepción" (etapa='VIGILANCIA'
+                # ya se cerró; esta es la fila etapa='ALMACEN' que el propio
+                # actor va a completar ahora con sus valores reales).
+                insp_base = TicketLineInspection.objects.get(
                     id=resultado.get('inspeccion_id'),
                     ticket=ticket,
-                    etapa='ALMACEN' # Siempre leemos de la base de almacén
+                    etapa='ALMACEN'
                 )
             except TicketLineInspection.DoesNotExist:
                 continue
 
-            # Mantenemos el nombre de la variable 'insp_calidad' para no alterar estructura
-            insp_calidad, _ = TicketLineInspection.objects.update_or_create(
+            TicketLineInspection.objects.update_or_create(
+                ticket=ticket,
+                po_line=insp_base.po_line,
+                etapa='ALMACEN',  # SIEMPRE en situ — la propia inspección del actor
+                defaults={
+                    'doc_num': insp_base.doc_num,
+                    'usuario': usuario,
+                    'cantidad_sap': insp_base.cantidad_sap,
+                    'cantidad_modificada': resultado.get(
+                        'cantidad_modificada', insp_base.cantidad_modificada
+                    ),
+                    'estado': resultado.get('estado', 'CONFORME'),
+                    'comentario': resultado.get('comentario', ''),
+                    'requiere_coa': insp_base.requiere_coa,
+                    'coa_url': resultado.get('coa_url') or insp_base.coa_url or '',
+                }
+            )
+
+        ticket.etapa_actual = (
+            Ticket.ETAPA_CALIDAD if ticket.requiere_calidad else Ticket.ETAPA_VIGILANCIA_SALIDA
+        )
+        ticket.save(update_fields=['etapa_actual'])
+        return stage
+
+    @staticmethod
+    def _registrar_inspeccion_calidad(ticket: Ticket, usuario,
+                                       resultados: list[dict]) -> TicketStage:
+        """Paso 2 de registrar_calidad — ver su docstring. Solo alcanzable si requiere_calidad=True."""
+        OperationsService._validar_etapa(ticket, Ticket.ETAPA_CALIDAD)
+
+        stage = TicketStage.objects.filter(
+            ticket=ticket, etapa='CALIDAD_INSPECCION'
+        ).order_by('-fecha_inicio').first()
+        OperationsService._cerrar_etapa(ticket, 'CALIDAD_INSPECCION', usuario)
+
+        for resultado in resultados:
+            try:
+                # Fila del actor de recepción (paso 1) — sirve de referencia
+                # (cantidad_sap) pero Calidad escribe SUS PROPIOS valores en
+                # una fila nueva, nunca sobreescribe esta.
+                insp_almacen = TicketLineInspection.objects.get(
+                    id=resultado.get('inspeccion_id'),
+                    ticket=ticket,
+                    etapa='ALMACEN'
+                )
+            except TicketLineInspection.DoesNotExist:
+                continue
+
+            TicketLineInspection.objects.update_or_create(
                 ticket=ticket,
                 po_line=insp_almacen.po_line,
-                etapa=etapa_linea, # <--- Operación quirúrgica: CALIDAD o ALMACEN
+                etapa='CALIDAD',  # Fila NUEVA, independiente de la del actor
                 defaults={
                     'doc_num': insp_almacen.doc_num,
-                    'usuario': usuario_calidad,
+                    'usuario': usuario,
                     'cantidad_sap': insp_almacen.cantidad_sap,
                     'cantidad_modificada': resultado.get(
                         'cantidad_modificada', insp_almacen.cantidad_modificada
-                    ),                    
-                    'estado': resultado.get('estado', 'CONFORME'), # Default Conforme si no es MP
+                    ),
+                    'estado': resultado.get('estado', 'CONFORME'),
                     'comentario': resultado.get('comentario', ''),
                     'requiere_coa': insp_almacen.requiere_coa,
                     'coa_url': resultado.get('coa_url') or insp_almacen.coa_url or '',
                 }
             )
 
-        # Avanzamos la etapa (candado de servicio): CALIDAD si CON_CALIDAD,
-        # o directo a VIGILANCIA_SALIDA si SOLO_ALMACEN (se omite CALIDAD).
-        ticket.etapa_actual = Ticket.ETAPA_CALIDAD if es_mp else Ticket.ETAPA_VIGILANCIA_SALIDA
+        ticket.etapa_actual = Ticket.ETAPA_VIGILANCIA_SALIDA
         ticket.save(update_fields=['etapa_actual'])
 
         return stage
@@ -389,12 +471,15 @@ class OperationsService:
         """
         ticket = OperationsService._get_ticket_en_planta(ticket_id)
 
-        # Candado de etapa: depende de requiere_calidad, igual que el resto
-        # del método (sesión 30: antes dependía de tipo_flujo — requiere_calidad
-        # cierra desde CALIDAD; requiere_calidad=False ya saltó a
-        # VIGILANCIA_SALIDA en registrar_calidad).
-        etapa_esperada = Ticket.ETAPA_CALIDAD if ticket.requiere_calidad else Ticket.ETAPA_VIGILANCIA_SALIDA
-        OperationsService._validar_etapa(ticket, etapa_esperada)
+        # Candado de etapa: desde la sesión 37, ambos caminos (requiere_calidad
+        # True o False) convergen en ETAPA_VIGILANCIA_SALIDA ANTES de que
+        # Vigilancia actúe — la inspección adicional de Calidad (paso 2 de
+        # registrar_calidad) ya avanza ahí por sí misma, en vez de dejar el
+        # ticket en ETAPA_CALIDAD hasta que Vigilancia lo cierre. Antes
+        # dependía de requiere_calidad (cerraba desde CALIDAD) porque el
+        # propio registrar_salida era quien determinaba si la inspección de
+        # Calidad ya había ocurrido — ya no hace falta esa distinción aquí.
+        OperationsService._validar_etapa(ticket, Ticket.ETAPA_VIGILANCIA_SALIDA)
 
         ahora = timezone.now()
 
@@ -560,17 +645,24 @@ class OperationsService:
     def get_mi_sesion(ticket: Ticket) -> dict:
         """
         Filas de TicketLineInspection editables en la etapa activa del ticket
-        (Ticket.etapa_actual). La única etapa activa que corresponde a un
-        formulario editable por línea es ALMACEN: es la que alimenta
-        ajax_registrar_inspeccion / registrar_calidad, que siempre lee y
-        escribe sobre las filas etapa='ALMACEN' (ver registrar_calidad, que
-        busca `insp_almacen` por esa etapa sin importar si el flujo es
-        CON_CALIDAD o SOLO_ALMACEN). El resto de etapas activas
-        (PENDIENTE_INGRESO, VIGILANCIA_INGRESO, CALIDAD, VIGILANCIA_SALIDA)
-        avanzan con una acción de un solo clic sin edición por línea, así
-        que no tienen "mi sesión" propia — se devuelve {} en esos casos.
+        (Ticket.etapa_actual).
+
+        Sesión 37 (corrección de flujo): ahora son 2 etapas activas con
+        formulario editable por línea, no solo ALMACEN —
+          - ALMACEN: paso 1, el actor de recepción (ALMACEN/MATERIA_PRIMA)
+            registra su propia inspección.
+          - CALIDAD: paso 2 (solo si requiere_calidad=True), la inspección
+            ADICIONAL de Calidad.
+        Ambas leen las MISMAS filas base etapa='ALMACEN' — en el paso de
+        Calidad ya contienen los valores reales que el actor de recepción
+        registró en su propio paso (no los defaults de SAP); cada paso
+        guarda en su propia etapa (ver OperationsService.registrar_calidad
+        y sus 2 sub-métodos). El resto de etapas activas (PENDIENTE_INGRESO,
+        VIGILANCIA_INGRESO, VIGILANCIA_SALIDA) avanzan con una acción de un
+        solo clic sin edición por línea, así que no tienen "mi sesión"
+        propia — se devuelve {} en esos casos.
         """
-        if ticket.etapa_actual != Ticket.ETAPA_ALMACEN:
+        if ticket.etapa_actual not in (Ticket.ETAPA_ALMACEN, Ticket.ETAPA_CALIDAD):
             return {}
         return OperationsService.get_grouped_by_oc(ticket.id, etapa='ALMACEN')
 

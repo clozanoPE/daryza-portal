@@ -527,15 +527,17 @@ def _historial_por_periodo_qs(request):
 def _tickets_pendientes_materia_prima():
     """
     Tickets EN_PLANTA donde el turno actual (OperationsService.
-    grupo_requerido_por_etapa) es MATERIA_PRIMA — cubre tanto "Iniciar
-    Recepción" (etapa_actual=VIGILANCIA_INGRESO) como el cierre "Continuar
-    la Inspección sin Calidad" (etapa_actual=ALMACEN, requiere_calidad=
-    False y el actor es MATERIA_PRIMA). No existe una única expresión ORM
-    directa para esta condición combinada (depende del tipo de OC +
-    requiere_calidad + etapa_actual a la vez) — se filtra en Python sobre
-    un queryset ya acotado a EN_PLANTA, mismo criterio ya usado en
-    panel_vigilancia/panel_calidad para anotaciones por ticket (volumen
-    bajo de tickets EN_PLANTA en este sistema).
+    grupo_requerido_por_etapa) es MATERIA_PRIMA — cubre "Iniciar Recepción"
+    (etapa_actual=VIGILANCIA_INGRESO) y la propia inspección línea por
+    línea del actor en ETAPA_ALMACEN, sin importar requiere_calidad
+    (sesión 37, corrección de flujo — antes esta última solo se alcanzaba
+    con requiere_calidad=False, ya que grupo_requerido_por_etapa saltaba a
+    'CALIDAD' apenas requiere_calidad era True). No existe una única
+    expresión ORM directa para esta condición combinada (depende del tipo
+    de OC + etapa_actual a la vez) — se filtra en Python sobre un queryset
+    ya acotado a EN_PLANTA, mismo criterio ya usado en panel_vigilancia/
+    panel_calidad para anotaciones por ticket (volumen bajo de tickets
+    EN_PLANTA en este sistema).
     """
     qs = Ticket.objects.filter(estado='EN_PLANTA').select_related(
         'appointment__slot', 'appointment__user'
@@ -546,10 +548,15 @@ def _tickets_pendientes_materia_prima():
     for t in tickets:
         entrada = next((s for s in t.stages.all() if s.etapa == 'VIGILANCIA_ENTRADA'), None)
         t.fecha_ingreso_planta = entrada.fecha_inicio if entrada else None
-        t.accion_pendiente = (
-            'Iniciar Recepción' if t.etapa_actual == Ticket.ETAPA_VIGILANCIA_INGRESO
-            else 'Continuar sin Calidad'
-        )
+        if t.etapa_actual == Ticket.ETAPA_VIGILANCIA_INGRESO:
+            t.accion_pendiente = 'Iniciar Recepción'
+        elif t.requiere_calidad:
+            # Sesión 37: en ETAPA_ALMACEN con requiere_calidad=True, sigue
+            # pendiente la propia inspección del actor — "sin Calidad" sería
+            # un rótulo falso, ya que el ticket SÍ avanzará a Calidad después.
+            t.accion_pendiente = 'Registrar Inspección (→ Calidad)'
+        else:
+            t.accion_pendiente = 'Continuar sin Calidad'
     return tickets
 
 
@@ -779,15 +786,20 @@ def ajax_registrar_salida(request):
 def panel_calidad(request):
     """
     Panel de Calidad:
-      - Pestaña "Pendientes": tickets EN_PLANTA con requiere_calidad=True
-        donde la etapa VIGILANCIA_ENTRADA está completa y la recepción de
-        Almacén ha iniciado (ALMACEN_RECEPCION existe) pero Calidad no.
-        (Sesión 30b: filtraba por tipo_flujo='CON_CALIDAD' — desde que
-        registrar_calidad/registrar_salida bifurcan sobre requiere_calidad
-        (capturado en "Iniciar Recepción", sesión 30), un ticket con
-        requiere_calidad=True pero tipo_flujo='SOLO_ALMACEN' quedaba con
-        etapa_actual=CALIDAD sin aparecer nunca en esta bandeja — atascado.
-        Corregido para leer la misma señal que ya usa el resto del flujo.)
+      - Pestaña "Pendientes": tickets EN_PLANTA con etapa_actual=CALIDAD —
+        es decir, el actor de recepción (ALMACEN/MATERIA_PRIMA) ya
+        completó SU PROPIA inspección y ahora le toca a Calidad la
+        inspección ADICIONAL (sesión 37, corrección de flujo).
+        (Sesión 30b: filtraba por tipo_flujo='CON_CALIDAD' — corregido
+        entonces a requiere_calidad=True + existencia de las filas
+        ALMACEN_RECEPCION/CALIDAD_INSPECCION como proxy de "es su turno".
+        Sesión 37: ese proxy dejó de ser confiable — con el paso de
+        recepción y el de Calidad ahora genuinamente separados, la fila
+        CALIDAD_INSPECCION se ABRE ni bien el actor de recepción termina
+        su propia inspección, ANTES de que Calidad haga la suya, así que
+        "existe la fila" ya no implica "le toca a Calidad". Se filtra
+        directo por Ticket.etapa_actual, la misma señal que ya usa
+        OperationsService.grupo_requerido_por_etapa.)
       - Pestaña "Historial" (Fase 11, mismo patrón de la Fase 6): TODOS los
         Tickets del sistema, cada uno enlazando a operations:trazabilidad_ticket
         para consulta de solo lectura — antes, en cuanto Calidad terminaba su
@@ -796,8 +808,9 @@ def panel_calidad(request):
 
     Flujo correcto (pestaña Pendientes):
       VIGILANCIA_ENTRADA (cierra) → ALMACEN_RECEPCION (abre)
-      → Calidad inspecciona → CALIDAD_INSPECCION (crea)
-      → ALMACEN hace recepción final
+      → actor de recepción registra su propia inspección (etapa_actual
+        pasa a CALIDAD, aparece aquí) → Calidad inspecciona (adicional)
+      → VIGILANCIA_SALIDA
 
     El filtro de período (mes/año, Fase 10) solo aplica al Historial —
     "Pendientes" es la cola activa, no tiene sentido acotarla por mes.
@@ -826,9 +839,7 @@ def panel_calidad(request):
     tickets_para_calidad = Ticket.objects.filter(
         estado='EN_PLANTA',
         requiere_calidad=True,
-        stages__etapa='ALMACEN_RECEPCION',
-    ).exclude(
-        stages__etapa='CALIDAD_INSPECCION'
+        etapa_actual=Ticket.ETAPA_CALIDAD,
     ).select_related(
         'appointment__slot', 'appointment__user'
     ).prefetch_related(
@@ -839,7 +850,7 @@ def panel_calidad(request):
             ).order_by('po_line__purchase_order_id', 'po_line__line_num'),
         ),
         'stages',
-    ).distinct()
+    )
 
     for ticket in tickets_para_calidad:
         entrada = next(
@@ -988,9 +999,15 @@ def detalle_ticket(request, pk: int):
         request.user.is_superuser or
         (grupo_etapa_activa is not None and request.user.groups.filter(name=grupo_etapa_activa).exists())
     )
+    # Sesión 37 (corrección de flujo): CALIDAD ahora también es una etapa
+    # activa con formulario editable propio (paso 2, inspección ADICIONAL,
+    # solo alcanzable si requiere_calidad=True) — antes, con
+    # requiere_calidad=True, el ticket nunca llegaba a ETAPA_ALMACEN con el
+    # actor de recepción teniendo el turno (grupo_etapa_activa ya decía
+    # 'CALIDAD' desde ahí), así que este gate solo necesitaba cubrir ALMACEN.
     puede_editar_mi_sesion = (
         ticket.estado == 'EN_PLANTA' and
-        ticket.etapa_actual == Ticket.ETAPA_ALMACEN and
+        ticket.etapa_actual in (Ticket.ETAPA_ALMACEN, Ticket.ETAPA_CALIDAD) and
         es_su_turno
     )
 
@@ -1015,13 +1032,18 @@ def detalle_ticket(request, pk: int):
         # puede_registrar_calidad/almacen siguen siendo mutuamente excluyentes).
         'puede_registrar_almacen': puede_editar_mi_sesion and grupo_etapa_activa in ('ALMACEN', 'MATERIA_PRIMA'),
         'puede_registrar_salida': (
-            es_vigilancia and # <--- Agregamos esta condición obligatoria quito es_staff_interno and
-             ticket.estado == 'EN_PLANTA' and
-            'VIGILANCIA_SALIDA' not in etapas_completadas and
-            (
-                (es_flujo_calidad and 'CALIDAD_INSPECCION' in etapas_completadas) or
-                (not es_flujo_calidad and 'ALMACEN_RECEPCION' in etapas_completadas)
-            )
+            # Sesión 37: basta con ticket.etapa_actual == VIGILANCIA_SALIDA
+            # (ambos caminos, con o sin Calidad, ya convergen ahí antes de
+            # que Vigilancia actúe). Antes se comprobaba con
+            # 'CALIDAD_INSPECCION' in etapas_completadas — un simple chequeo
+            # de EXISTENCIA de esa fila, no de si ya estaba cerrada. Con el
+            # paso de Calidad ahora genuinamente separado, esa fila se abre
+            # ni bien el actor de recepción termina su propia inspección
+            # (antes de que Calidad haga la suya) — el chequeo viejo habría
+            # mostrado el botón de forma prematura.
+            es_vigilancia and
+            ticket.estado == 'EN_PLANTA' and
+            ticket.etapa_actual == Ticket.ETAPA_VIGILANCIA_SALIDA
         ),
         'es_flujo_calidad': es_flujo_calidad,
         # Expuesto para que el template sepa qué actor tiene el turno (ALMACEN,

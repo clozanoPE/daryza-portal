@@ -285,21 +285,53 @@ class RequiereCalidadForkTests(OperationsTestBase):
     propia bandeja de Pendientes).
     """
 
-    def test_requiere_calidad_true_avanza_a_etapa_calidad(self):
+    def test_requiere_calidad_true_pasa_por_inspeccion_propia_antes_de_avanzar_a_calidad(self):
+        """
+        Corrección de flujo (sesión 37): a ETAPA_ALMACEN le corresponde
+        SIEMPRE el actor de recepción, nunca CALIDAD directamente — antes,
+        con requiere_calidad=True, grupo_requerido_por_etapa saltaba
+        directo a 'CALIDAD' en cuanto el ticket llegaba a ALMACEN,
+        bloqueando la propia inspección del actor (bug real reportado en
+        prueba manual).
+        """
         ticket = self._crear_ticket_en_etapa(
             Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=True
         )
         self.assertTrue(ticket.requiere_calidad)
         self.assertEqual(
-            OperationsService.grupo_requerido_por_etapa(ticket), 'CALIDAD'
+            OperationsService.grupo_requerido_por_etapa(ticket), 'MATERIA_PRIMA',
+            "A ETAPA_ALMACEN le corresponde siempre el actor de recepción, "
+            "nunca CALIDAD directamente — sin importar requiere_calidad."
         )
 
-    def test_requiere_calidad_true_aparece_en_panel_calidad_pendientes(self):
+        # Paso 1: el actor SIEMPRE hace su propia inspección y la guarda.
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima,
+            resultados=self._resultados_para(ticket),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(
+            ticket.etapa_actual, Ticket.ETAPA_CALIDAD,
+            "Tras su propia inspección, con requiere_calidad=True debe avanzar "
+            "a CALIDAD para una inspección adicional (no saltársela)."
+        )
+        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'CALIDAD')
+
+        # Paso 2: Calidad hace SU PROPIA inspección adicional, independiente.
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_calidad,
+            resultados=self._resultados_para(ticket),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+
+    def test_requiere_calidad_true_aparece_en_panel_calidad_pendientes_tras_inspeccion_propia(self):
         """
-        Test de regresión del bug de la sesión 30b: panel_calidad debe
-        filtrar su bandeja de "Pendientes" por Ticket.requiere_calidad, no
-        por tipo_flujo — si alguien reintroduce el filtro viejo, este test
-        debe fallar.
+        Test de regresión del bug de la sesión 30b (panel_calidad filtraba
+        por tipo_flujo) + de la corrección de flujo de esta sesión (37): el
+        ticket solo debe aparecer en Pendientes de Calidad DESPUÉS de que
+        el actor de recepción complete su propia inspección (etapa_actual
+        == CALIDAD) — no apenas requiere_calidad quede en True.
         """
         ticket = self._crear_ticket_en_etapa(
             Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False, requiere_calidad=True
@@ -310,6 +342,19 @@ class RequiereCalidadForkTests(OperationsTestBase):
         self.assertTrue(ticket.requiere_calidad)
 
         self.client.force_login(self.u_calidad)
+
+        # Todavía NO debe aparecer: el actor (ALMACEN) no hizo su propia inspección.
+        resp_antes = self.client.get('/operations/calidad/')
+        ids_antes = [t.id for t in resp_antes.context['tickets']]
+        self.assertNotIn(ticket.id, ids_antes)
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
         resp = self.client.get('/operations/calidad/')
 
         self.assertEqual(resp.status_code, 200)
@@ -317,7 +362,9 @@ class RequiereCalidadForkTests(OperationsTestBase):
         self.assertIn(
             ticket.id, ids_pendientes,
             "El ticket con requiere_calidad=True debía aparecer en Pendientes de "
-            "Calidad sin importar tipo_flujo (bug de la sesión 30b, no debe reaparecer)."
+            "Calidad una vez que el actor de recepción completó su propia "
+            "inspección, sin importar tipo_flujo (bug de la sesión 30b, no debe "
+            "reaparecer)."
         )
 
     def test_requiere_calidad_false_almacen_salta_a_vigilancia_salida(self):
@@ -385,6 +432,21 @@ class RequiereCalidadForkTests(OperationsTestBase):
         )
         self.assertFalse(ticket.requiere_calidad)
 
+    def test_accion_pendiente_materia_prima_no_dice_sin_calidad_si_requiere_calidad(self):
+        """
+        _tickets_pendientes_materia_prima (panel_materia_prima) decía
+        siempre "Continuar sin Calidad" en ETAPA_ALMACEN — con la
+        corrección de flujo (sesión 37), un ticket ahí con
+        requiere_calidad=True SIGUE pendiente de la propia inspección del
+        actor, y ese rótulo sería falso (el ticket SÍ avanzará a Calidad).
+        """
+        from apps.operations.views import _tickets_pendientes_materia_prima
+
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')  # requiere_calidad=True
+        pendientes = {t.id: t.accion_pendiente for t in _tickets_pendientes_materia_prima()}
+        self.assertIn(ticket.id, pendientes)
+        self.assertNotEqual(pendientes[ticket.id], 'Continuar sin Calidad')
+
     def test_muelle_se_guarda_en_ticket_no_en_slot(self):
         ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_VIGILANCIA_INGRESO, 'CDL', requiere_coa=False)
         dock_original = ticket.appointment.slot.dock
@@ -413,11 +475,14 @@ class PermisoPorGrupoTests(OperationsTestBase):
     MATERIA_PRIMA agregado en esta sesión) en ambas direcciones.
     """
 
-    # ── ajax_registrar-inspeccion: ALMACEN vs CALIDAD (cobertura original) ──
+    # ── ajax_registrar-inspeccion: ALMACEN vs MATERIA_PRIMA vs CALIDAD ──────
+    # Corrección de flujo (sesión 37): a ETAPA_ALMACEN le corresponde SIEMPRE
+    # el actor de recepción, sin importar requiere_calidad — CALIDAD solo
+    # puede actuar DESPUÉS, en su propia etapa separada (ETAPA_CALIDAD).
 
-    def test_almacen_no_puede_actuar_cuando_turno_es_calidad(self):
-        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
-        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'CALIDAD')
+    def test_almacen_no_puede_actuar_en_recepcion_de_ticket_materia_prima(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')  # requiere_calidad=True
+        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'MATERIA_PRIMA')
 
         self.client.force_login(self.u_almacen)
         resp = self._post_registrar_inspeccion(ticket)
@@ -426,15 +491,95 @@ class PermisoPorGrupoTests(OperationsTestBase):
         ticket.refresh_from_db()
         self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
 
-    def test_calidad_si_puede_actuar_en_su_propio_turno(self):
-        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
+    def test_calidad_no_puede_actuar_mientras_es_turno_del_actor_de_recepcion(self):
+        """
+        Bug corregido: antes, con requiere_calidad=True, CALIDAD ya podía
+        actuar apenas el ticket llegaba a ETAPA_ALMACEN (grupo_requerido_
+        por_etapa saltaba directo a 'CALIDAD'), bloqueando por completo la
+        propia inspección del actor de recepción — confirmado en prueba
+        manual real con un ticket Materia Prima.
+        """
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')  # requiere_calidad=True
 
         self.client.force_login(self.u_calidad)
         resp = self._post_registrar_inspeccion(ticket)
 
+        self.assertEqual(resp.status_code, 403)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_materia_prima_puede_hacer_su_propia_inspeccion_aunque_requiera_calidad(self):
+        """
+        Verificación central del punto 3 del pedido: un ticket MATERIA_PRIMA
+        con requiere_calidad=True debe poder editar CANT. REAL/ESTADO/
+        OBSERVACIÓN normalmente, guardar, y recién ahí avanzar a Calidad
+        (no saltárselo) — antes quedaba bloqueado por completo.
+        """
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')  # requiere_calidad=True
+
+        self.client.force_login(self.u_materia_prima)
+        resp = self._post_registrar_inspeccion(ticket)
+
         self.assertEqual(resp.status_code, 200)
         ticket.refresh_from_db()
+        self.assertEqual(
+            ticket.etapa_actual, Ticket.ETAPA_CALIDAD,
+            "Tras su propia inspección, con requiere_calidad=True debe avanzar "
+            "a CALIDAD para una inspección adicional — no saltársela."
+        )
+
+        # Y ahora sí es el turno de Calidad, con su PROPIA inspección adicional.
+        self.assertEqual(OperationsService.grupo_requerido_por_etapa(ticket), 'CALIDAD')
+        self.client.force_login(self.u_calidad)
+        resp2 = self._post_registrar_inspeccion(ticket)
+        self.assertEqual(resp2.status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+
+    def test_materia_prima_no_puede_actuar_una_vez_que_es_turno_de_calidad(self):
+        """Tras su propia inspección, MATERIA_PRIMA queda bloqueado — el turno pasa exclusivamente a CALIDAD."""
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')  # requiere_calidad=True
+        self.client.force_login(self.u_materia_prima)
+        self._post_registrar_inspeccion(ticket)
+        ticket.refresh_from_db()
         self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+        resp = self._post_registrar_inspeccion(ticket)  # MATERIA_PRIMA reintenta
+
+        self.assertEqual(resp.status_code, 403)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+    def test_calidad_registra_su_propia_inspeccion_independiente_de_recepcion(self):
+        """
+        La inspección de Calidad es GENUINAMENTE independiente de la del
+        actor de recepción — cada una queda en su propia fila (etapa=
+        'ALMACEN' vs etapa='CALIDAD'), con sus propios valores, no una
+        copia/relabeling de la misma.
+        """
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
+        insp_id = TicketLineInspection.objects.get(ticket=ticket, etapa='ALMACEN').id
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima,
+            resultados=[{'inspeccion_id': insp_id, 'estado': 'CONFORME', 'cantidad_modificada': '9.5000'}],
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_calidad,
+            resultados=[{'inspeccion_id': insp_id, 'estado': 'RECHAZADO', 'cantidad_modificada': '8.0000'}],
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+
+        insp_almacen = TicketLineInspection.objects.get(ticket=ticket, etapa='ALMACEN')
+        insp_calidad = TicketLineInspection.objects.get(ticket=ticket, etapa='CALIDAD')
+        self.assertEqual(str(insp_almacen.cantidad_modificada), '9.5000')
+        self.assertEqual(insp_almacen.estado, 'CONFORME')
+        self.assertEqual(str(insp_calidad.cantidad_modificada), '8.0000')
+        self.assertEqual(insp_calidad.estado, 'RECHAZADO')
 
     def test_calidad_no_puede_actuar_cuando_turno_es_almacen(self):
         ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
@@ -581,6 +726,54 @@ class CandadoDeEtapaTests(OperationsTestBase):
 
         ticket.refresh_from_db()
         self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_ALMACEN)
+
+    def test_no_se_puede_registrar_salida_antes_de_que_calidad_haga_su_propia_inspeccion(self):
+        """
+        Sesión 37: nuevo paso intermedio genuino (ETAPA_CALIDAD) — una vez
+        que el actor de recepción guarda su propia inspección con
+        requiere_calidad=True, el ticket queda esperando la inspección
+        ADICIONAL de Calidad; registrar_salida debe seguir bloqueado hasta
+        que esa segunda inspección ocurra.
+        """
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=True)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima,
+            resultados=self._resultados_para(ticket),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+        with self.assertRaises(TicketEtapaError):
+            OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+    def test_boton_registrar_salida_no_aparece_prematuramente_mientras_calidad_no_actua(self):
+        """
+        puede_registrar_salida (contexto de detalle_ticket) debe basarse en
+        etapa_actual == VIGILANCIA_SALIDA, no en la mera EXISTENCIA de la
+        fila CALIDAD_INSPECCION — con el nuevo flujo de 2 pasos, esa fila
+        se abre ni bien el actor de recepción termina su propia inspección,
+        antes de que Calidad haga la suya.
+        """
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP', requiere_calidad=True)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima,
+            resultados=self._resultados_para(ticket),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+        self.client.force_login(self.u_vigilancia)
+        resp = self.client.get(f'/operations/ticket/{ticket.id}/')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(
+            resp.context['acciones']['puede_registrar_salida'],
+            "No debe poder registrarse la salida antes de que Calidad haga su "
+            "propia inspección adicional."
+        )
 
     def test_no_se_puede_registrar_salida_dos_veces(self):
         ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)

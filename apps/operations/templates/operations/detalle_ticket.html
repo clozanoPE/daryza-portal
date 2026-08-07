@@ -222,7 +222,8 @@
               </button>
             {% elif acciones.puede_registrar_almacen %}
               <button id="btn-guardar-inspeccion-almacen" class="btn btn-primary text-white rounded-3 shadow-sm px-4" onclick="guardarInspeccion({{ ticket.id }}, 'almacen')">
-                <i class="bi bi-save me-2"></i>Continuar la Inspección sin Calidad
+                <i class="bi bi-save me-2"></i>
+                {% if ticket.requiere_calidad %}Guardar Inspección y Enviar a Calidad{% else %}Continuar la Inspección sin Calidad{% endif %}
               </button>
             {% endif %}
           </div>
