@@ -112,6 +112,7 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
 .slot-cell--available:hover .slot-cta{bottom:4px;opacity:1}
 .slot-cell--full{background:#fdeaea;color:#c0392b;border-color:#f9d6d6;opacity:.8}
 .slot-cell--closed{background:#f8f9fa;color:#adb5bd;border-color:#e9ecef}
+.slot-cell--pasado{background:repeating-linear-gradient(45deg,#f1f2f4,#f1f2f4 6px,#e9eaec 6px,#e9eaec 12px);color:#9aa0a6;border-color:#e4e6e9;opacity:.7;cursor:not-allowed}
 .slot-cell--selected{background:var(--dz-green)!important;color:#fff!important;border-color:var(--dz-green-dark)!important;box-shadow:0 6px 18px rgba(41,180,74,.35);transform:scale(1.04)}
 
 /* ─── 6. TICKET / OPERACIONES ─────────────────────────────────────────────── */

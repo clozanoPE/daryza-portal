@@ -55,28 +55,29 @@
         </div>
       </div>
 
-      {# Cabecera de días #}
+      {# Cabecera de días — día real + fecha (sesión 39), ya no texto fijo #}
       <div class="row g-1 mb-2 d-none d-lg-flex">
         <div class="col-auto" style="width:80px;"></div>
-        {% with "Lunes Martes Miércoles Jueves Viernes Sábado" as dias %}
-          {% for dia in dias.split %}
-          <div class="col text-center text-xs fw-bold text-muted text-uppercase">{{ dia }}</div>
-          {% endfor %}
-        {% endwith %}
+        {% for dia in dias_semana %}
+        <div class="col text-center text-xs fw-bold text-muted text-uppercase">
+          {{ dia.nombre }} {{ dia.fecha_display }}
+        </div>
+        {% endfor %}
       </div>
 
       {# Filas de horas #}
-      {% for hora, dias in matrix.items %}
+      {% for hora, columnas in matrix.items %}
       <div class="row g-1 align-items-center mb-2">
         <div class="col-auto d-flex align-items-center justify-content-center bg-light rounded-3 fw-bold text-dark text-xs shadow-sm"
              style="width:80px;height:48px;border:1px solid #eee">
           {{ hora }}
         </div>
-        {% for slot in dias %}
+        {% for slot in columnas %}
         <div class="col">
           <div class="slot-cell
                        {% if slot.color == 'verde' %}slot-cell--available
                        {% elif slot.color == 'rojo' %}slot-cell--full
+                       {% elif slot.color == 'pasado' %}slot-cell--pasado
                        {% else %}slot-cell--closed{% endif %}"
                {% if slot.color == 'verde' %}
                  data-slot-id="{{ slot.id }}"
@@ -88,6 +89,8 @@
               <div class="slot-cta bg-success text-white">SOLICITAR</div>
             {% elif slot.color == 'rojo' %}
               <div class="slot-cta bg-danger text-white">LLENO</div>
+            {% elif slot.color == 'pasado' %}
+              <div class="slot-cta bg-secondary text-white">HORA PASADA</div>
             {% else %}
               <div class="slot-cta bg-secondary text-white">CERRADO</div>
             {% endif %}

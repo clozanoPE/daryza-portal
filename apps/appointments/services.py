@@ -9,12 +9,47 @@ from apps.operations.models import Ticket
 from apps.sap_sync.models import PurchaseOrder
 
 class SlotService:
+    # Abreviaturas indexadas por date.weekday() (0=Lunes ... 6=Domingo) —
+    # solo para etiquetar columnas, no implica ninguna semántica de semana
+    # calendario (la ventana puede empezar cualquier día).
+    NOMBRES_DIA = ['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM']
+
     @staticmethod
     def get_semana_matrix(fecha_inicio):
         """
-        Genera una matriz de 6 días (L-S) con sus respectivos slots y estados de color.
+        Genera una matriz de 6 días CONSECUTIVOS desde fecha_inicio —
+        ventana rodante, no una semana calendario lunes-sábado (sesión 38:
+        ya se comportaba así de facto, con fecha_inicio siempre "hoy", pero
+        el template mostraba encabezados de columna fijos "Lunes...Sábado"
+        que no correspondían al día real. Sesión 39: se agrega 'dias', la
+        lista de encabezados reales para que el template deje de usar texto
+        fijo).
+
+        También marca cada slot de HOY cuya hora de inicio ya pasó como
+        color='pasado' (no seleccionable, sin importar cupos libres) —
+        comparado en hora local de Lima vía timezone.localtime(), no con
+        timezone.now() crudo (UTC con USE_TZ=True), que desfasaría la
+        comparación hasta 5 horas.
+
+        Retorna (matrix, dias):
+            matrix: dict {hora_str: [ {id, fecha, color, disponibles}, ... ]}
+            dias  : lista de 6 dicts {fecha, nombre, fecha_display} — igual
+                    forma que apps/scheduling usa para su propio 'dias_semana',
+                    para consistencia entre paneles.
         """
-        fecha_fin = fecha_inicio + timedelta(days=5) # Lunes a Sábado
+        fecha_fin = fecha_inicio + timedelta(days=5)  # 6 días consecutivos
+        ahora = timezone.localtime(timezone.now())
+        hoy = ahora.date()
+
+        dias = [
+            {
+                'fecha': (fecha_inicio + timedelta(days=i)).strftime('%Y-%m-%d'),
+                'nombre': SlotService.NOMBRES_DIA[(fecha_inicio + timedelta(days=i)).weekday()],
+                'fecha_display': (fecha_inicio + timedelta(days=i)).strftime('%d/%m'),
+            }
+            for i in range(6)
+        ]
+
         slots = AppointmentSlot.objects.filter(
             date__range=[fecha_inicio, fecha_fin]
         ).order_by('start_time', 'date')
@@ -24,12 +59,17 @@ class SlotService:
             hora_str = slot.start_time.strftime('%H:%M')
             if hora_str not in matrix:
                 matrix[hora_str] = []
-            
-            color = "verde" # Disponible
-            if slot.is_full_override:
-                color = "gris" # Bloqueado
+
+            es_pasado = slot.date == hoy and slot.start_time < ahora.time()
+
+            if es_pasado:
+                color = "pasado"  # Hora ya pasada hoy — no seleccionable, aunque tenga cupos
+            elif slot.is_full_override:
+                color = "gris"  # Bloqueado
             elif slot.appointments.count() >= slot.max_capacity:
-                color = "rojo" # Lleno
+                color = "rojo"  # Lleno
+            else:
+                color = "verde"  # Disponible
 
             matrix[hora_str].append({
                 "id": slot.id,
@@ -37,17 +77,28 @@ class SlotService:
                 "color": color,
                 "disponibles": slot.max_capacity - slot.appointments.count()
             })
-        return matrix
+        return matrix, dias
 
     @staticmethod
     def validar_disponibilidad(slot_id):
         slot = AppointmentSlot.objects.get(id=slot_id)
         if slot.is_full_override:
             raise ValidationError("Este horario ha sido bloqueado por Almacén (No disponible).")
-        
+
         if slot.appointments.count() >= slot.max_capacity:
             raise ValidationError("Capacidad agotada para este horario (Lleno).")
-        
+
+        # Sesión 39: rechazo en backend de un slot cuya fecha/hora ya pasó —
+        # antes no existía ningún control temporal aquí ni en ningún otro
+        # punto del flujo (confirmado en el análisis de la sesión 38), así
+        # que un intento vía API directa (sin pasar por la grilla, donde el
+        # slot ya aparece deshabilitado) podía reservar un horario pasado.
+        # Comparación en hora local de Lima, mismo criterio que
+        # get_semana_matrix (timezone.now() crudo es UTC con USE_TZ=True).
+        ahora = timezone.localtime(timezone.now())
+        if slot.date < ahora.date() or (slot.date == ahora.date() and slot.start_time < ahora.time()):
+            raise ValidationError("No se puede reservar un horario que ya pasó.")
+
         return slot
 
 class AppointmentService:

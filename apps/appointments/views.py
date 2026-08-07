@@ -50,8 +50,14 @@ class PortalProveedorView(TemplateView):
         context = super().get_context_data(**kwargs)
         ruc_proveedor = self.request.user.username
 
-        # Matriz semanal de slots disponibles
-        context['matrix'] = SlotService.get_semana_matrix(timezone.now().date())
+        # Grilla de 6 días consecutivos desde hoy (ventana rodante, sesión
+        # 39) — timezone.localtime() para obtener la fecha de HOY en hora
+        # local de Lima, no en UTC crudo (timezone.now() con USE_TZ=True
+        # siempre es UTC; usar su .date() directo desfasa la ventana hasta
+        # 5 horas antes de medianoche en Lima, mostrando ya el día siguiente).
+        context['matrix'], context['dias_semana'] = SlotService.get_semana_matrix(
+            timezone.localtime(timezone.now()).date()
+        )
 
         # OCs pendientes del proveedor en SAP
         context['ocs_pendientes'] = PurchaseOrder.objects.filter(
