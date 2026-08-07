@@ -659,3 +659,74 @@ class PermisosVigilanciaTests(OperationsTestBase):
         self.assertEqual(resp.status_code, 200)
         ticket.refresh_from_db()
         self.assertEqual(ticket.estado, 'FINALIZADO')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Validación de COA obligatorio en "Autorizar Ingreso" (sesión 36)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ValidacionCoaObligatorioIngresoTests(OperationsTestBase):
+    """
+    Bug crítico corregido: iniciar_ingreso_planta nunca bloqueaba
+    realmente el ingreso por falta de COA — antes solo validaba cuando
+    tipo_flujo == 'CON_CALIDAD', y bastaba que UNA sola línea con
+    requiere_coa=True tuviera su TicketLineCOA cargado (any(...)) para
+    pasar, sin importar cuántas otras líneas requeridas siguieran sin él.
+    Ahora exige TODAS las líneas requiere_coa=True, sin condicionar por
+    tipo_flujo/tipo de OC.
+    """
+
+    def test_bloquea_ingreso_si_falta_coa_de_una_linea(self):
+        ticket = self._crear_cita_confirmada('MP', requiere_coa=True)
+        # A propósito no se carga ningún TicketLineCOA.
+        with self.assertRaises(ValidationError) as ctx:
+            OperationsService.iniciar_ingreso_planta(
+                ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+            )
+        self.assertIn('ITEM-TEST', str(ctx.exception))
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.estado, 'PROGRAMADO')
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_PENDIENTE_INGRESO)
+
+    def test_bloquea_ingreso_via_endpoint_ajax_con_400_y_mensaje_claro(self):
+        ticket = self._crear_cita_confirmada('MP', requiere_coa=True)
+        self.client.force_login(self.u_vigilancia)
+        resp = self.client.post(
+            '/operations/api/autorizar-ingreso/',
+            data={'ticket_id': ticket.id}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('COA', resp.json()['msg'])
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.estado, 'PROGRAMADO')
+
+    def test_permite_ingreso_una_vez_cargado_el_coa(self):
+        ticket = self._avanzar_a_vigilancia_ingreso(
+            self._crear_cita_confirmada('MP', requiere_coa=True)
+        )
+        self.assertEqual(ticket.estado, 'EN_PLANTA')
+
+    def test_no_bloquea_si_ninguna_linea_requiere_coa(self):
+        ticket = self._crear_cita_confirmada('CDL', requiere_coa=False)
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+        )
+        self.assertEqual(ticket.estado, 'EN_PLANTA')
+
+    def test_bloquea_tambien_en_flujo_comercial_sin_depender_de_tipo_flujo(self):
+        """
+        Antes del fix, un ticket SOLO_ALMACEN (tipo_flujo != 'CON_CALIDAD')
+        nunca validaba COA, sin importar requiere_coa por línea. Se fuerza
+        requiere_coa=True en una línea comercial (el helper solo lo activa
+        para 'MP') para confirmar que el candado nuevo no depende de
+        tipo_flujo/tipo de OC.
+        """
+        ticket = self._crear_cita_confirmada('CDL', requiere_coa=False)
+        self.assertNotEqual(ticket.tipo_flujo, 'CON_CALIDAD')
+        po = ticket.appointment.purchase_orders.first()
+        po.lines.update(requiere_coa=True)
+
+        with self.assertRaises(ValidationError):
+            OperationsService.iniciar_ingreso_planta(
+                ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+            )

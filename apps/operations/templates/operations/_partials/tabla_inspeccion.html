@@ -75,9 +75,16 @@ Parámetros esperados en el contexto del {% include %}:
             </td>
             <td class="text-center">
               {% if linea.coa_url %}
-                <a href="{{ linea.coa_url }}" target="_blank" class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+                <a href="{{ linea.coa_url }}" target="_blank"
+                   class="badge bg-success-subtle text-success border border-success-subtle text-xxs"
+                   data-bs-toggle="tooltip" title="Ver COA">
                   <i class="bi bi-file-earmark-check"></i>
                 </a>
+              {% elif linea.requiere_coa %}
+                <span class="badge bg-danger-subtle text-danger border border-danger-subtle text-xxs"
+                      data-bs-toggle="tooltip" title="COA no cargado">
+                  <i class="bi bi-exclamation-triangle"></i>
+                </span>
               {% else %}
                 <span class="text-muted text-xxs">—</span>
               {% endif %}

@@ -131,18 +131,34 @@ class OperationsService:
             for coa in TicketLineCOA.objects.filter(ticket=ticket)
         }
 
-        # 3. Validación de seguridad según el flujo (CON_CALIDAD vs SOLO_ALMACEN)
-        if ticket.tipo_flujo == 'CON_CALIDAD':
-            lineas_con_coa_req = [line for line in lineas if line.requiere_coa]
-            # Para Materia Prima (MP), el COA es mandatorio si alguna línea lo exige
-            if lineas_con_coa_req:
-                tiene_documentos = any(coas_por_linea.get(line.id) for line in lineas_con_coa_req)
-                # Bloqueo estricto: ni en línea (TicketLineCOA) ni en el PDF general de la cita
-                if not tiene_documentos and not appointment.coa_pdf:
-                    raise ValidationError("Acceso Denegado: Este flujo (MATERIA PRIMA) requiere Certificados (COA) obligatorios.")
-
-        # Nota: Si es SOLO_ALMACEN, se permite el ingreso aunque falte el COA,
-        # delegando la validación física al personal de Almacén.
+        # 3. Validación de COA obligatorio: TODAS las líneas marcadas con
+        #    requiere_coa=True (el flag que Compras fija por línea vía
+        #    "Configurar COA", independiente de tipo_flujo/MP-comercial)
+        #    deben tener su TicketLineCOA cargado. Antes solo se exigía
+        #    cuando tipo_flujo == 'CON_CALIDAD', y bastaba que UNA sola
+        #    línea tuviera el COA para pasar (any(...)) — un ticket con 3
+        #    líneas requiere_coa=True y solo 1 cargada pasaba igual, y un
+        #    ticket SOLO_ALMACEN con líneas requiere_coa=True nunca se
+        #    validaba. Bug crítico confirmado: la validación nunca fue
+        #    realmente bloqueante, solo una revisión visual (ver bloque
+        #    "Estado de Certificados (COA)" en detalle_ticket.html).
+        lineas_faltantes = [
+            (po, line)
+            for po in ocs
+            for line in po.lines.all()
+            if line.requiere_coa and not coas_por_linea.get(line.id)
+        ]
+        # El PDF legacy a nivel de cita (appointment.coa_pdf, previo a la
+        # carga por línea vía OneDrive — Fase 1/3) sigue aceptándose como
+        # respaldo global si existe, mismo criterio ya vigente antes.
+        if lineas_faltantes and not appointment.coa_pdf:
+            detalle = ", ".join(
+                f"{line.item_code} (OC {po.doc_num})" for po, line in lineas_faltantes
+            )
+            raise ValidationError(
+                "No se puede autorizar el ingreso a planta: falta el Certificado "
+                f"de Análisis (COA) de la(s) línea(s): {detalle}."
+            )
 
         # 4. Actualizamos el Ticket y avanzamos la etapa (candado de servicio)
         ticket.estado = 'EN_PLANTA'
