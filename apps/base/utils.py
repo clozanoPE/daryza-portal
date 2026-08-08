@@ -174,8 +174,3 @@ class OneDriveClient:
         share_resp.raise_for_status()
         link = share_resp.json()['link']['webUrl']
         return link
-
-def __init__(self):
-    print(f"DEBUG: Tenant ID cargado es: '{settings.ONEDRIVE_TENANT_ID}'") # Verifica esto en consola
-    self.client_id = settings.ONEDRIVE_CLIENT_ID
-    # ... resto del código

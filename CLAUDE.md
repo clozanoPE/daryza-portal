@@ -1262,3 +1262,31 @@ Sesión de solo análisis, pedida explícitamente antes de borrar nada ("investi
 - `manage.py check`/`makemigrations --check --dry-run` limpios. `manage.py test apps.operations`: **45/45 OK**. Barrido de `{#` multilínea (regla permanente, sesión 26): **0 instancias** (no se tocó ningún `.html` en esta sesión, verificado igual por disciplina). BD real sin residuos (`Appointment`/`Ticket` sin cambios; las 2 OCs sintéticas de la prueba no existen tras el rollback).
 
 **Fuera de alcance de esta sesión (no tocado, según lo pedido):** la limpieza de código huérfano de la sesión 42 sigue pendiente de confirmación — no se eliminó nada de esa lista en esta sesión, solo se conectó `preparar_detalle_compras` (el único ítem de esa lista que el usuario pidió conservar y cablear). No se tocó `ajax_confirmar_cita_compras` ni ningún otro paso del flujo de Compras más allá de los 2 endpoints de configuración de COA.
+
+### 2026-08-08 (sesión 44) — Cierre real de la limpieza de código huérfano (sesión 42): eliminación ejecutada
+
+Confirmación explícita del usuario para proceder con la lista completa de la sesión 42, **excepto** `preparar_detalle_compras` (ya resuelta aparte, sesión 43 — se conectó en vez de eliminarse).
+
+**Verificación final antes de borrar (pedida explícitamente):** se repitió la búsqueda de referencias para los 23 ítems de la lista, cruzando contra los archivos tocados en las sesiones 42-43 (`apps/appointments/models.py`, `apps/appointments/services.py`, `apps/operations/views.py`, las 2 migraciones nuevas) — **cero referencias nuevas** en ninguno de los 23 ítems; los resultados fueron idénticos a los de la sesión 42.
+
+**Eliminado — 10 templates:**
+`apps/operations/templates/operations/{ticket_detalle,tickets_lista,solicitudes_lista,gestion_horarios,aprobar_cita,_oc_card_grouped}.html`, `templates/base/base.html`, `templates/base/partials/{sidebar,ticket_timeline}.html`, `templates/registration/login.html`. Los directorios `templates/base/`, `templates/base/partials/` y `templates/registration/` quedaron vacíos y se eliminaron junto con sus archivos.
+
+**Eliminado — 2 CSS:** `static/css/vbs-design-system.css`, `static/css/operations/ticket_detalle.css` (el directorio `static/css/operations/` también se eliminó, quedó vacío).
+
+**Eliminado — 3 JS:** `static/js/operations/ticket_actions.js` (duplicado), `static/js/calendar_handler.js`, `static/js/vbs-portal.js` (el directorio `static/js/operations/` también se eliminó).
+
+**Eliminado — 8 hallazgos de Python** (ediciones dentro de archivos activos, no archivos completos, salvo el último):
+- `apps/base/utils.py`: el `def __init__(self):` suelto a nivel de módulo (líneas 178-181 en su última versión).
+- `apps/base/decorators.py`: `solo_staff` + `staff_required` (incluido el comentario huérfano `# POR esto:` que quedó sin sentido al retirar el bloque que precedía).
+- `apps/operations/models.py`: `Ticket.close_ticket()` y `TicketStage.duracion` (`@property`).
+- `apps/appointments/models.py`: `AppointmentSlot.is_available` (`@property`).
+- `apps/operations/services.py`: `OperationsService.get_grouped_ocs_for_appointment`.
+- `apps/scheduling/services.py`: `SchedulingService.get_rango_semana`.
+- `apps/operations/templatetags/` — carpeta completa (`ticket_tags.py` + `__init__.py`); quedó un `__pycache__/` residual sin borrar a propósito (ya ignorado por git, sin ningún archivo `.py` rastreado dentro — el usuario rechazó explícitamente el `rm -rf` de esa carpeta por ser una operación más amplia de lo necesario; no afecta al proyecto).
+
+**Conteo final: 15 archivos eliminados** (10 templates + 2 CSS + 3 JS) **+ 6 archivos editados** para retirar los 8 hallazgos de Python (`apps/base/utils.py`, `apps/base/decorators.py`, `apps/operations/models.py`, `apps/appointments/models.py`, `apps/operations/services.py`, `apps/scheduling/services.py`) **+ 4 directorios vacíos removidos** (`templates/base/`, `templates/base/partials/`, `templates/registration/`, `static/css/operations/`, `static/js/operations/` — 5 directorios, no 4; el conteo de "15 archivos" no incluye `apps/operations/templatetags/__init__.py`+`ticket_tags.py`, contados aparte como carpeta completa).
+
+**Regresión limpia:** `manage.py check` sin issues; `makemigrations --check --dry-run` sin cambios pendientes (ninguno de los 8 hallazgos de Python tocaba modelos con campos de BD, solo métodos/propiedades — no hacía falta ninguna migración); `manage.py test apps.operations`: **45/45 OK**. Barrido de `{#` multilínea: **0 instancias** en los 21 templates restantes (31 − 10 = 21, confirmado por conteo exacto tras el borrado). Chequeo funcional adicional contra el servidor de pruebas: `/login/` (200, usa `templates/login.html`, no el `registration/login.html` ya eliminado), `/home/` → `redirect_by_role` → `/operations/compras/` (200), `/appointments/portal/` (200), `/operations/vigilancia/` (200) — ninguna ruta activa se vio afectada.
+
+**Fuera de alcance de esta sesión (no tocado):** `preparar_detalle_compras` — ya resuelta en la sesión 43, nunca estuvo en riesgo de borrado en esta sesión. No se tocaron las secciones 3/4 de `INFORME_ANALISIS.md` ni se actualizó ese informe para reflejar esta limpieza (no se pidió). El `__pycache__/` residual de `apps/operations/templatetags/` se dejó tal cual, sin acción adicional.

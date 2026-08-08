@@ -45,11 +45,6 @@ class SchedulingService:
         """
         return fecha - timedelta(days=fecha.weekday())
 
-    @staticmethod
-    def get_rango_semana(lunes: date) -> tuple[date, date]:
-        """Retorna (lunes, sábado) de la semana."""
-        return lunes, lunes + timedelta(days=5)
-
     # ─── Generación desde plantilla ─────────────────────────────────────────────
 
     @staticmethod

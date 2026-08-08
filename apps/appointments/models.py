@@ -18,11 +18,6 @@ class AppointmentSlot(TimeStampedModel):
                                                 )
     )
 
-    @property
-    def is_available(self):
-        if self.is_full_override: return False
-        return self.appointments.count() < self.max_capacity
-
     def __str__(self):
         return f"{self.date} | {self.start_time} - {self.dock}"
 

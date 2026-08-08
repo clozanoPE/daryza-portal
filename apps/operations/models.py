@@ -139,15 +139,6 @@ class Ticket(models.Model):
         """
         return any(po.es_materia_prima for po in self.appointment.purchase_orders.all())
 
-    def close_ticket(self):
-        """Calcula y guarda el tiempo total en planta al finalizar."""
-        if self.estado == 'FINALIZADO':
-            primera_etapa = self.stages.order_by('fecha_inicio').first()
-            ultima_etapa = self.stages.order_by('-fecha_fin').first()
-            if primera_etapa and ultima_etapa and ultima_etapa.fecha_fin:
-                self.tiempo_total_planta = ultima_etapa.fecha_fin - primera_etapa.fecha_inicio
-                self.save(update_fields=['tiempo_total_planta'])
-
     def __str__(self):
         return f"Ticket {self.id} [{self.tipo_flujo}] - Cita: {self.appointment.id}"
 
@@ -175,12 +166,6 @@ class TicketStage(models.Model):
         User, on_delete=models.PROTECT,
         help_text="Responsable que ejecutó/cerró la etapa"
     )
-
-    @property
-    def duracion(self):
-        if self.fecha_fin and self.fecha_inicio:
-            return self.fecha_fin - self.fecha_inicio
-        return None
 
     def __str__(self):
         return f"Ticket {self.ticket_id} - {self.etapa}"

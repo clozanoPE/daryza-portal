@@ -1,12 +1,6 @@
 #decorators.py
 from django.contrib.auth.decorators import user_passes_test
 
-def solo_staff(user):
-    return user.is_authenticated and user.is_staff
-
-staff_required = user_passes_test(solo_staff, login_url='/login/')
-
-# POR esto:
 def en_grupo(nombre_grupo):
     """Devuelve un predicado que verifica si el usuario pertenece al grupo dado."""
     def check(user):
