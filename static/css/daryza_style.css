@@ -103,17 +103,41 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
 .kpi-card__label{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--dz-text-muted);margin-top:.1rem}
 
 /* ─── 5. SLOT / CALENDARIO ──────────────────────────────────────────────── */
-.slot-cell{padding:10px 5px;border-radius:var(--dz-radius-sm);text-align:center;min-height:62px;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;overflow:hidden;transition:transform .25s,box-shadow .25s;border:1px solid transparent}
-.slot-cell .slot-qty{font-size:1.15rem;font-weight:800;line-height:1;display:block}
-.slot-cell .slot-lbl{font-size:.52rem;font-weight:700;text-transform:uppercase;opacity:.75;letter-spacing:.5px}
-.slot-cell .slot-cta{position:absolute;bottom:-18px;left:0;right:0;font-size:.55rem;font-weight:800;padding:2px 0;transition:bottom .25s,opacity .25s;opacity:0}
+/* slot-cta ya no depende de :hover (sesión 45, Parte B) — visible siempre,
+   funciona igual con mouse (desktop) y con tacto (móvil/tablet). El :hover
+   de --available se conserva solo como detalle visual extra en desktop. */
+.slot-cell{padding:8px 5px;border-radius:var(--dz-radius-sm);text-align:center;min-height:74px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;position:relative;overflow:hidden;transition:transform .25s,box-shadow .25s;border:1px solid transparent}
+.slot-cell .slot-qty{font-size:1.1rem;font-weight:800;line-height:1;display:block}
+.slot-cell .slot-lbl{font-size:.5rem;font-weight:700;text-transform:uppercase;opacity:.75;letter-spacing:.5px}
+.slot-cell .slot-cta{font-size:.52rem;font-weight:800;padding:2px 6px;border-radius:4px;line-height:1.4}
 .slot-cell--available{background:var(--dz-green-light);color:var(--dz-green-dark);border-color:#d1e7dd;cursor:pointer}
 .slot-cell--available:hover{transform:translateY(-4px);box-shadow:0 6px 16px rgba(41,180,74,.2)}
-.slot-cell--available:hover .slot-cta{bottom:4px;opacity:1}
 .slot-cell--full{background:#fdeaea;color:#c0392b;border-color:#f9d6d6;opacity:.8}
 .slot-cell--closed{background:#f8f9fa;color:#adb5bd;border-color:#e9ecef}
 .slot-cell--pasado{background:repeating-linear-gradient(45deg,#f1f2f4,#f1f2f4 6px,#e9eaec 6px,#e9eaec 12px);color:#9aa0a6;border-color:#e4e6e9;opacity:.7;cursor:not-allowed}
 .slot-cell--selected{background:var(--dz-green)!important;color:#fff!important;border-color:var(--dz-green-dark)!important;box-shadow:0 6px 18px rgba(41,180,74,.35);transform:scale(1.04)}
+
+/* Vista móvil de la Agenda de Cupos (sesión 45, Parte C): lista vertical
+   por día seleccionado, alternativa a la grilla de 7 columnas en <992px. */
+.slot-row{display:flex;align-items:center;gap:.75rem;padding:.65rem .9rem;border-radius:var(--dz-radius-sm);border:1px solid transparent;min-height:44px}
+.slot-row__hora{font-weight:800;font-size:.85rem;min-width:52px;flex-shrink:0}
+.slot-row__disp{font-size:.72rem;flex-grow:1}
+.slot-row__estado{font-size:.62rem;font-weight:800;padding:3px 10px;border-radius:100px;text-transform:uppercase;letter-spacing:.4px;flex-shrink:0}
+.slot-row--available{background:var(--dz-green-light);border-color:#d1e7dd;cursor:pointer}
+.slot-row--available .slot-row__estado{background:var(--dz-green);color:#fff}
+.slot-row--full{background:#fdeaea;border-color:#f9d6d6}
+.slot-row--full .slot-row__estado{background:#c0392b;color:#fff}
+.slot-row--closed{background:#f8f9fa;border-color:#e9ecef;color:#adb5bd}
+.slot-row--closed .slot-row__estado{background:#adb5bd;color:#fff}
+.slot-row--pasado{background:repeating-linear-gradient(45deg,#f1f2f4,#f1f2f4 6px,#e9eaec 6px,#e9eaec 12px);border-color:#e4e6e9;color:#9aa0a6;cursor:not-allowed}
+.slot-row--pasado .slot-row__estado{background:#9aa0a6;color:#fff}
+.slot-row--selected{background:var(--dz-green)!important;border-color:var(--dz-green-dark)!important;color:#fff!important}
+.slot-row--selected .slot-row__estado{background:#fff;color:var(--dz-green-dark)}
+
+#diasTabsMobile .nav-link{white-space:nowrap;font-size:.78rem;font-weight:700;color:var(--dz-text-muted);border-radius:var(--dz-radius-sm)}
+#diasTabsMobile .nav-link.active{background:var(--dz-green);color:#fff}
+#diasTabsMobile{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+#diasTabsMobile::-webkit-scrollbar{display:none}
 
 /* ─── 6. TICKET / OPERACIONES ─────────────────────────────────────────────── */
 .ticket-card{border-radius:var(--dz-radius);border-left:4px solid transparent;background:var(--dz-surface);box-shadow:var(--dz-shadow-sm);transition:box-shadow .2s,transform .2s}
@@ -144,6 +168,9 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
 
 .qr-input{font-family:'Courier New',monospace;font-size:.95rem;letter-spacing:2px;border-radius:var(--dz-radius-sm)}
 
+/* Área táctil mínima ~44x44px para botones icon-only (sesión 45, Parte A.3) */
+.btn-icon-touch{min-width:44px;min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+
 /* ─── 7. UTILIDADES ──────────────────────────────────────────────────────── */
 .text-xs{font-size:.72rem!important}.text-xxs{font-size:.62rem!important}.fw-800{font-weight:800!important}
 .rounded-dz{border-radius:var(--dz-radius)!important}.shadow-dz{box-shadow:var(--dz-shadow)!important}
@@ -168,3 +195,10 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
   #wrapper.toggled #sidebar-wrapper{margin-left:0}
   main.page-main{padding:1rem}
 }
+
+/* Backdrop del sidebar móvil (sesión 45, Parte A.5): oscurece el fondo
+   mientras el sidebar está abierto en <992px; visibilidad controlada por JS
+   (static/js/main.js), no solo por CSS, porque depende de 2 condiciones a
+   la vez (.toggled + ancho de viewport). */
+#sidebar-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1040;opacity:0;pointer-events:none;transition:opacity .3s}
+#sidebar-backdrop.show{opacity:1;pointer-events:auto}

@@ -15,7 +15,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
   {# ── Hoja de estilos del sistema de diseño ────────────────────────── #}
-  <link rel="stylesheet" href="{% static 'css/daryza_style.css' %}?v=2.0">
+  <link rel="stylesheet" href="{% static 'css/daryza_style.css' %}?v=2.1">
 
   {# ── Bloque para estilos específicos de página ────────────────────── #}
   {% block extra_head %}{% endblock %}
@@ -139,6 +139,9 @@
 
     </aside>{# /sidebar #}
 
+    {# Backdrop del sidebar móvil — oscurece el fondo y cierra al tocar afuera #}
+    <div id="sidebar-backdrop" aria-hidden="true"></div>
+
     {# ══════════════════════════════════════════════════════════════════ #}
     {# CONTENIDO PRINCIPAL                                                #}
     {# ══════════════════════════════════════════════════════════════════ #}
@@ -188,7 +191,7 @@
   {# Módulos del sistema de diseño (siempre presentes) #}
   <script src="{% static 'js/modules/api.js' %}?v=2.0"></script>
   <script src="{% static 'js/modules/ui.js' %}?v=2.0"></script>
-  <script src="{% static 'js/main.js' %}?v=2.0"></script>
+  <script src="{% static 'js/main.js' %}?v=2.1"></script>
 
   {# ── Bloque para scripts específicos de página ─────────────────── #}
   {% block extra_js %}{% endblock %}

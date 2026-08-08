@@ -22,14 +22,18 @@ let _selectedSlotHora  = null;
  * @param {string} hora   HH:MM
  */
 function seleccionarSlot(slotId, fecha, hora) {
-  // Quitar selección previa
-  document.querySelectorAll('.slot-cell--selected').forEach(el => {
-    el.classList.remove('slot-cell--selected');
+  // Quitar selección previa (grilla de escritorio y lista móvil comparten
+  // el mismo data-slot-id pero usan clases de highlight distintas)
+  document.querySelectorAll('.slot-cell--selected, .slot-row--selected').forEach(el => {
+    el.classList.remove('slot-cell--selected', 'slot-row--selected');
   });
 
-  // Marcar nuevo slot
-  const clickedCell = document.querySelector(`[data-slot-id="${slotId}"]`);
-  if (clickedCell) clickedCell.classList.add('slot-cell--selected');
+  // Marcar el nuevo slot en TODAS sus copias del DOM (desktop + móvil se
+  // renderizan ambas siempre, solo una es visible vía CSS según el
+  // viewport) — así el highlight aparece en la vista que el usuario ve.
+  document.querySelectorAll(`[data-slot-id="${slotId}"]`).forEach(el => {
+    el.classList.add(el.classList.contains('slot-row') ? 'slot-row--selected' : 'slot-cell--selected');
+  });
 
   _selectedSlotId    = slotId;
   _selectedSlotFecha = fecha;

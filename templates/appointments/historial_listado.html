@@ -47,14 +47,14 @@
 <div class="card border-0 shadow-sm rounded-4 mb-4">
     <div class="card-body p-4">
         <form method="GET" class="row g-3 align-items-end">
-            <div class="col-md-4">
+            <div class="col-12 col-md-4">
                 <label class="form-label small fw-bold text-muted text-uppercase">Buscador Especializado</label>
                 <div class="input-group">
                     <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-success"></i></span>
                     <input type="text" name="q" class="form-control border-start-0 ps-0" placeholder="ID de Ticket o Número de OC..." value="{{ request.GET.q }}">
                 </div>
             </div>
-            <div class="col-md-3">
+            <div class="col-6 col-md-3">
                 <label class="form-label small fw-bold text-muted text-uppercase">Estado de Cita</label>
                 <select name="status" class="form-select">
                     <option value="">Todos los estados</option>
@@ -63,7 +63,7 @@
                     <option value="RECHAZADO" {% if request.GET.status == 'RECHAZADO' %}selected{% endif %}>Rechazado</option>
                 </select>
             </div>
-            <div class="col-md-3">
+            <div class="col-6 col-md-3">
                 <label class="form-label small fw-bold text-muted text-uppercase">Sede de Entrega</label>
                 <select name="sede" class="form-select">
                     <option value="">Todas las sedes</option>
@@ -71,7 +71,7 @@
                     <option value="PUNTA_NEGRA">Punta Negra</option>
                 </select>
             </div>
-            <div class="col-md-2">
+            <div class="col-12 col-md-2">
                 <button type="submit" class="btn btn-success w-100 fw-bold">
                     <i class="bi bi-funnel"></i> FILTRAR
                 </button>

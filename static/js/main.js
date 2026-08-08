@@ -17,15 +17,38 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── Sidebar Toggle ──────────────────────────────────────────────────────
   const menuToggle = document.getElementById('menu-toggle');
   const wrapper    = document.getElementById('wrapper');
+  const backdrop   = document.getElementById('sidebar-backdrop');
+
+  // En móvil, "toggled" significa sidebar VISIBLE (lógica invertida respecto
+  // a desktop, ver daryza_style.css). El backdrop solo debe verse cuando
+  // ambas condiciones se cumplen a la vez — por eso se resuelve en JS y no
+  // solo con una regla CSS de media query.
+  function actualizarBackdrop() {
+    if (!backdrop || !wrapper) return;
+    const abierto = wrapper.classList.contains('toggled') && window.innerWidth < 992;
+    backdrop.classList.toggle('show', abierto);
+  }
+
   if (menuToggle && wrapper) {
     menuToggle.addEventListener('click', (e) => {
       e.preventDefault();
       wrapper.classList.toggle('toggled');
+      actualizarBackdrop();
       window.dispatchEvent(new Event('resize'));
     });
     // En móvil, el sidebar empieza oculto (toggled se maneja via CSS)
     if (window.innerWidth < 992) wrapper.classList.remove('toggled');
   }
+
+  if (backdrop && wrapper) {
+    backdrop.addEventListener('click', () => {
+      wrapper.classList.remove('toggled');
+      actualizarBackdrop();
+    });
+  }
+
+  window.addEventListener('resize', actualizarBackdrop);
+  actualizarBackdrop();
 
   // ── Bootstrap Tooltips ──────────────────────────────────────────────────
   document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {

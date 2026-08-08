@@ -59,6 +59,22 @@ class PortalProveedorView(TemplateView):
             timezone.localtime(timezone.now()).date()
         )
 
+        # Vista móvil (Parte C, sesión 45): reagrupa el mismo 'matrix' (sin
+        # recalcular datos, mismo SlotService.get_semana_matrix de arriba)
+        # por día calendario en vez de por hora, para la lista vertical con
+        # selector de día en pantallas <992px. Se agrupa por slot['fecha']
+        # real (no por posición en la lista de cada hora), para no heredar
+        # el riesgo de desalineación ya documentado en la grilla de
+        # escritorio cuando un día no tiene slot en alguna hora específica.
+        for dia in context['dias_semana']:
+            slots_dia = []
+            for hora, columnas in context['matrix'].items():
+                for slot in columnas:
+                    if slot['fecha'] == dia['fecha']:
+                        slots_dia.append({**slot, 'hora': hora})
+            slots_dia.sort(key=lambda s: s['hora'])
+            dia['slots'] = slots_dia
+
         # OCs pendientes del proveedor en SAP
         context['ocs_pendientes'] = PurchaseOrder.objects.filter(
             card_code=ruc_proveedor,

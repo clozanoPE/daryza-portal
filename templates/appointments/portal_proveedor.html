@@ -41,7 +41,7 @@
 <div class="row g-4">
 
   {# ── GRILLA SEMANAL DE SLOTS ─────────────────────────────────────────── #}
-  <div class="col-lg-8">
+  <div class="col-12 col-lg-8">
     <div class="dz-card p-4">
       <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
         <h5 class="fw-bold m-0 text-dark d-flex align-items-center gap-2">
@@ -55,55 +55,122 @@
         </div>
       </div>
 
-      {# Cabecera de días — día real + fecha (sesión 39), ya no texto fijo #}
-      <div class="row g-1 mb-2 d-none d-lg-flex">
-        <div class="col-auto" style="width:80px;"></div>
-        {% for dia in dias_semana %}
-        <div class="col text-center text-xs fw-bold text-muted text-uppercase">
-          {{ dia.nombre }} {{ dia.fecha_display }}
+      {# ── Grilla de escritorio (≥992px): 7 columnas, sin cambios ────────── #}
+      <div class="d-none d-lg-block">
+        {# Cabecera de días — día real + fecha (sesión 39), ya no texto fijo #}
+        <div class="row g-1 mb-2">
+          <div class="col-auto" style="width:80px;"></div>
+          {% for dia in dias_semana %}
+          <div class="col text-center text-xs fw-bold text-muted text-uppercase">
+            {{ dia.nombre }} {{ dia.fecha_display }}
+          </div>
+          {% endfor %}
+        </div>
+
+        {# Filas de horas #}
+        {% for hora, columnas in matrix.items %}
+        <div class="row g-1 align-items-center mb-2">
+          <div class="col-auto d-flex align-items-center justify-content-center bg-light rounded-3 fw-bold text-dark text-xs shadow-sm"
+               style="width:80px;height:48px;border:1px solid #eee">
+            {{ hora }}
+          </div>
+          {% for slot in columnas %}
+          <div class="col">
+            <div class="slot-cell
+                         {% if slot.color == 'verde' %}slot-cell--available
+                         {% elif slot.color == 'rojo' %}slot-cell--full
+                         {% elif slot.color == 'pasado' %}slot-cell--pasado
+                         {% else %}slot-cell--closed{% endif %}"
+                 {% if slot.color == 'verde' %}
+                   data-slot-id="{{ slot.id }}"
+                   onclick="seleccionarSlot('{{ slot.id }}', '{{ slot.fecha }}', '{{ hora }}')"
+                 {% endif %}>
+              <span class="slot-qty">{{ slot.disponibles }}</span>
+              <span class="slot-lbl">libres</span>
+              {% if slot.color == 'verde' %}
+                <div class="slot-cta bg-success text-white">SOLICITAR</div>
+              {% elif slot.color == 'rojo' %}
+                <div class="slot-cta bg-danger text-white">LLENO</div>
+              {% elif slot.color == 'pasado' %}
+                <div class="slot-cta bg-secondary text-white">HORA PASADA</div>
+              {% else %}
+                <div class="slot-cta bg-secondary text-white">CERRADO</div>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% empty %}
+        <div class="text-center py-5 text-muted">
+          <i class="bi bi-calendar-x fs-1 d-block mb-2 opacity-25"></i>
+          <p class="small">No hay cupos programados para esta semana. Contacte a Almacén.</p>
         </div>
         {% endfor %}
       </div>
 
-      {# Filas de horas #}
-      {% for hora, columnas in matrix.items %}
-      <div class="row g-1 align-items-center mb-2">
-        <div class="col-auto d-flex align-items-center justify-content-center bg-light rounded-3 fw-bold text-dark text-xs shadow-sm"
-             style="width:80px;height:48px;border:1px solid #eee">
-          {{ hora }}
-        </div>
-        {% for slot in columnas %}
-        <div class="col">
-          <div class="slot-cell
-                       {% if slot.color == 'verde' %}slot-cell--available
-                       {% elif slot.color == 'rojo' %}slot-cell--full
-                       {% elif slot.color == 'pasado' %}slot-cell--pasado
-                       {% else %}slot-cell--closed{% endif %}"
-               {% if slot.color == 'verde' %}
-                 data-slot-id="{{ slot.id }}"
-                 onclick="seleccionarSlot('{{ slot.id }}', '{{ slot.fecha }}', '{{ hora }}')"
-               {% endif %}>
-            <span class="slot-qty">{{ slot.disponibles }}</span>
-            <span class="slot-lbl">libres</span>
-            {% if slot.color == 'verde' %}
-              <div class="slot-cta bg-success text-white">SOLICITAR</div>
-            {% elif slot.color == 'rojo' %}
-              <div class="slot-cta bg-danger text-white">LLENO</div>
-            {% elif slot.color == 'pasado' %}
-              <div class="slot-cta bg-secondary text-white">HORA PASADA</div>
+      {# ── Vista móvil/tablet (<992px): selector de día + lista vertical ── #}
+      <div class="d-lg-none">
+        {% if dias_semana %}
+        <ul class="nav nav-pills gap-1 mb-3 flex-nowrap" id="diasTabsMobile" role="tablist">
+          {% for dia in dias_semana %}
+          <li class="nav-item" role="presentation">
+            <button class="nav-link px-3 py-2 {% if forloop.first %}active{% endif %}"
+                    id="dia-tab-{{ forloop.counter0 }}"
+                    data-bs-toggle="pill"
+                    data-bs-target="#dia-pane-{{ forloop.counter0 }}"
+                    type="button" role="tab"
+                    aria-controls="dia-pane-{{ forloop.counter0 }}"
+                    aria-selected="{% if forloop.first %}true{% else %}false{% endif %}">
+              {{ dia.nombre }}<br><span class="text-xxs opacity-75">{{ dia.fecha_display }}</span>
+            </button>
+          </li>
+          {% endfor %}
+        </ul>
+
+        <div class="tab-content" id="diasTabsMobileContent">
+          {% for dia in dias_semana %}
+          <div class="tab-pane fade {% if forloop.first %}show active{% endif %}"
+               id="dia-pane-{{ forloop.counter0 }}" role="tabpanel"
+               aria-labelledby="dia-tab-{{ forloop.counter0 }}">
+            {% if dia.slots %}
+            <div class="d-flex flex-column gap-2">
+              {% for slot in dia.slots %}
+              <div class="slot-row
+                           {% if slot.color == 'verde' %}slot-row--available
+                           {% elif slot.color == 'rojo' %}slot-row--full
+                           {% elif slot.color == 'pasado' %}slot-row--pasado
+                           {% else %}slot-row--closed{% endif %}"
+                   {% if slot.color == 'verde' %}
+                     data-slot-id="{{ slot.id }}"
+                     onclick="seleccionarSlot('{{ slot.id }}', '{{ slot.fecha }}', '{{ slot.hora }}')"
+                   {% endif %}>
+                <span class="slot-row__hora">{{ slot.hora }}</span>
+                <span class="slot-row__disp">{{ slot.disponibles }} cupo(s) libre(s)</span>
+                <span class="slot-row__estado">
+                  {% if slot.color == 'verde' %}SOLICITAR
+                  {% elif slot.color == 'rojo' %}LLENO
+                  {% elif slot.color == 'pasado' %}HORA PASADA
+                  {% else %}CERRADO{% endif %}
+                </span>
+              </div>
+              {% endfor %}
+            </div>
             {% else %}
-              <div class="slot-cta bg-secondary text-white">CERRADO</div>
+            <div class="text-center py-4 text-muted">
+              <i class="bi bi-calendar-x fs-2 d-block mb-2 opacity-25"></i>
+              <p class="small mb-0">Sin cupos programados este día.</p>
+            </div>
             {% endif %}
           </div>
+          {% endfor %}
         </div>
-        {% endfor %}
+        {% else %}
+        <div class="text-center py-5 text-muted">
+          <i class="bi bi-calendar-x fs-1 d-block mb-2 opacity-25"></i>
+          <p class="small">No hay cupos programados para esta semana. Contacte a Almacén.</p>
+        </div>
+        {% endif %}
       </div>
-      {% empty %}
-      <div class="text-center py-5 text-muted">
-        <i class="bi bi-calendar-x fs-1 d-block mb-2 opacity-25"></i>
-        <p class="small">No hay cupos programados para esta semana. Contacte a Almacén.</p>
-      </div>
-      {% endfor %}
     </div>
 
     {# Protocolo #}
@@ -119,7 +186,7 @@
   </div>
 
   {# ── PANEL LATERAL: Buscador + Expediente ────────────────────────────── #}
-  <div class="col-lg-4">
+  <div class="col-12 col-lg-4">
 
     {# Buscador + filtro de período (mes/año, Fase 10) #}
     <div class="dz-card p-3 mb-3">
@@ -287,5 +354,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/portal_proveedor.js' %}?v=2.1"></script>
+<script src="{% static 'js/panels/portal_proveedor.js' %}?v=2.2"></script>
 {% endblock %}
