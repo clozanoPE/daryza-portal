@@ -197,8 +197,17 @@ def ajax_get_lineas_oc(request, appointment_id: int):
     """
     GET /operations/api/compras/lineas/<appointment_id>/
     Devuelve las líneas de OC de una cita con su flag requiere_coa actual.
+
+    Antes de listar, llama a AppointmentService.preparar_detalle_compras —
+    sugiere requiere_coa=True por defecto en las líneas de OC Materia Prima
+    que todavía no fueron configuradas manualmente (Appointment.
+    coa_configurado=False); no-op si Compras ya guardó una configuración
+    para esta cita (ver ajax_configurar_items_coa). Las OC no-MP no se ven
+    afectadas — siguen 100% desmarcadas hasta que Compras decida.
     """
     try:
+        AppointmentService.preparar_detalle_compras(appointment_id)
+
         appointment = get_object_or_404(
             Appointment.objects.prefetch_related('purchase_orders__lines'),
             id=appointment_id
@@ -229,6 +238,13 @@ def ajax_configurar_items_coa(request):
     POST /operations/api/configurar-items-coa/
     Body: { appointment_id: int, lineas: [{po_line_id, requiere_coa}, …] }
     Compras ajusta manualmente qué líneas requieren COA.
+
+    Marca Appointment.coa_configurado=True tras el guardado (aunque
+    lineas venga vacía o ninguna requiere_coa cambie de valor) — esto es
+    lo que le indica a AppointmentService.preparar_detalle_compras que ya
+    no debe volver a sugerir el pre-marcado automático de Materia Prima
+    en futuras aperturas de esta misma cita, protegiendo la decisión que
+    Compras ya guardó (incluida la de desmarcar todo explícitamente).
     """
     def handle(data):
         appointment_id = data.get('appointment_id')
@@ -246,6 +262,10 @@ def ajax_configurar_items_coa(request):
                 purchase_order__id__in=oc_ids
             ).update(requiere_coa=bool(item.get('requiere_coa', False)))
             actualizadas += updated
+
+        if not appointment.coa_configurado:
+            appointment.coa_configurado = True
+            appointment.save(update_fields=['coa_configurado'])
 
         return _json_ok(msg=f'{actualizadas} línea(s) actualizadas.', actualizadas=actualizadas)
 

@@ -91,6 +91,19 @@ class Appointment(TimeStampedModel):
     observaciones_admin = models.TextField(null=True, blank=True)
     fecha_respuesta_admin = models.DateTimeField(null=True, blank=True, help_text="Timestamp de cuando Almacén confirmó o rechazó la cita.")
 
+    coa_configurado = models.BooleanField(
+        default=False,
+        help_text=(
+            "True desde que Compras guarda una configuración de COA por "
+            "línea para esta cita (ajax_configurar_items_coa), aunque sea "
+            "sin cambios. Mientras esté en False, AppointmentService."
+            "preparar_detalle_compras puede sugerir requiere_coa=True por "
+            "defecto en las líneas de OC Materia Prima al abrir la "
+            "configuración; una vez en True, ya no vuelve a tocarlas, para "
+            "no sobreescribir una decisión manual ya guardada."
+        )
+    )
+
     def __str__(self):
         # Manejo de nulo en user para evitar errores en el Admin si el dato es viejo
         username = self.user.username if self.user else "Sin Usuario"

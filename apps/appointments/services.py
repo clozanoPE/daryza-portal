@@ -244,13 +244,24 @@ class AppointmentService:
     @staticmethod
     def preparar_detalle_compras(appointment_id):
         """
-        Llamar a esta función cuando Compras abra el detalle de una cita SOLICITADA.
-        Automatiza el pre-marcado de Materia Prima.
-        """ 
+        Llamar a esta función cuando Compras abra el detalle/configuración
+        de COA de una cita SOLICITADA (ver ajax_get_lineas_oc). Automatiza
+        el pre-marcado de Materia Prima: por cada OC tipo MP, sugiere
+        requiere_coa=True en las líneas que aún estén en False — un valor
+        por defecto inteligente, no una regla forzada; Compras sigue
+        pudiendo desmarcarlas y guardar su propia decisión vía
+        ajax_configurar_items_coa. Las OC no-MP nunca se tocan aquí.
+
+        Solo actúa mientras Appointment.coa_configurado sea False (nunca
+        se guardó una configuración manual para esta cita) — no-op en
+        caso contrario, para no sobreescribir una decisión ya guardada
+        (incluida la de desmarcar todo explícitamente).
+        """
         appointment = Appointment.objects.prefetch_related('purchase_orders__lines').get(id=appointment_id)
+        if appointment.coa_configurado:
+            return appointment
         for po in appointment.purchase_orders.all():
             if po.es_materia_prima:
-                # Pre-marcamos solo las que no han sido tocadas (opcional)
                 po.lines.filter(requiere_coa=False).update(requiere_coa=True)
         return appointment
 
