@@ -194,6 +194,13 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
   #wrapper:not(.toggled) #sidebar-wrapper{margin-left:calc(-1 * var(--dz-sidebar-w))}
   #wrapper.toggled #sidebar-wrapper{margin-left:0}
   main.page-main{padding:1rem}
+
+  /* Cabecera compacta en móvil (sesión 46): reduce alto de la cabecera del
+     Portal del Proveedor sin tocar el layout de escritorio (≥992px). */
+  .page-header__title{font-size:1.05rem}
+  .page-header__subtitle{font-size:.72rem}
+  .agenda-title{font-size:1rem}
+  .agenda-title .bg-light{padding:.4rem!important}
 }
 
 /* Backdrop del sidebar móvil (sesión 45, Parte A.5): oscurece el fondo
