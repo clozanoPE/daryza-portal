@@ -18,6 +18,7 @@ from django.core.exceptions import ValidationError
 
 # Importamos AppointmentSlot desde su app original — no duplicamos el modelo
 from apps.appointments.models import AppointmentSlot
+from apps.base.models import Sede
 from .models import ScheduleTemplate, WeeklySlotRule
 
 
@@ -80,11 +81,19 @@ class SchedulingService:
         creados = 0
         existentes = 0
 
+        # apps.scheduling no tiene todavía noción de sede (sesión 48,
+        # análisis previo): la plantilla semanal sigue siendo única para
+        # toda la planta. Se genera siempre sobre LURIN — igual que el
+        # comportamiento implícito que ya existía antes de que AppointmentSlot
+        # tuviera este campo obligatorio.
+        sede_lurin = Sede.objects.get(codigo='LURIN')
+
         for regla in reglas:
             # Calculamos la fecha concreta: lunes + offset del día
             fecha_slot = lunes + timedelta(days=regla.dia_semana)
 
             slot, created = AppointmentSlot.objects.get_or_create(
+                sede=sede_lurin,
                 date=fecha_slot,
                 start_time=regla.hora,
                 defaults={
@@ -157,6 +166,7 @@ class SchedulingService:
             fecha_destino = lunes_destino + timedelta(days=offset)
 
             _, created = AppointmentSlot.objects.get_or_create(
+                sede=slot_origen.sede,
                 date=fecha_destino,
                 start_time=slot_origen.start_time,
                 defaults={

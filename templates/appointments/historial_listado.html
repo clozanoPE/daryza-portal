@@ -111,7 +111,7 @@
                         </div>
                     </td>
                     <td>
-                        <span class="badge bg-light text-dark border">{{ cita.get_lugar_entrega_display }}</span>
+                        <span class="badge bg-light text-dark border">{{ cita.sede.nombre }}</span>
                     </td>
                     <td>
                         {% for oc in cita.purchase_orders.all %}

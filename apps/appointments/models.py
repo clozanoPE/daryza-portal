@@ -3,7 +3,11 @@ from django.conf import settings
 from django.db import models
 from apps.base.models import TimeStampedModel
 
-class AppointmentSlot(TimeStampedModel): 
+class AppointmentSlot(TimeStampedModel):
+    sede = models.ForeignKey(
+        'base.Sede', on_delete=models.PROTECT, related_name='slots',
+        help_text="Sede a la que pertenece este cupo horario."
+    )
     date = models.DateField()
     start_time = models.TimeField()
     #end_time = models.TimeField()
@@ -23,10 +27,11 @@ class AppointmentSlot(TimeStampedModel):
 
     
     class Meta:
-        # RESTRICCIÓN AÑADIDA: No puede haber dos slots para la misma fecha y hora.
-        # Protege contra duplicados silenciosos que causarían doble reserva.
-        # Requiere migración: 0003_appointmentslot_unique_date_starttime.py
-        unique_together = [('date', 'start_time')]
+        # RESTRICCIÓN: no puede haber dos slots para la misma sede+fecha+hora.
+        # Antes de la sesión 48 era solo (date, start_time) — un pool global
+        # compartido entre todas las sedes; ahora cada sede tiene su propia
+        # agenda independiente.
+        unique_together = [('sede', 'date', 'start_time')]
         ordering = ['date', 'start_time']
 
 class Appointment(TimeStampedModel):     
@@ -45,12 +50,6 @@ class Appointment(TimeStampedModel):
 
     Campos heredados de TimeStampedModel: created_at, updated_at
     """
-    SEDES = [
-        ('LURIN', 'Planta Lurin'),
-        ('PUNTA_NEGRA', 'Almacén Punta Negra'),
-        ('DISTRIBUCION', 'Distribucion'),
-    ]
-
     ESTADOS = [
         ('SOLICITADO', 'Solicitado'),
         ('CONFIRMADA', 'Confirmada'),
@@ -82,7 +81,10 @@ class Appointment(TimeStampedModel):
     
     token_qr = models.CharField(max_length=100, unique=True, null=True, blank=True)     
 
-    lugar_entrega = models.CharField(max_length=20, choices=SEDES, default='LURIN')
+    sede = models.ForeignKey(
+        'base.Sede', on_delete=models.PROTECT, related_name='appointments',
+        help_text="Sede de entrega elegida por el proveedor al solicitar la cita."
+    )
     observaciones_admin = models.TextField(null=True, blank=True)
     fecha_respuesta_admin = models.DateTimeField(null=True, blank=True, help_text="Timestamp de cuando Almacén confirmó o rechazó la cita.")
 

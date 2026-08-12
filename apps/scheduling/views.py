@@ -264,7 +264,12 @@ def ajax_agregar_slot(request):
         hora = datetime.strptime(hora_str, '%H:%M').time()
 
         from apps.appointments.models import AppointmentSlot
+        from apps.base.models import Sede
+        # Mismo criterio que SchedulingService.generar_semana (sesión 48):
+        # este panel no tiene selector de sede todavía, así que el slot
+        # puntual se crea sobre LURIN.
         slot, created = AppointmentSlot.objects.get_or_create(
+            sede=Sede.objects.get(codigo='LURIN'),
             date=fecha,
             start_time=hora,
             defaults={

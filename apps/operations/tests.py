@@ -31,6 +31,7 @@ from django.test import TestCase
 
 from apps.appointments.services import AppointmentService
 from apps.appointments.models import AppointmentSlot
+from apps.base.models import Sede
 from apps.operations.models import Ticket, TicketLineInspection
 from apps.operations.services import OperationsService, TicketEtapaError
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
@@ -89,6 +90,7 @@ class OperationsTestBase(TestCase):
             quantity_sap=10, und_medida='KG', requiere_coa=(requiere_coa and u_mss_tdb == 'MP'),
         )
         slot = AppointmentSlot.objects.create(
+            sede=Sede.objects.get(codigo='LURIN'),
             date='2026-09-01', start_time='08:00', dock='TEST', max_capacity=5
         )
         appointment = AppointmentService.solicitar_cita_borrador(

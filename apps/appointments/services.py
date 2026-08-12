@@ -5,6 +5,7 @@ from django.db import transaction
 from datetime import datetime, timedelta
 from django.utils import timezone
 from apps.appointments.models import Appointment, AppointmentSlot
+from apps.base.models import Sede
 from apps.operations.models import Ticket
 from apps.sap_sync.models import PurchaseOrder
 
@@ -106,10 +107,19 @@ class AppointmentService:
     def solicitar_cita_borrador(user, slot_id, oc_ids, coa_file=None, lugar_entrega='LURIN'):
         """
         Lógica centralizada para Daryza: Valida integridad y crea la cita.
+
+        `lugar_entrega` sigue siendo el nombre del parámetro (coincide con
+        el POST que ya envía el frontend, sesión 48) pero ahora es el
+        `codigo` de una Sede real, resuelto aquí a la FK — no un choice
+        de texto suelto.
         """
         with transaction.atomic():
             # 1. Validar disponibilidad del horario (Slot)
             slot = SlotService.validar_disponibilidad(slot_id)
+
+            sede = Sede.objects.filter(codigo=lugar_entrega, activa=True).first()
+            if sede is None:
+                raise ValidationError(f"Sede '{lugar_entrega}' no existe o no está activa.")
 
             # 2. VALIDACIÓN DE OCs DUPLICADAS (No perder esta lógica)
             # Buscamos si alguna de las OCs ya pertenece a una cita que no sea rechazada/cancelada
@@ -145,10 +155,10 @@ class AppointmentService:
 
             # 3. Creación del objeto Appointment (Atómico)
             appointment = Appointment.objects.create(
-                user=user, 
+                user=user,
                 slot=slot,
                 status='SOLICITADO',
-                lugar_entrega=lugar_entrega,
+                sede=sede,
                 coa_pdf=coa_file
             )
             

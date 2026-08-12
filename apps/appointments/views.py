@@ -24,6 +24,7 @@ from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 from apps.base.decorators import proveedor_required
 from apps.base.filters import resolver_periodo
 from apps.base.reporting import cita_a_row, exportar_excel, exportar_pdf
+from apps.base.models import Sede
 
 
 def _json_ok(**kwargs):
@@ -117,7 +118,7 @@ class PortalProveedorView(TemplateView):
 
         context['historial']      = qs
         context['periodo']        = periodo
-        context['sedes_daryza']   = Appointment.SEDES
+        context['sedes_daryza']   = Sede.objects.filter(activa=True)
         return context
 
 
@@ -149,7 +150,7 @@ def _historial_citas_qs(request):
 
     sede = request.GET.get('sede')
     if sede:
-        qs = qs.filter(lugar_entrega=sede)
+        qs = qs.filter(sede__codigo=sede)
 
     return qs
 
