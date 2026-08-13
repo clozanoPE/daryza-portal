@@ -45,9 +45,26 @@ function seleccionarSlot(slotId, fecha, hora) {
   if (elFecha) elFecha.textContent = fecha;
   if (elHora)  elHora.textContent  = hora;
 
+  // Sede: inferida de la Agenda actualmente filtrada (SEDE_ACTUAL_NOMBRE,
+  // global inyectado por el template) — ya no un <select> aparte que el
+  // proveedor pudiera desalinear del slot elegido.
+  const elSede = document.getElementById('modal-sede-nombre');
+  if (elSede) elSede.textContent = SEDE_ACTUAL_NOMBRE || '—';
+
   // Abrir modal de solicitud
   const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('modalAgendar'));
   modal.show();
+}
+
+/**
+ * Cambia la sede de la Agenda de Cupos mostrada, recargando la página con
+ * el nuevo filtro. Sesión 48b: cada sede tiene su propia agenda.
+ * @param {string} codigoSede
+ */
+function cambiarSedeAgenda(codigoSede) {
+  const params = new URLSearchParams(window.location.search);
+  params.set('sede', codigoSede);
+  window.location.search = params.toString();
 }
 
 /* ─── Envío del formulario de solicitud ─────────────────────────────────── */
@@ -122,7 +139,8 @@ async function enviarSolicitud() {
   const restoreBtn = btnLoading(btn, 'Enviando...');
   const formData = new FormData();
   formData.append('slot_id', _selectedSlotId);
-  formData.append('lugar_entrega', document.getElementById('sel-sede')?.value || 'LURIN');
+  // Sede: ya no se envía desde el modal — el backend la infiere de
+  // slot.sede directamente (sesión 48b).
   ocCheckboxes.forEach(cb => formData.append('oc_ids', cb.value));
 
   const coaFile = document.getElementById('inp-coa-general')?.files[0];

@@ -28,6 +28,8 @@ from apps.base.decorators import (
     almacen_required, vigilancia_required, calidad_required,
     compras_required, staff_interno_required, staff_o_proveedor_required,
 )
+from apps.base.filters import resolver_sede
+from apps.base.models import Sede
 
 
 # ─── Vista principal del panel ───────────────────────────────────────────────────
@@ -36,18 +38,25 @@ from apps.base.decorators import (
 def panel_horarios(request):
     """
     Vista principal del panel de administración de horarios semanales.
-    Renderiza la grilla de la semana activa y el selector de semanas.
+    Renderiza la grilla de la semana activa y el selector de semanas,
+    para UNA sede a la vez (sesión 48b) — cada sede se configura de forma
+    independiente, sin compartir ni cruzar cupos con las demás.
 
     GET params:
         ?semana=YYYY-MM-DD  → Fecha dentro de la semana a visualizar.
                               Si no se provee, usa la semana actual.
+        ?sede=CODIGO        → Sede a administrar. Si falta o no es válida,
+                              usa LURIN (o la primera Sede activa si LURIN
+                              no existe) — ver apps.base.filters.resolver_sede.
 
     Context para el template:
         semana_actual   : date del lunes visualizado
         semana_anterior : date del lunes anterior
         semana_siguiente: date del lunes siguiente
+        sede_actual     : Sede administrada actualmente
+        sedes_daryza    : Queryset de Sede activas (para el selector)
         slots_data      : JSON de la grilla (consumido por el JS del panel)
-        templates       : Queryset de ScheduleTemplate activas (para el modal de generación)
+        templates       : Queryset de ScheduleTemplate activas de sede_actual
         dias_semana     : Lista de dicts {fecha, nombre, iso} para renderizar columnas
     """
     # Determinar semana a visualizar
@@ -63,8 +72,12 @@ def panel_horarios(request):
     lunes = SchedulingService.get_lunes_de_semana(fecha_base)
     sabado = lunes + timedelta(days=5)
 
-    # Grilla de la semana para el template
-    slots_data = SchedulingService.get_slots_semana_admin(lunes)
+    sede_actual = resolver_sede(request)
+
+    # Grilla de la semana para el template — vacía si no hay ninguna Sede
+    # activa en el sistema (caso extremo, no ocurre en la práctica: las
+    # sedes se siembran vía migración de datos, apps/base/migrations/0002).
+    slots_data = SchedulingService.get_slots_semana_admin(lunes, sede_actual) if sede_actual else []
 
     # Estructura de días para renderizar cabeceras de columna
     NOMBRES_DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
@@ -82,10 +95,18 @@ def panel_horarios(request):
         'semana_anterior': (lunes - timedelta(weeks=1)),
         'semana_siguiente': (lunes + timedelta(weeks=1)),
         'sabado': sabado,
+        'sede_actual': sede_actual,
+        'sedes_daryza': Sede.objects.filter(activa=True).order_by('nombre'),
         'slots_json': json.dumps(slots_data),   # Para consumo JS sin llamada extra
-        'templates': ScheduleTemplate.objects.filter(activa=True).order_by('nombre'),
+        'templates': (
+            ScheduleTemplate.objects.filter(activa=True, sede=sede_actual).order_by('nombre')
+            if sede_actual else ScheduleTemplate.objects.none()
+        ),
         'dias_semana': dias_semana,
-        'hay_semana_anterior': AppointmentSlot_existe_en_semana(lunes - timedelta(weeks=1)),
+        'hay_semana_anterior': (
+            AppointmentSlot_existe_en_semana(lunes - timedelta(weeks=1), sede_actual)
+            if sede_actual else False
+        ),
     }
     return render(request, 'scheduling/panel_horarios.html', context)
 
@@ -138,23 +159,27 @@ def ajax_generar_semana(request):
 def ajax_duplicar_semana(request):
     """
     POST /scheduling/api/duplicar-semana/
-    Body: { lunes_origen: 'YYYY-MM-DD' }
+    Body: { lunes_origen: 'YYYY-MM-DD', sede: 'CODIGO' }
 
-    Copia los AppointmentSlots de la semana origen a la semana siguiente.
+    Copia los AppointmentSlots de la semana origen a la semana siguiente,
+    SOLO para la sede indicada (sesión 48b) — nunca toca los slots de otra
+    sede, aunque compartan la misma fecha/hora.
     Es la acción de 'duplicar semana anterior'.
     """
     try:
         data = json.loads(request.body)
         lunes_str = data.get('lunes_origen')
+        sede_codigo = data.get('sede')
 
-        if not lunes_str:
+        if not lunes_str or not sede_codigo:
             return JsonResponse(
-                {'status': 'error', 'msg': 'Se requiere la fecha de la semana origen.'},
+                {'status': 'error', 'msg': 'Se requiere la fecha de la semana origen y la sede.'},
                 status=400
             )
 
+        sede = get_object_or_404(Sede, codigo=sede_codigo, activa=True)
         lunes_origen = date.fromisoformat(lunes_str)
-        resumen = SchedulingService.duplicar_semana(lunes_origen)
+        resumen = SchedulingService.duplicar_semana(lunes_origen, sede)
 
         return JsonResponse({
             'status': 'success',
@@ -242,9 +267,11 @@ def ajax_eliminar_slot(request):
 def ajax_agregar_slot(request):
     """
     POST /scheduling/api/agregar-slot/
-    Body: { fecha: 'YYYY-MM-DD', hora: 'HH:MM', capacidad: int }
+    Body: { fecha: 'YYYY-MM-DD', hora: 'HH:MM', capacidad: int, sede: 'CODIGO' }
 
-    Añade un AppointmentSlot individual a una fecha/hora específica.
+    Añade un AppointmentSlot individual a una fecha/hora específica, para
+    la sede indicada (sesión 48b: ya no hardcodea LURIN — el panel ahora
+    siempre opera sobre una sede explícita, la que esté seleccionada).
     Útil para ajustes puntuales fuera de la plantilla.
     """
     try:
@@ -252,10 +279,11 @@ def ajax_agregar_slot(request):
         fecha_str = data.get('fecha')
         hora_str = data.get('hora')
         capacidad = int(data.get('capacidad', 1))
+        sede_codigo = data.get('sede')
 
-        if not fecha_str or not hora_str:
+        if not fecha_str or not hora_str or not sede_codigo:
             return JsonResponse(
-                {'status': 'error', 'msg': 'Fecha y hora son requeridas.'},
+                {'status': 'error', 'msg': 'Fecha, hora y sede son requeridas.'},
                 status=400
             )
 
@@ -264,16 +292,15 @@ def ajax_agregar_slot(request):
         hora = datetime.strptime(hora_str, '%H:%M').time()
 
         from apps.appointments.models import AppointmentSlot
-        from apps.base.models import Sede
-        # Mismo criterio que SchedulingService.generar_semana (sesión 48):
-        # este panel no tiene selector de sede todavía, así que el slot
-        # puntual se crea sobre LURIN.
+        sede = get_object_or_404(Sede, codigo=sede_codigo, activa=True)
         slot, created = AppointmentSlot.objects.get_or_create(
-            sede=Sede.objects.get(codigo='LURIN'),
+            sede=sede,
             date=fecha,
             start_time=hora,
             defaults={
-                'dock': 'ALMACEN',
+                # dock: texto libre, sin catalogar en esta fase (sesión
+                # 48b elimina el hardcode 'ALMACEN' que traía antes).
+                'dock': '',
                 'max_capacity': capacidad,
                 'is_full_override': False,
             }
@@ -335,11 +362,11 @@ def ajax_get_citas_slot(request, slot_id: int):
 
 # ─── Helper interno ──────────────────────────────────────────────────────────────
 
-def AppointmentSlot_existe_en_semana(lunes: date) -> bool:
+def AppointmentSlot_existe_en_semana(lunes: date, sede: Sede) -> bool:
     """
-    Verifica si existen AppointmentSlots en la semana de 'lunes'.
+    Verifica si existen AppointmentSlots de 'sede' en la semana de 'lunes'.
     Usado para habilitar/deshabilitar el botón 'Duplicar semana anterior'.
     """
     from apps.appointments.models import AppointmentSlot
     sabado = lunes + timedelta(days=5)
-    return AppointmentSlot.objects.filter(date__range=[lunes, sabado]).exists()
+    return AppointmentSlot.objects.filter(sede=sede, date__range=[lunes, sabado]).exists()

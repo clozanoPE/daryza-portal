@@ -12,6 +12,7 @@
  *                   citas_count, is_full_override, estado, puede_eliminarse}
  *   DIAS_SEMANA   : Array [{fecha, nombre, fecha_display}] — 6 elementos (L-S)
  *   SEMANA_ACTUAL : String 'YYYY-MM-DD' del lunes de la semana visible
+ *   SEDE_ACTUAL   : String código de la Sede administrada (sesión 48b)
  *   CSRF_TOKEN    : Token CSRF para peticiones POST
  */
 
@@ -132,6 +133,20 @@ function construirCeldaSlot(slot) {
 }
 
 
+/**
+ * Cambia la sede administrada por el panel, preservando la semana visible.
+ * Sesión 48b: cada sede tiene su propia agenda independiente.
+ *
+ * @param {string} codigoSede
+ */
+function cambiarSede(codigoSede) {
+    const params = new URLSearchParams(window.location.search);
+    params.set('sede', codigoSede);
+    params.set('semana', SEMANA_ACTUAL);
+    window.location.search = params.toString();
+}
+
+
 // ── Acciones AJAX ─────────────────────────────────────────────────────────────
 
 /**
@@ -188,7 +203,7 @@ function confirmarDuplicar(lunesOrigen, semanaDestino) {
     }).then(result => {
         if (!result.isConfirmed) return;
 
-        ajaxPost('/scheduling/api/duplicar-semana/', { lunes_origen: lunesOrigen })
+        ajaxPost('/scheduling/api/duplicar-semana/', { lunes_origen: lunesOrigen, sede: SEDE_ACTUAL })
         .then(data => {
             toastMsg('¡Semana duplicada!', data.msg, 'success');
             setTimeout(() => location.reload(), 1800);
@@ -265,7 +280,7 @@ function agregarSlot() {
         return;
     }
 
-    ajaxPost('/scheduling/api/agregar-slot/', { fecha, hora, capacidad: parseInt(capacidad) })
+    ajaxPost('/scheduling/api/agregar-slot/', { fecha, hora, capacidad: parseInt(capacidad), sede: SEDE_ACTUAL })
     .then(data => {
         bootstrap.Modal.getInstance(document.getElementById('modalAgregarSlot'))?.hide();
         toastMsg('Slot agregado', data.msg, 'success');

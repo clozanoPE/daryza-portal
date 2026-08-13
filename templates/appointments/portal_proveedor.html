@@ -55,6 +55,24 @@
         </div>
       </div>
 
+      {# ── Selector de sede: cada sede tiene su propia agenda de cupos, ──── #}
+      {# independiente de las demás (sesión 48b). Al cambiar, se recarga la  #}
+      {# grilla filtrada a esa sede — el slot que se elige después ya trae  #}
+      {# su sede implícita, sin ningún combo aparte que pueda desalinearse. #}
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <label for="sel-sede-agenda" class="text-xs fw-bold text-muted mb-0">
+          <i class="bi bi-geo-alt-fill text-success me-1"></i>Sede:
+        </label>
+        <select id="sel-sede-agenda" class="form-select form-select-sm rounded-3" style="max-width:240px"
+                onchange="cambiarSedeAgenda(this.value)">
+          {% for sede in sedes_daryza %}
+          <option value="{{ sede.codigo }}" {% if sede_actual and sede.codigo == sede_actual.codigo %}selected{% endif %}>
+            {{ sede.nombre }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
       {# ── Grilla de escritorio (≥992px): 7 columnas, sin cambios ────────── #}
       <div class="d-none d-lg-block">
         {# Cabecera de días — día real + fecha (sesión 39), ya no texto fijo #}
@@ -354,5 +372,9 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/portal_proveedor.js' %}?v=2.2"></script>
+<script>
+  const SEDE_ACTUAL_CODIGO = "{{ sede_actual.codigo|default:'' }}";
+  const SEDE_ACTUAL_NOMBRE = "{{ sede_actual.nombre|default:'' }}";
+</script>
+<script src="{% static 'js/panels/portal_proveedor.js' %}?v=2.3"></script>
 {% endblock %}

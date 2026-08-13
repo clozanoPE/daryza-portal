@@ -25,16 +25,16 @@
 
       <div class="modal-body px-4">
 
-        {# Sede de entrega #}
+        {# Sede de entrega — inferida del slot elegido en la Agenda de Cupos #}
+        {# (sesión 48b): ya no es un <select> libre y desacoplado del slot; #}
+        {# la Agenda ya está filtrada a una sola sede, así que no hay       #}
+        {# combinación posible que discrepa entre "slot elegido" y "sede". #}
         <div class="mb-3">
           <label class="form-label fw-bold text-xs">
             <i class="bi bi-geo-alt-fill text-success me-1"></i>Sede de Entrega
           </label>
-          <select id="sel-sede" class="form-select form-select-sm rounded-3">
-            {% for sede in sedes_daryza %}
-            <option value="{{ sede.codigo }}">{{ sede.nombre }}</option>
-            {% endfor %}
-          </select>
+          <div id="modal-sede-nombre" class="form-control form-control-sm rounded-3 bg-light text-dark fw-bold">—</div>
+          <div class="text-muted text-xxs mt-1">Determinada por la Agenda de Cupos seleccionada.</div>
         </div>
 
         {# Selección de OCs #}

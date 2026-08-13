@@ -22,7 +22,7 @@ from .models import Appointment
 from .services import SlotService, AppointmentService
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 from apps.base.decorators import proveedor_required
-from apps.base.filters import resolver_periodo
+from apps.base.filters import resolver_periodo, resolver_sede
 from apps.base.reporting import cita_a_row, exportar_excel, exportar_pdf
 from apps.base.models import Sede
 
@@ -51,14 +51,24 @@ class PortalProveedorView(TemplateView):
         context = super().get_context_data(**kwargs)
         ruc_proveedor = self.request.user.username
 
+        # Sede administrada por la Agenda de Cupos (sesión 48b): la grilla
+        # ahora muestra los cupos de UNA sola sede a la vez — ya no un pool
+        # único con slots de todas las sedes mezclados. ?sede=CODIGO en la
+        # querystring; por defecto LURIN (ver apps.base.filters.resolver_sede).
+        sede_actual = resolver_sede(self.request)
+        context['sede_actual'] = sede_actual
+
         # Grilla de 6 días consecutivos desde hoy (ventana rodante, sesión
         # 39) — timezone.localtime() para obtener la fecha de HOY en hora
         # local de Lima, no en UTC crudo (timezone.now() con USE_TZ=True
         # siempre es UTC; usar su .date() directo desfasa la ventana hasta
         # 5 horas antes de medianoche en Lima, mostrando ya el día siguiente).
-        context['matrix'], context['dias_semana'] = SlotService.get_semana_matrix(
-            timezone.localtime(timezone.now()).date()
-        )
+        if sede_actual:
+            context['matrix'], context['dias_semana'] = SlotService.get_semana_matrix(
+                timezone.localtime(timezone.now()).date(), sede_actual
+            )
+        else:
+            context['matrix'], context['dias_semana'] = {}, []
 
         # Vista móvil (Parte C, sesión 45): reagrupa el mismo 'matrix' (sin
         # recalcular datos, mismo SlotService.get_semana_matrix de arriba)
@@ -118,7 +128,7 @@ class PortalProveedorView(TemplateView):
 
         context['historial']      = qs
         context['periodo']        = periodo
-        context['sedes_daryza']   = Sede.objects.filter(activa=True)
+        context['sedes_daryza']   = Sede.objects.filter(activa=True).order_by('nombre')
         return context
 
 
@@ -222,7 +232,6 @@ def solicitar_cita_ajax(request):
         slot_id        = request.POST.get('slot_id')
         oc_ids         = request.POST.getlist('oc_ids')
         coa_file       = request.FILES.get('coa_pdf')
-        lugar_entrega  = request.POST.get('lugar_entrega', 'LURIN')
 
         if not slot_id or not oc_ids:
             return _json_err('Debe seleccionar un horario y al menos una Orden de Compra.')
@@ -232,7 +241,6 @@ def solicitar_cita_ajax(request):
             slot_id=slot_id,
             oc_ids=oc_ids,
             coa_file=coa_file,
-            lugar_entrega=lugar_entrega,
         )
         return _json_ok(msg=f'Solicitud #{appointment.id} registrada. Compras la revisará pronto.')
 

@@ -71,7 +71,7 @@
     <h4 class="mb-0 fw-bold text-dark">
       <i class="bi bi-calendar-week text-success me-2"></i>Administración de Horarios
     </h4>
-    <small class="text-muted">Programa la disponibilidad semanal para los proveedores</small>
+    <small class="text-muted">Programa la disponibilidad semanal para los proveedores — cada sede se configura de forma independiente</small>
   </div>
   {# Botones de acción principal #}
   <div class="d-flex gap-2">
@@ -79,16 +79,16 @@
       <i class="bi bi-arrow-left me-1"></i>Volver
     </a>
 
-    {# Duplicar semana anterior: solo disponible si existe semana anterior #}
+    {# Duplicar semana anterior: solo disponible si existe semana anterior PARA ESTA SEDE #}
     {% if hay_semana_anterior %}
     <button class="btn btn-outline-secondary btn-sm rounded-3 shadow-sm"
             onclick="confirmarDuplicar('{{ semana_anterior|date:"Y-m-d" }}', '{{ semana_actual|date:"d/m/Y" }}')"
-            title="Copia los slots de la semana anterior a esta semana">
+            title="Copia los slots de {{ sede_actual.nombre }} de la semana anterior a esta semana">
       <i class="bi bi-copy me-1"></i> Duplicar semana anterior
     </button>
     {% else %}
     <button class="btn btn-outline-secondary btn-sm rounded-3 shadow-sm" disabled
-            title="No hay datos en la semana anterior para duplicar">
+            title="No hay datos de {{ sede_actual.nombre }} en la semana anterior para duplicar">
       <i class="bi bi-copy me-1"></i> Duplicar semana anterior
     </button>
     {% endif %}
@@ -107,18 +107,39 @@
   </div>
 </div>
 
+{# ── Selector de sede: cada sede administra su propia agenda ─────────────── #}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+  <div class="card-body py-3 px-4 d-flex align-items-center gap-3 flex-wrap">
+    <label for="sel-sede-panel" class="fw-bold text-dark text-xs mb-0 text-uppercase" style="letter-spacing:.5px">
+      <i class="bi bi-geo-alt-fill text-success me-1"></i>Sede
+    </label>
+    <select id="sel-sede-panel" class="form-select form-select-sm rounded-3" style="max-width:260px"
+            onchange="cambiarSede(this.value)">
+      {% for sede in sedes_daryza %}
+      <option value="{{ sede.codigo }}" {% if sede_actual and sede.codigo == sede_actual.codigo %}selected{% endif %}>
+        {{ sede.nombre }}
+      </option>
+      {% endfor %}
+    </select>
+    <small class="text-muted">
+      <i class="bi bi-info-circle me-1"></i>
+      Los cupos, plantillas y bloqueos de cada sede son independientes entre sí.
+    </small>
+  </div>
+</div>
+
 {# ── Navegación de semanas ───────────────────────────────────────────────── #}
 <div class="card border-0 shadow-sm rounded-4 mb-4">
   <div class="card-body py-3 px-4">
     <div class="d-flex align-items-center justify-content-between semana-nav">
-      <a href="?semana={{ semana_anterior|date:'Y-m-d' }}" class="btn btn-light border shadow-sm">
+      <a href="?semana={{ semana_anterior|date:'Y-m-d' }}&sede={{ sede_actual.codigo }}" class="btn btn-light border shadow-sm">
         <i class="bi bi-chevron-left"></i> Sem. anterior
       </a>
       <span class="semana-label text-dark">
         <i class="bi bi-calendar3 text-success me-2"></i>
         {{ semana_actual|date:"d/m/Y" }} — {{ sabado|date:"d/m/Y" }}
       </span>
-      <a href="?semana={{ semana_siguiente|date:'Y-m-d' }}" class="btn btn-light border shadow-sm">
+      <a href="?semana={{ semana_siguiente|date:'Y-m-d' }}&sede={{ sede_actual.codigo }}" class="btn btn-light border shadow-sm">
         Sem. siguiente <i class="bi bi-chevron-right"></i>
       </a>
     </div>
@@ -252,6 +273,10 @@
           <input type="number" class="form-control form-control-sm rounded-3"
                  id="nuevo-slot-capacidad" value="1" min="1" max="20">
         </div>
+        <div class="alert alert-light border rounded-3 small mb-0">
+          <i class="bi bi-geo-alt-fill text-success me-1"></i>
+          Sede: <strong>{{ sede_actual.nombre }}</strong>
+        </div>
       </div>
       <div class="modal-footer border-0 pt-0">
         <button type="button" class="btn btn-light btn-sm rounded-3" data-bs-dismiss="modal">Cancelar</button>
@@ -286,7 +311,8 @@
   const SLOTS_DATA    = {{ slots_json|safe }};
   const DIAS_SEMANA   = {{ dias_semana|safe }};       {# [{fecha, nombre, fecha_display}] #}
   const SEMANA_ACTUAL = "{{ semana_actual|date:'Y-m-d' }}";
+  const SEDE_ACTUAL   = "{{ sede_actual.codigo|default:'' }}";
   const CSRF_TOKEN    = "{{ csrf_token }}";
 </script>
-<script src="{% static 'js/panel_horarios.js' %}?v=1.1"></script>
+<script src="{% static 'js/panel_horarios.js' %}?v=1.2"></script>
 {% endblock %}

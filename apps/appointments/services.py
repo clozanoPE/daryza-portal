@@ -5,7 +5,6 @@ from django.db import transaction
 from datetime import datetime, timedelta
 from django.utils import timezone
 from apps.appointments.models import Appointment, AppointmentSlot
-from apps.base.models import Sede
 from apps.operations.models import Ticket
 from apps.sap_sync.models import PurchaseOrder
 
@@ -16,15 +15,17 @@ class SlotService:
     NOMBRES_DIA = ['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM']
 
     @staticmethod
-    def get_semana_matrix(fecha_inicio):
+    def get_semana_matrix(fecha_inicio, sede):
         """
-        Genera una matriz de 6 días CONSECUTIVOS desde fecha_inicio —
-        ventana rodante, no una semana calendario lunes-sábado (sesión 38:
-        ya se comportaba así de facto, con fecha_inicio siempre "hoy", pero
-        el template mostraba encabezados de columna fijos "Lunes...Sábado"
-        que no correspondían al día real. Sesión 39: se agrega 'dias', la
-        lista de encabezados reales para que el template deje de usar texto
-        fijo).
+        Genera una matriz de 6 días CONSECUTIVOS desde fecha_inicio, SOLO
+        para 'sede' (sesión 48b: antes mostraba TODOS los slots sin filtrar
+        por sede en un único pool visual — dos sedes con cupos a la misma
+        fecha/hora aparecían mezclados en la misma celda) — ventana
+        rodante, no una semana calendario lunes-sábado (sesión 38: ya se
+        comportaba así de facto, con fecha_inicio siempre "hoy", pero el
+        template mostraba encabezados de columna fijos "Lunes...Sábado" que
+        no correspondían al día real. Sesión 39: se agrega 'dias', la lista
+        de encabezados reales para que el template deje de usar texto fijo).
 
         También marca cada slot de HOY cuya hora de inicio ya pasó como
         color='pasado' (no seleccionable, sin importar cupos libres) —
@@ -52,6 +53,7 @@ class SlotService:
         ]
 
         slots = AppointmentSlot.objects.filter(
+            sede=sede,
             date__range=[fecha_inicio, fecha_fin]
         ).order_by('start_time', 'date')
 
@@ -104,22 +106,24 @@ class SlotService:
 
 class AppointmentService:
     @staticmethod
-    def solicitar_cita_borrador(user, slot_id, oc_ids, coa_file=None, lugar_entrega='LURIN'):
+    def solicitar_cita_borrador(user, slot_id, oc_ids, coa_file=None):
         """
         Lógica centralizada para Daryza: Valida integridad y crea la cita.
 
-        `lugar_entrega` sigue siendo el nombre del parámetro (coincide con
-        el POST que ya envía el frontend, sesión 48) pero ahora es el
-        `codigo` de una Sede real, resuelto aquí a la FK — no un choice
-        de texto suelto.
+        Sesión 48b: ya no recibe la sede como parámetro separado (antes
+        `lugar_entrega`, un <select> del modal desacoplado de la grilla —
+        un proveedor podía, en teoría, elegir un slot de la Agenda de una
+        sede y una Sede de entrega distinta en el combo, dejando el
+        Appointment con una sede que no correspondía a su propio slot). La
+        sede de la cita se infiere directamente de `slot.sede` — la Agenda
+        de Cupos ya está filtrada a una sola sede en el portal (cada slot
+        pertenece a exactamente una), así que no hay combinación posible
+        que discrepe.
         """
         with transaction.atomic():
             # 1. Validar disponibilidad del horario (Slot)
             slot = SlotService.validar_disponibilidad(slot_id)
-
-            sede = Sede.objects.filter(codigo=lugar_entrega, activa=True).first()
-            if sede is None:
-                raise ValidationError(f"Sede '{lugar_entrega}' no existe o no está activa.")
+            sede = slot.sede
 
             # 2. VALIDACIÓN DE OCs DUPLICADAS (No perder esta lógica)
             # Buscamos si alguna de las OCs ya pertenece a una cita que no sea rechazada/cancelada

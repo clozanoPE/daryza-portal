@@ -43,9 +43,19 @@ class ScheduleTemplate(TimeStampedModel):
         default=True,
         help_text="Solo la plantilla activa se ofrece como opción de base para nuevas semanas."
     )
+    sede = models.ForeignKey(
+        'base.Sede',
+        on_delete=models.PROTECT,
+        related_name='templates',
+        help_text=(
+            "Sede a la que pertenece esta plantilla. Cada sede configura su "
+            "propia disponibilidad semanal de forma independiente — "
+            "generar_semana() crea AppointmentSlots solo para esta sede."
+        ),
+    )
 
     def __str__(self):
-        return f"{self.nombre} ({'Activa' if self.activa else 'Inactiva'})"
+        return f"{self.nombre} ({self.sede.codigo}) ({'Activa' if self.activa else 'Inactiva'})"
 
     class Meta:
         verbose_name = "Plantilla de Horario"
@@ -63,6 +73,13 @@ class WeeklySlotRule(models.Model):
     NOTA: Esta tabla NO reemplaza a AppointmentSlot. Es la CONFIGURACIÓN.
     AppointmentSlot sigue siendo la fuente de verdad para citas reales.
     SchedulingService.generar_semana() lee estas reglas y crea los Slots concretos.
+
+    NOTA sobre Sede (sesión 48): esta tabla no tiene su propia FK a Sede —
+    hereda la sede de forma determinista a través de `template.sede`
+    (WeeklySlotRule.template es obligatorio y nunca cambia de plantilla sin
+    pasar por una regla nueva). Duplicar la FK aquí introduciría una segunda
+    fuente de verdad que podría divergir de `template.sede` sin ningún
+    beneficio real, dado que una regla nunca existe sin su plantilla.
     """
     DIA_CHOICES = [
         (0, 'Lunes'),

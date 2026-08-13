@@ -27,13 +27,20 @@ class SchedulingService:
     Servicio central para la gestión de la programación de horarios semanales.
 
     Métodos principales:
-        - get_lunes_de_semana(fecha)       → Obtiene el lunes de la semana de una fecha
-        - generar_semana(template, lunes)  → Crea AppointmentSlots desde una plantilla
-        - duplicar_semana(semana_origen)   → Clona Slots de una semana a la siguiente
-        - get_slots_semana(lunes)          → Devuelve matriz de slots por día/hora
-        - bloquear_slot(slot_id)           → Activa is_full_override
-        - desbloquear_slot(slot_id)        → Desactiva is_full_override
-        - eliminar_slot_vacio(slot_id)     → Elimina solo si no tiene citas vinculadas
+        - get_lunes_de_semana(fecha)              → Obtiene el lunes de la semana de una fecha
+        - generar_semana(template, lunes)         → Crea AppointmentSlots desde una plantilla (sede = template.sede)
+        - duplicar_semana(semana_origen, sede)     → Clona Slots de una semana a la siguiente, solo para esa sede
+        - get_slots_semana_admin(lunes, sede)      → Devuelve matriz de slots por día/hora, solo para esa sede
+        - bloquear_slot(slot_id)                  → Activa is_full_override
+        - desbloquear_slot(slot_id)               → Desactiva is_full_override
+        - eliminar_slot_vacio(slot_id)             → Elimina solo si no tiene citas vinculadas
+
+    Sesión 48b: la generación/consulta de slots ahora se ejecuta siempre
+    por sede — nunca se genera ni se lista un slot sin una Sede explícita.
+    La sede de una semana generada la determina `template.sede` (ya no hay
+    un hardcode a LURIN); `duplicar_semana`/`get_slots_semana_admin` reciben
+    la sede como parámetro explícito, para que el panel de administración
+    pueda operar cada sede de forma independiente.
     """
 
     # ─── Utilidades de fecha ────────────────────────────────────────────────────
@@ -81,25 +88,24 @@ class SchedulingService:
         creados = 0
         existentes = 0
 
-        # apps.scheduling no tiene todavía noción de sede (sesión 48,
-        # análisis previo): la plantilla semanal sigue siendo única para
-        # toda la planta. Se genera siempre sobre LURIN — igual que el
-        # comportamiento implícito que ya existía antes de que AppointmentSlot
-        # tuviera este campo obligatorio.
-        sede_lurin = Sede.objects.get(codigo='LURIN')
+        # Sesión 48b: la sede ya no se asume — la determina la propia
+        # plantilla (template.sede, FK obligatoria desde esta sesión).
+        sede = template.sede
 
         for regla in reglas:
             # Calculamos la fecha concreta: lunes + offset del día
             fecha_slot = lunes + timedelta(days=regla.dia_semana)
 
             slot, created = AppointmentSlot.objects.get_or_create(
-                sede=sede_lurin,
+                sede=sede,
                 date=fecha_slot,
                 start_time=regla.hora,
                 defaults={
-                    # dock: campo requerido por AppointmentSlot, usamos valor neutro.
-                    # El personal puede editar esto después desde el panel.
-                    'dock': 'ALMACEN',
+                    # dock: texto libre, sin catalogar en esta fase (antes
+                    # se hardcodeaba 'ALMACEN' como valor neutro — sesión
+                    # 48b lo deja en blanco; el personal lo edita después
+                    # desde el panel si lo necesita).
+                    'dock': '',
                     'max_capacity': regla.capacidad,
                     'is_full_override': False,
                     # end_time es opcional en el modelo (null=True)
@@ -117,22 +123,28 @@ class SchedulingService:
             'total': creados + existentes,
             'lunes': lunes.strftime('%d/%m/%Y'),
             'sabado': (lunes + timedelta(days=5)).strftime('%d/%m/%Y'),
+            'sede': sede.nombre,
         }
 
     # ─── Duplicar semana anterior ────────────────────────────────────────────────
 
     @staticmethod
     @transaction.atomic
-    def duplicar_semana(lunes_origen: date) -> dict:
+    def duplicar_semana(lunes_origen: date, sede: Sede) -> dict:
         """
-        Copia los AppointmentSlots de la semana 'lunes_origen' hacia la semana siguiente.
-        Esta es la funcionalidad de 'duplicar semana anterior' para el personal.
+        Copia los AppointmentSlots de la semana 'lunes_origen' hacia la semana
+        siguiente, SOLO para 'sede'. Esta es la funcionalidad de 'duplicar
+        semana anterior' para el personal.
 
         Reglas de negocio:
-          - Solo copia slots de la semana origen que existan en BD.
+          - Solo copia slots de la semana origen que existan en BD, de esa sede.
           - Respeta max_capacity e is_full_override del origen.
           - No duplica slots que ya existan en la semana destino.
           - No requiere una plantilla: trabaja directo sobre slots existentes.
+          - Sesión 48b: acotado a una sede explícita — antes duplicaba TODOS
+            los slots de la semana sin distinguir sede; con agendas
+            independientes por sede, duplicar la semana de LURIN nunca debe
+            tocar (ni siquiera leer) los slots de PUNTA_NEGRA, y viceversa.
 
         Retorna:
             dict con 'copiados', 'omitidos' (ya existían), 'lunes_destino'.
@@ -147,12 +159,13 @@ class SchedulingService:
         sabado_origen = lunes_origen + timedelta(days=5)
 
         slots_origen = AppointmentSlot.objects.filter(
+            sede=sede,
             date__range=[lunes_origen, sabado_origen]
         ).order_by('date', 'start_time')
 
         if not slots_origen.exists():
             raise ValidationError(
-                f"No existen slots en la semana del "
+                f"No existen slots de {sede.nombre} en la semana del "
                 f"{lunes_origen.strftime('%d/%m/%Y')}. "
                 "Genera primero esa semana antes de duplicarla."
             )
@@ -190,15 +203,17 @@ class SchedulingService:
             'lunes_origen': lunes_origen.strftime('%d/%m/%Y'),
             'lunes_destino': lunes_destino.strftime('%d/%m/%Y'),
             'sabado_destino': (lunes_destino + timedelta(days=5)).strftime('%d/%m/%Y'),
+            'sede': sede.nombre,
         }
 
     # ─── Consulta de matriz semanal (para el panel admin) ───────────────────────
 
     @staticmethod
-    def get_slots_semana_admin(lunes: date) -> list[dict]:
+    def get_slots_semana_admin(lunes: date, sede: Sede) -> list[dict]:
         """
         Devuelve los AppointmentSlots de la semana en formato de grilla para
-        la vista de administración, incluyendo información de citas vinculadas.
+        la vista de administración, SOLO para 'sede' — incluyendo
+        información de citas vinculadas.
 
         Retorna lista de dicts con estructura:
             [{
@@ -220,6 +235,7 @@ class SchedulingService:
         sabado = lunes + timedelta(days=5)
 
         slots = AppointmentSlot.objects.filter(
+            sede=sede,
             date__range=[lunes, sabado]
         ).prefetch_related('appointments').order_by('date', 'start_time')
 
