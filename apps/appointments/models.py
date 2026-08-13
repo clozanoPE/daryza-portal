@@ -58,6 +58,13 @@ class Appointment(TimeStampedModel):
         ('FINALIZADA', 'Finalizada (En Planta)'),
     ]
 
+    MOTIVOS_RECHAZO = [
+        ('SEDE_ERRONEA', 'Sede errónea'),
+        ('COA_INCOMPLETO', 'COA incompleto'),
+        ('DATOS_INCORRECTOS', 'Datos incorrectos'),
+        ('OTRO', 'Otro'),
+    ]
+
     slot = models.ForeignKey(AppointmentSlot, on_delete=models.CASCADE, related_name='appointments')
     
     # Relación ManyToMany con las OCs de SAP
@@ -86,6 +93,18 @@ class Appointment(TimeStampedModel):
         help_text="Sede de entrega elegida por el proveedor al solicitar la cita."
     )
     observaciones_admin = models.TextField(null=True, blank=True)
+    motivo_rechazo = models.CharField(
+        max_length=20, choices=MOTIVOS_RECHAZO, blank=True, default='',
+        help_text=(
+            "Motivo estructurado del rechazo — obligatorio al rechazar una "
+            "cita (status=RECHAZADO, ver ajax_rechazar_cita_compras/"
+            "ajax_rechazar_cita), vacío en cualquier otro estado. Campo "
+            "separado de observaciones_admin a propósito: este es una "
+            "elección de una lista cerrada (para mostrarle al proveedor "
+            "qué corregir), mientras que observaciones_admin sigue siendo "
+            "texto libre opcional, usado también para notas al confirmar."
+        ),
+    )
     fecha_respuesta_admin = models.DateTimeField(null=True, blank=True, help_text="Timestamp de cuando Almacén confirmó o rechazó la cita.")
 
     coa_configurado = models.BooleanField(

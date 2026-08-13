@@ -205,6 +205,19 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
+        {# Motivo de rechazo: solo visible/obligatorio cuando tipo='rechazar' #}
+        {# (mostrado/ocultado por prepararAccionCompras en ticket_actions.js) #}
+        <div id="grupoMotivoRechazo" class="mb-2 d-none">
+          <label class="form-label text-xxs fw-bold mb-1">
+            Motivo de rechazo <span class="text-danger">*</span>
+          </label>
+          <select id="selMotivoRechazo" class="form-select form-select-sm rounded-3">
+            <option value="">— Selecciona un motivo —</option>
+            {% for codigo, etiqueta in motivos_rechazo %}
+            <option value="{{ codigo }}">{{ etiqueta }}</option>
+            {% endfor %}
+          </select>
+        </div>
         <textarea id="txtObservaciones" class="form-control rounded-3 text-xs" rows="3"
                   placeholder="Comentario opcional para el proveedor…"></textarea>
       </div>
@@ -221,7 +234,13 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.1"></script>
+<script>
+  {# ACCION_CITA_API_PREFIX: prefijo real de los endpoints de confirmar/rechazar #}
+  {# cita, usado por ticket_actions.js::prepararAccionCompras — este panel es    #}
+  {# Compras, así que apunta a las rutas @compras_required.                     #}
+  const ACCION_CITA_API_PREFIX = '/operations/api/compras/';
+</script>
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.2"></script>
 <script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 <script>
   /**

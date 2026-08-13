@@ -331,6 +331,17 @@
           </div>
           {% endif %}
 
+          {# Motivo de rechazo: siempre visible cuando status=RECHAZADO, #}
+          {# separado de la nota libre de abajo — es lo primero que el  #}
+          {# proveedor necesita ver para saber qué corregir al volver  #}
+          {# a agendar. #}
+          {% if cita.status == 'RECHAZADO' and cita.motivo_rechazo %}
+          <div class="p-2 rounded-3 text-xxs bg-danger-subtle text-danger border-start border-danger border-3 mb-1">
+            <i class="bi bi-x-octagon-fill me-1"></i>
+            <strong>Motivo del rechazo:</strong> {{ cita.get_motivo_rechazo_display }}
+          </div>
+          {% endif %}
+
           {# Nota de rechazo/observaciones #}
           {% if cita.observaciones_admin %}
           <div class="p-2 rounded-3 text-xxs

@@ -68,6 +68,22 @@ def _safe_post(request, func):
         return _json_err(str(e))
 
 
+def _validar_motivo_rechazo(data: dict) -> str:
+    """
+    Exige 'motivo_rechazo' en el body como uno de los códigos de
+    Appointment.MOTIVOS_RECHAZO — compartido por ajax_rechazar_cita_compras
+    (Compras) y ajax_rechazar_cita (Almacén), las 2 únicas vías de rechazo.
+    Antes de esta validación, ambos endpoints guardaban 'observaciones'
+    (texto libre, opcional, a menudo vacío) sin exigir ningún motivo
+    estructurado. Lanza ValidationError si falta o no es un código válido
+    (capturado por _safe_post, responde 400 sin tocar la cita).
+    """
+    motivo = (data.get('motivo_rechazo') or '').strip()
+    if motivo not in dict(Appointment.MOTIVOS_RECHAZO):
+        raise ValidationError('Debe seleccionar un motivo de rechazo válido.')
+    return motivo
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PANEL COMPRAS — Revisión, configuración COA, aprobación
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -173,6 +189,7 @@ def panel_compras(request):
         'q':                 q,
         'fecha_filtro':      fecha,
         'periodo':           periodo,
+        'motivos_rechazo':   Appointment.MOTIVOS_RECHAZO,
     }
     return render(request, 'operations/panel_compras.html', context)
 
@@ -310,10 +327,16 @@ def ajax_confirmar_cita_compras(request):
 def ajax_rechazar_cita_compras(request):
     """
     POST /operations/api/compras/rechazar-cita/
-    Body: { appointment_id: int, observaciones: str }
+    Body: { appointment_id: int, motivo_rechazo: str, observaciones: str }
+
+    motivo_rechazo es obligatorio (uno de Appointment.MOTIVOS_RECHAZO) —
+    antes se guardaba solo 'observaciones', texto libre sin validar, a
+    menudo vacío, dejando al proveedor sin ninguna razón clara de por qué
+    se rechazó su solicitud.
     """
     def handle(data):
         appointment_id = data.get('appointment_id')
+        motivo_rechazo = _validar_motivo_rechazo(data)
         observaciones  = data.get('observaciones', '').strip()
 
         appointment = get_object_or_404(Appointment, id=appointment_id)
@@ -321,9 +344,12 @@ def ajax_rechazar_cita_compras(request):
             return _json_err(f'No se puede rechazar una cita en estado {appointment.status}.')
 
         appointment.status               = 'RECHAZADO'
+        appointment.motivo_rechazo       = motivo_rechazo
         appointment.observaciones_admin  = observaciones
         appointment.fecha_respuesta_admin = timezone.now()
-        appointment.save(update_fields=['status', 'observaciones_admin', 'fecha_respuesta_admin'])
+        appointment.save(update_fields=[
+            'status', 'motivo_rechazo', 'observaciones_admin', 'fecha_respuesta_admin',
+        ])
         return _json_ok(msg=f'Cita #{appointment_id} rechazada.')
 
     return _safe_post(request, handle)
@@ -398,6 +424,7 @@ def panel_almacen(request):
         'estados_choices': Appointment.ESTADOS,
         'tickets_historial': tickets_historial,
         'periodo':            periodo,
+        'motivos_rechazo':    Appointment.MOTIVOS_RECHAZO,
     }
     return render(request, 'operations/panel_almacen.html', context)
 
@@ -449,17 +476,25 @@ def ajax_confirmar_cita(request):
 @almacen_required
 @require_POST
 def ajax_rechazar_cita(request):
-    """POST /operations/api/rechazar-cita/"""
+    """
+    POST /operations/api/rechazar-cita/
+    Gemela de ajax_rechazar_cita_compras para Almacén — mismo motivo_rechazo
+    obligatorio (Appointment.MOTIVOS_RECHAZO), misma validación compartida.
+    """
     def handle(data):
         appointment_id = data.get('appointment_id')
+        motivo_rechazo = _validar_motivo_rechazo(data)
         observaciones  = data.get('observaciones', '').strip()
         appointment = get_object_or_404(Appointment, id=appointment_id)
         if appointment.status != 'SOLICITADO':
             return _json_err(f'No se puede rechazar una cita en estado {appointment.status}.')
         appointment.status               = 'RECHAZADO'
+        appointment.motivo_rechazo       = motivo_rechazo
         appointment.observaciones_admin  = observaciones
         appointment.fecha_respuesta_admin = timezone.now()
-        appointment.save(update_fields=['status', 'observaciones_admin', 'fecha_respuesta_admin'])
+        appointment.save(update_fields=[
+            'status', 'motivo_rechazo', 'observaciones_admin', 'fecha_respuesta_admin',
+        ])
         return _json_ok(msg=f'Cita #{appointment_id} rechazada.')
 
     return _safe_post(request, handle)

@@ -206,6 +206,11 @@
       <div class="text-muted text-xs mb-1">
         <i class="bi bi-person me-1"></i>{{ cita.user.get_full_name|default:cita.user.username }}
       </div>
+      {% if cita.status == 'RECHAZADO' and cita.motivo_rechazo %}
+      <div class="text-xs text-danger fw-bold mt-1">
+        <i class="bi bi-x-octagon me-1"></i>{{ cita.get_motivo_rechazo_display }}
+      </div>
+      {% endif %}
       {% if cita.observaciones_admin %}
       <div class="text-xs text-danger mt-1">
         <i class="bi bi-info-circle me-1"></i>{{ cita.observaciones_admin|truncatechars:60 }}
@@ -240,6 +245,18 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
+        {# Motivo de rechazo: solo visible/obligatorio cuando tipo='rechazar' #}
+        <div id="grupoMotivoRechazo" class="mb-2 d-none">
+          <label class="form-label text-xxs fw-bold mb-1">
+            Motivo de rechazo <span class="text-danger">*</span>
+          </label>
+          <select id="selMotivoRechazo" class="form-select form-select-sm rounded-3">
+            <option value="">— Selecciona un motivo —</option>
+            {% for codigo, etiqueta in motivos_rechazo %}
+            <option value="{{ codigo }}">{{ etiqueta }}</option>
+            {% endfor %}
+          </select>
+        </div>
         <textarea id="txtObservaciones" class="form-control rounded-3 text-xs" rows="3"
                   placeholder="Comentario opcional…"></textarea>
       </div>
@@ -254,7 +271,13 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.1"></script>
+<script>
+  {# ACCION_CITA_API_PREFIX: este panel es Almacén — apunta a las rutas   #}
+  {# @almacen_required (legacy, distintas de las de Compras) para que    #}
+  {# confirmar/rechazar funcione con una cuenta que solo está en ALMACEN. #}
+  const ACCION_CITA_API_PREFIX = '/operations/api/';
+</script>
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.2"></script>
 <script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 <script>
   /**

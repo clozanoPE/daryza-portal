@@ -252,7 +252,7 @@ async function guardarConfiguracion(citaId) {
   }
 }
 
-/** Prepara la acción de Compras (confirmar/rechazar) con modal de observaciones. */
+/** Prepara la acción de confirmar/rechazar cita, con modal de observaciones. */
 let _pendingActionCompras = null;
 
 function prepararAccionCompras(tipo, citaId) {
@@ -260,6 +260,13 @@ function prepararAccionCompras(tipo, citaId) {
   const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('modalObservaciones'));
   document.getElementById('modalObsTitle').textContent = tipo === 'confirmar' ? 'Confirmar Cita' : 'Rechazar Cita';
   document.getElementById('txtObservaciones').value = '';
+
+  // Motivo de rechazo: solo visible/obligatorio cuando tipo='rechazar'.
+  const grupoMotivo = document.getElementById('grupoMotivoRechazo');
+  const selMotivo   = document.getElementById('selMotivoRechazo');
+  if (grupoMotivo) grupoMotivo.classList.toggle('d-none', tipo !== 'rechazar');
+  if (selMotivo)   selMotivo.value = '';
+
   modal.show();
 }
 
@@ -271,14 +278,36 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!_pendingActionCompras) return;
     const { tipo, citaId } = _pendingActionCompras;
     const observaciones = document.getElementById('txtObservaciones')?.value?.trim() || '';
+
+    const payload = { appointment_id: citaId, observaciones };
+    if (tipo === 'rechazar') {
+      const motivoRechazo = document.getElementById('selMotivoRechazo')?.value || '';
+      if (!motivoRechazo) {
+        DzUI.showToast('Selecciona un motivo de rechazo.', 'warning');
+        return; // el backend también lo exige, pero no vale la pena ni el viaje
+      }
+      payload.motivo_rechazo = motivoRechazo;
+    }
+
     const restoreBtn = DzUI.btnLoading(btnConfirmar, 'Procesando...');
 
-    const url = tipo === 'confirmar'
-      ? '/operations/api/compras/confirmar-cita/'
-      : '/operations/api/compras/rechazar-cita/';
+    // ACCION_CITA_API_PREFIX: inyectado por cada template que carga este
+    // script ('/operations/api/compras/' en panel_compras.html,
+    // '/operations/api/' en panel_almacen.html) — antes esta URL estaba
+    // hardcodeada al prefijo de Compras sin importar qué panel llamara a
+    // esta función, así que una cuenta ALMACEN-only que confirmaba o
+    // rechazaba desde panel_almacen.html terminaba golpeando un endpoint
+    // @compras_required y era redirigida a login en vez de completar la
+    // acción (bug encontrado al implementar motivo_rechazo obligatorio:
+    // sin este fix, la validación nueva nunca se habría ejercitado en el
+    // camino real de Almacén).
+    const prefix = typeof ACCION_CITA_API_PREFIX !== 'undefined'
+      ? ACCION_CITA_API_PREFIX
+      : '/operations/api/compras/';
+    const url = tipo === 'confirmar' ? `${prefix}confirmar-cita/` : `${prefix}rechazar-cita/`;
 
     try {
-      const data = await DzApi.postJSON(url, { appointment_id: citaId, observaciones });
+      const data = await DzApi.postJSON(url, payload);
       bootstrap.Modal.getInstance(document.getElementById('modalObservaciones'))?.hide();
       DzUI.showToast(data.msg || 'Acción completada.', tipo === 'confirmar' ? 'success' : 'warning');
       setTimeout(() => window.location.reload(), 1000);
