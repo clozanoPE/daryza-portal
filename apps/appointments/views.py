@@ -143,7 +143,7 @@ def _historial_citas_qs(request):
     """
     qs = Appointment.objects.filter(
         user=request.user
-    ).select_related('slot').prefetch_related(
+    ).select_related('slot', 'sede').prefetch_related(
         'purchase_orders', 'ticket'
     ).order_by('-created_at')
 
@@ -356,7 +356,9 @@ def subir_coa_linea_ajax(request, appointment_id: int, po_line_id: int):
 
         po_line = get_object_or_404(PurchaseOrderLine, id=po_line_id)
 
-        # Subir a OneDrive
+        # Subir a OneDrive — sede: apps/base/utils.py::OneDriveClient.upload_coa
+        # (sesión 48d) separa el árbol de carpetas por sede desde ahora, solo
+        # para COAs nuevos (los ya cargados quedan en la ruta vieja sin sede).
         from apps.base.utils import OneDriveClient
         onedrive = OneDriveClient()
         coa_url = onedrive.upload_coa(
@@ -364,6 +366,7 @@ def subir_coa_linea_ajax(request, appointment_id: int, po_line_id: int):
             ruc=request.user.username,
             oc_num=str(po_line.purchase_order.doc_num),
             item_code=po_line.item_code,
+            sede=appointment.sede.codigo,
         )
 
         # Registrar en BD

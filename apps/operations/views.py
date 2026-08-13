@@ -101,7 +101,7 @@ def _historial_compras_qs(request):
     anio, mes, periodo = resolver_periodo(request)
 
     tickets_qs = Ticket.objects.select_related(
-        'appointment__slot', 'appointment__user'
+        'appointment__slot', 'appointment__user', 'appointment__sede'
     ).prefetch_related(
         'appointment__purchase_orders'
     ).order_by('-fecha_creacion')
@@ -565,7 +565,7 @@ def _historial_por_periodo_qs(request):
     """
     anio, mes, periodo = resolver_periodo(request)
     tickets_qs = Ticket.objects.select_related(
-        'appointment__slot', 'appointment__user'
+        'appointment__slot', 'appointment__user', 'appointment__sede'
     ).prefetch_related(
         'appointment__purchase_orders'
     ).filter(

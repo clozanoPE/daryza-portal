@@ -32,7 +32,11 @@ class ScheduleTemplate(TimeStampedModel):
     """
     nombre = models.CharField(
         max_length=100,
-        help_text="Nombre descriptivo de la plantilla, ej: 'Semana Estándar Lurin'"
+        help_text=(
+            "Nombre descriptivo de la plantilla, ej: 'Semana Estándar'. "
+            "No hace falta indicar la sede aquí — cada plantilla ya "
+            "pertenece a una Sede concreta vía el campo 'sede'."
+        )
     )
     descripcion = models.TextField(
         blank=True,

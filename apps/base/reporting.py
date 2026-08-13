@@ -28,10 +28,12 @@ from xhtml2pdf import pisa
 
 # Mismas columnas que _partials/historial_tickets.html (Ticket, OC(s),
 # Proveedor, Fecha cita, Estado, Etapa activa) — sin la columna de acción
-# "Trazabilidad" (no aplica a un archivo exportado).
-COLUMNAS = ('Ticket', 'OC(s)', 'Proveedor', 'Fecha de cita', 'Estado', 'Etapa activa')
+# "Trazabilidad" (no aplica a un archivo exportado) — más 'Sede' (sesión
+# 48d), que la tabla en pantalla todavía no muestra (no pedido, ver
+# CLAUDE.md) pero el archivo exportado sí.
+COLUMNAS = ('Ticket', 'OC(s)', 'Proveedor', 'Sede', 'Fecha de cita', 'Estado', 'Etapa activa')
 
-_ANCHOS_COLUMNA = (10, 24, 30, 14, 16, 28)
+_ANCHOS_COLUMNA = (10, 24, 30, 20, 14, 16, 28)
 
 
 @dataclass
@@ -39,12 +41,16 @@ class HistorialRow:
     ticket: str
     ocs: str
     proveedor: str
+    sede: str
     fecha_cita: str
     estado: str
     etapa_activa: str
 
     def as_tuple(self):
-        return (self.ticket, self.ocs, self.proveedor, self.fecha_cita, self.estado, self.etapa_activa)
+        return (
+            self.ticket, self.ocs, self.proveedor, self.sede,
+            self.fecha_cita, self.estado, self.etapa_activa,
+        )
 
 
 def _etapa_activa_de_ticket(ticket) -> str:
@@ -61,6 +67,7 @@ def ticket_a_row(ticket) -> HistorialRow:
         ticket=f'#{ticket.id}',
         ocs=ocs or '—',
         proveedor=proveedor_user.get_full_name() or proveedor_user.username,
+        sede=ticket.appointment.sede.nombre,
         fecha_cita=ticket.appointment.slot.date.strftime('%d/%m/%Y') if ticket.appointment.slot else '—',
         estado=ticket.get_estado_display(),
         etapa_activa=_etapa_activa_de_ticket(ticket),
@@ -88,6 +95,7 @@ def cita_a_row(cita) -> HistorialRow:
         ticket=ticket_label,
         ocs=ocs or '—',
         proveedor=cita.user.get_full_name() or cita.user.username,
+        sede=cita.sede.nombre,
         fecha_cita=cita.slot.date.strftime('%d/%m/%Y') if cita.slot else '—',
         estado=estado,
         etapa_activa=etapa_activa,

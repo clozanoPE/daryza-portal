@@ -118,10 +118,10 @@ class OneDriveClient:
             requests.post(url, headers=headers, json=data, timeout=10)
             current_path += f"/{part}"
 
-    def upload_coa(self, file_obj, ruc: str, oc_num: str, item_code: str) -> str:
+    def upload_coa(self, file_obj, ruc: str, oc_num: str, item_code: str, sede: str) -> str:
         """
         Sube un archivo COA a OneDrive en la ruta:
-            /VBS/PROVEEDORES/{RUC}/{OC_NUM}/{ITEM_CODE}.pdf
+            /VBS/{SEDE}/PROVEEDORES/{RUC}/{OC_NUM}/{ITEM_CODE}.pdf
 
         Retorna la URL compartida (link de descarga directa) del archivo.
 
@@ -130,6 +130,14 @@ class OneDriveClient:
             ruc        → RUC del proveedor (username en el sistema)
             oc_num     → Número de OC de SAP
             item_code  → Código de artículo de la línea
+            sede       → Código de la Sede de la cita (Appointment.sede.codigo,
+                         ej. 'LURIN'/'PUNTA_NEGRA') — separa el árbol de
+                         carpetas por sede desde esta sesión (48d). Los COAs
+                         ya cargados ANTES de este cambio quedan en la ruta
+                         vieja (sin sede) — no se migran retroactivamente,
+                         para no mover archivos reales en OneDrive sin
+                         necesidad; sus URLs ya guardadas en TicketLineCOA
+                         siguen apuntando ahí y siguen funcionando igual.
         """
         token = self._get_token()
         headers = {
@@ -137,11 +145,8 @@ class OneDriveClient:
             'Content-Type': 'application/pdf',
         }
 
-        # Ruta destino en OneDrive
-        #remote_path = f"/VBS/PROVEEDORES/{ruc}/{oc_num}/{item_code}.pdf"
-     
         # 1. Definir la ruta y asegurar que las carpetas existan
-        folder_path = f"/VBS/PROVEEDORES/{ruc}/{oc_num}"
+        folder_path = f"/VBS/{sede}/PROVEEDORES/{ruc}/{oc_num}"
         self._ensure_folder_path(folder_path)
         
         # 2. Subir el archivo
