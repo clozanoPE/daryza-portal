@@ -17,32 +17,63 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         model = PurchaseOrder
         # u_mss_tdb viene del UDF de SAP; requerido para la lógica de ruteo
         fields = ['doc_entry', 'doc_num', 'card_code', 'card_name', 'e_mail', 'status', 'u_mss_tdb', 'lines']
+        # doc_entry/doc_num son unique=True en el modelo: DRF les agrega
+        # automáticamente un UniqueValidator, que rechaza con 400 CUALQUIER
+        # POST cuyo doc_entry/doc_num ya exista en BD — antes de que create()
+        # llegue a ejecutarse. Esto rompía la idempotencia del endpoint para
+        # TODA OC ya sincronizada (no solo las que tienen líneas protegidas):
+        # el daemon nunca podía re-enviar una OC existente vía HTTP real sin
+        # un 400, pese a que create() ya implementaba update_or_create.
+        # La unicidad real la sigue garantizando la constraint de BD (además
+        # de update_or_create); no hace falta que el serializer la valide.
+        extra_kwargs = {
+            'doc_entry': {'validators': []},
+            'doc_num': {'validators': []},
+        }
 
     def create(self, validated_data):
         """
         Lógica Senior: Implementa Idempotencia.
         Si la OC ya existe, se actualiza. Si no, se crea.
+
+        Sincronización de líneas por upsert (line_num = LineNum de SAP,
+        identificador estable de la línea dentro del documento, confirmado
+        contra datos reales: 0-indexado, secuencial, sin repetirse dentro
+        de una misma OC). Antes se hacía `lines.all().delete()` +
+        `bulk_create()` en cada sync — con PurchaseOrderLine.po_line siendo
+        PROTECT desde TicketLineInspection/TicketLineCOA, ese delete()
+        lanzaba ProtectedError apenas se resincronizara una OC que ya
+        tuviera un Ticket con inspecciones registradas. El upsert por
+        línea preserva el id de PurchaseOrderLine (y por lo tanto esas FK)
+        y, como efecto colateral correcto, ya no resetea `requiere_coa`
+        a False en cada sync (nunca se incluye en `defaults`, así que el
+        ajuste manual de Compras sobrevive a la resincronización).
         """
         lines_data = validated_data.pop('lines')
         doc_entry = validated_data.get('doc_entry')
 
         with transaction.atomic():
             # 1. Upsert de la cabecera (PurchaseOrder)
-            purchase_order, created = PurchaseOrder.objects.update_or_create(
+            purchase_order, _created = PurchaseOrder.objects.update_or_create(
                 doc_entry=doc_entry,
                 defaults=validated_data
             )
 
-            # 2. Sincronización de Líneas
-            # Eliminamos las líneas existentes para asegurar que coincidan 1:1 con SAP
-            if not created:
-                purchase_order.lines.all().delete()
+            # 2. Upsert de líneas, una por una, por (purchase_order, line_num)
+            line_nums_recibidos = set()
+            for line_data in lines_data:
+                line_num = line_data['line_num']
+                line_nums_recibidos.add(line_num)
+                defaults = {k: v for k, v in line_data.items() if k != 'line_num'}
+                defaults['activa'] = True
+                PurchaseOrderLine.objects.update_or_create(
+                    purchase_order=purchase_order,
+                    line_num=line_num,
+                    defaults=defaults,
+                )
 
-            # 3. Creación de nuevas líneas
-            line_objects = [
-                PurchaseOrderLine(purchase_order=purchase_order, **line_data)
-                for line_data in lines_data
-            ]
-            PurchaseOrderLine.objects.bulk_create(line_objects)
+            # 3. Líneas que ya no vienen en el payload (canceladas/eliminadas
+            # en SAP): se desactivan, nunca se borran.
+            purchase_order.lines.exclude(line_num__in=line_nums_recibidos).update(activa=False)
 
         return purchase_order

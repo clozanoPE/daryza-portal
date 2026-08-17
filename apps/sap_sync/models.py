@@ -31,7 +31,7 @@ class PurchaseOrder(TimeStampedModel):
 
 class PurchaseOrderLine(models.Model):
     purchase_order = models.ForeignKey(PurchaseOrder, related_name='lines', on_delete=models.CASCADE)
-    line_num = models.IntegerField()
+    line_num = models.IntegerField(help_text="LineNum de SAP: identificador estable de la línea dentro de la OC, usado como clave de upsert en cada sincronización.")
     item_code = models.CharField(max_length=50)
     description = models.CharField(max_length=255)
     quantity_sap = models.DecimalField(max_digits=18, decimal_places=4)
@@ -48,6 +48,16 @@ class PurchaseOrderLine(models.Model):
             "Se pre-marca automáticamente para OCs MP; ajustable por Compras."
         )
     )
+
+    # False cuando SAP deja de enviar esta línea en una resincronización
+    # (cancelada/eliminada en el documento origen). Nunca se borra la fila:
+    # TicketLineInspection/TicketLineCOA apuntan a ella con on_delete=PROTECT,
+    # así que un DELETE real rompería esas FK en cuanto la línea ya tuviera
+    # inspecciones registradas. Ver PurchaseOrderSerializer.create.
+    activa = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = ('purchase_order', 'line_num')
 
     def __str__(self):
         return f"OC {self.purchase_order.doc_num} - Línea {self.line_num} ({self.item_code})" 
