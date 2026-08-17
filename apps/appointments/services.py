@@ -209,10 +209,12 @@ class AppointmentService:
             #    Si tras el ajuste ninguna línea queda marcada → flujo SOLO_ALMACEN.
             ocs = appointment.purchase_orders.prefetch_related('lines').all()
 
-            # Pre-marcar líneas de OCs MP que aún no fueron ajustadas manualmente
+            # Pre-marcar líneas de OCs MP que aún no fueron ajustadas manualmente.
+            # activa=True (sesión 50): una línea cancelada en SAP nunca debe
+            # marcarse como requiere_coa=True — no hay nada que inspeccionar.
             for po in ocs:
                 if po.es_materia_prima:
-                    po.lines.filter(requiere_coa=False).update(requiere_coa=True)
+                    po.lines.filter(requiere_coa=False, activa=True).update(requiere_coa=True)
 
             # Calcular tipo_flujo en base al estado final de las líneas
             #hay_lineas_coa = any(
@@ -276,7 +278,9 @@ class AppointmentService:
             return appointment
         for po in appointment.purchase_orders.all():
             if po.es_materia_prima:
-                po.lines.filter(requiere_coa=False).update(requiere_coa=True)
+                # activa=True (sesión 50): no sugerir COA en una línea que
+                # SAP ya canceló/eliminó — no hay nada que inspeccionar.
+                po.lines.filter(requiere_coa=False, activa=True).update(requiere_coa=True)
         return appointment
 
     @staticmethod

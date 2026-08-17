@@ -231,7 +231,9 @@ def ajax_get_lineas_oc(request, appointment_id: int):
         )
         lineas = []
         for po in appointment.purchase_orders.all():
-            for line in po.lines.all():
+            # activa=True (sesión 50): no ofrecer a Compras una línea que
+            # SAP ya canceló/eliminó en el panel de configuración de COA.
+            for line in po.lines.filter(activa=True):
                 lineas.append({
                     'po_line_id':   line.id,
                     'doc_num':      po.doc_num,
@@ -274,9 +276,13 @@ def ajax_configurar_items_coa(request):
 
         actualizadas = 0
         for item in lineas:
+            # activa=True (sesión 50): defensa en profundidad — aunque la UI
+            # ya no ofrezca líneas canceladas (ajax_get_lineas_oc), un payload
+            # con un po_line_id de una línea inactiva no debe poder marcarla.
             updated = PurchaseOrderLine.objects.filter(
                 id=item.get('po_line_id'),
-                purchase_order__id__in=oc_ids
+                purchase_order__id__in=oc_ids,
+                activa=True,
             ).update(requiere_coa=bool(item.get('requiere_coa', False)))
             actualizadas += updated
 

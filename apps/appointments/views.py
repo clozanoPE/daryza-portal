@@ -86,11 +86,18 @@ class PortalProveedorView(TemplateView):
             slots_dia.sort(key=lambda s: s['hora'])
             dia['slots'] = slots_dia
 
-        # OCs pendientes del proveedor en SAP
+        # OCs pendientes del proveedor en SAP.
+        # lines__activa=True (sesión 50): excluye OCs cuyas líneas fueron
+        # TODAS canceladas/eliminadas en un resync de SAP (PurchaseOrderLine.
+        # activa=False, sesión 49) — sin esto, el proveedor podía seleccionar
+        # una OC sin nada real que entregar, sin ninguna señal de que su
+        # contenido ya no es válido. .distinct() porque el JOIN contra
+        # `lines` duplicaría la fila de OC por cada línea activa que tenga.
         context['ocs_pendientes'] = PurchaseOrder.objects.filter(
             card_code=ruc_proveedor,
-            status__in=['O', 'PENDIENTE']
-        ).order_by('-created_at')
+            status__in=['O', 'PENDIENTE'],
+            lines__activa=True,
+        ).distinct().order_by('-created_at')
 
         # Historial de citas ("Expediente de Citas") con filtros opcionales.
         # Período (mes/año, Fase 10): antes cargaba TODAS las citas del
