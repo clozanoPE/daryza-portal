@@ -272,6 +272,10 @@ def api_lineas_cita(request, appointment_id: int):
     El estado del COA por línea se lee de TicketLineCOA (si ya existe Ticket);
     ya no depende de que Almacén/Vigilancia hayan procesado la cita, porque
     TicketLineInspection ya no se crea al confirmar la cita.
+
+    Sesión 51: excluye líneas activa=False — el proveedor no debe ver (ni
+    poder intentar cargar COA sobre) una línea que SAP ya canceló después
+    de confirmarse la cita.
     """
     try:
         appointment = get_object_or_404(
@@ -290,7 +294,7 @@ def api_lineas_cita(request, appointment_id: int):
 
         lineas = []
         for po in appointment.purchase_orders.all():
-            for line in po.lines.all():
+            for line in po.lines.filter(activa=True):
                 lineas.append({
                     'po_line_id':   line.id,
                     'oc_num':       po.doc_num,
@@ -361,7 +365,11 @@ def subir_coa_linea_ajax(request, appointment_id: int, po_line_id: int):
         if coa_file.size > 5 * 1024 * 1024:
             return _json_err('El archivo supera el límite de 5 MB.')
 
-        po_line = get_object_or_404(PurchaseOrderLine, id=po_line_id)
+        # activa=True (sesión 51): defensa en profundidad — aunque el panel
+        # ya no liste líneas canceladas (api_lineas_cita), una llamada
+        # directa con el po_line_id de una línea inactiva no debe poder
+        # cargarle un COA.
+        po_line = get_object_or_404(PurchaseOrderLine, id=po_line_id, activa=True)
 
         # Subir a OneDrive — sede: apps/base/utils.py::OneDriveClient.upload_coa
         # (sesión 48d) separa el árbol de carpetas por sede desde ahora, solo

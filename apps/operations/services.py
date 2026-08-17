@@ -111,6 +111,12 @@ class OperationsService:
         lee las líneas directamente de las OCs de la cita y valida el COA consultando
         TicketLineCOA. Esta es la primera vez que se crean filas de TicketLineInspection
         para este ticket (etapa='VIGILANCIA').
+
+        Sesión 51: las 3 lecturas de líneas de este método (construcción de
+        `lineas`, validación de COA obligatorio, creación de inspecciones)
+        excluyen líneas activa=False — una línea cancelada por SAP tras
+        confirmarse la cita no debe exigir COA ni generar inspección, como
+        si siguiera pendiente de recibir.
         """
         try:
             ticket = Ticket.objects.select_related('appointment').get(
@@ -128,7 +134,7 @@ class OperationsService:
         # 1. Traemos las líneas de OC directamente desde la cita (SAP), no desde
         #    un esqueleto de TicketLineInspection.
         ocs = list(appointment.purchase_orders.prefetch_related('lines').all())
-        lineas = [line for po in ocs for line in po.lines.all()]
+        lineas = [line for po in ocs for line in po.lines.filter(activa=True)]
 
         if not lineas:
             raise ValidationError("La cita no tiene líneas de OC vinculadas.")
@@ -153,7 +159,7 @@ class OperationsService:
         lineas_faltantes = [
             (po, line)
             for po in ocs
-            for line in po.lines.all()
+            for line in po.lines.filter(activa=True)
             if line.requiere_coa and not coas_por_linea.get(line.id)
         ]
         # El PDF legacy a nivel de cita (appointment.coa_pdf, previo a la
@@ -182,7 +188,7 @@ class OperationsService:
 
         # 6. CREACIÓN de líneas de inspección para VIGILANCIA (primera vez que existen)
         for po in ocs:
-            for line in po.lines.all():
+            for line in po.lines.filter(activa=True):
                 # Sincronizamos el documento solo si la línea lo requiere
                 url_documento = coas_por_linea.get(line.id) if line.requiere_coa else None
 
@@ -284,9 +290,11 @@ class OperationsService:
         # NOTA: ya no existe un esqueleto previo (se eliminó de confirmar_cita), así
         # que este get_or_create es ahora el que realmente CREA estas filas por
         # primera vez — por eso debe incluir 'doc_num' (campo obligatorio del modelo).
+        # activa=True (sesión 51): no crear inspección de recepción para una
+        # línea que SAP ya canceló — no hay nada físico que recibir.
         appointment = ticket.appointment
         for po in appointment.purchase_orders.prefetch_related('lines').all():
-            for line in po.lines.all():
+            for line in po.lines.filter(activa=True):
                 TicketLineInspection.objects.get_or_create(
                     ticket=ticket,
                     po_line=line,
@@ -616,6 +624,10 @@ class OperationsService:
 
         Usado tanto por el Kanban de Vigilancia (panel_vigilancia) como por el
         detalle del ticket (detalle_ticket), para no duplicar la lógica.
+
+        Sesión 51: excluye líneas activa=False del cálculo — una línea
+        cancelada por SAP con requiere_coa=True residual ya no cuenta como
+        pendiente, para no mostrar "Faltan COAs" por algo que ya no existe.
         """
         if ticket.tipo_flujo != 'CON_CALIDAD':
             return True
@@ -624,7 +636,7 @@ class OperationsService:
         lineas_requeridas = [
             line
             for po in appointment.purchase_orders.all()
-            for line in po.lines.all()
+            for line in po.lines.filter(activa=True)
             if line.requiere_coa
         ]
 
@@ -735,6 +747,10 @@ class OperationsService:
         Agrupa por OC el estado del COA por línea, leyendo TicketLineCOA.
         Usado en el detalle del ticket para la revisión pre-ingreso de Vigilancia
         (pantalla "Estado de Certificados (COA)" antes de autorizar el ingreso).
+
+        Sesión 51: excluye líneas activa=False, mismo criterio que
+        calcular_coa_completo — una línea cancelada por SAP no debe listarse
+        como pendiente de COA en esta tabla.
         """
         appointment = ticket.appointment
         coas_cargados = {
@@ -753,7 +769,7 @@ class OperationsService:
             grouped[oc_num]['oc_num'] = oc_num
             grouped[oc_num]['card_name'] = po.card_name
 
-            for line in po.lines.all():
+            for line in po.lines.filter(activa=True):
                 grouped[oc_num]['lineas'].append({
                     'item_code': line.item_code,
                     'descripcion': line.description,
