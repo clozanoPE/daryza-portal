@@ -225,13 +225,32 @@
       </form>
     </div>
 
-    {# Expediente de citas #}
+    {# Expediente de Citas / Consulta de OC (sesión 52) — mismo período #}
+    {# ya filtrado arriba (Fase 10), pestañas para no competir por espacio #}
+    {# con la Agenda de Cupos. Reutiliza tabs_historial.js (sesión 20) para #}
+    {# no perder la pestaña activa al enviar el formulario de filtro. #}
     <div class="dz-card overflow-hidden">
-      <div class="px-4 py-3 bg-dark d-flex align-items-center gap-2">
-        <i class="bi bi-clock-history text-success"></i>
-        <h6 class="fw-bold m-0 text-white text-xs text-uppercase" style="letter-spacing:1px">Expediente de Citas</h6>
+      <div class="px-4 py-3 bg-dark">
+        <ul class="nav nav-tabs border-0" id="portalTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active text-xs" id="tab-citas-btn" data-bs-toggle="tab" data-bs-target="#tab-citas" type="button" role="tab" aria-selected="true">
+              <i class="bi bi-clock-history me-1"></i>Expediente de Citas
+              <span class="badge bg-success rounded-pill ms-1 text-xxs">{{ historial|length }}</span>
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link text-xs" id="tab-oc-btn" data-bs-toggle="tab" data-bs-target="#tab-oc" type="button" role="tab" aria-selected="false">
+              <i class="bi bi-clipboard-data me-1"></i>Mis OC
+              <span class="badge bg-light text-dark border rounded-pill ms-1 text-xxs">{{ estado_oc|length }}</span>
+            </button>
+          </li>
+        </ul>
       </div>
 
+      <div class="tab-content">
+
+      {# ── Pestaña: Expediente de Citas ─────────────────────────────────── #}
+      <div class="tab-pane fade show active" id="tab-citas" role="tabpanel" aria-labelledby="tab-citas-btn">
       <div style="max-height:560px;overflow-y:auto">
         {% for cita in historial %}
         <div class="p-3 border-bottom animate-fadein">
@@ -372,6 +391,57 @@
         </div>
         {% endfor %}
       </div>
+      </div>{# /tab-citas #}
+
+      {# ── Pestaña: Mis OC (sesión 52) — estado de despacho, sin facturación ── #}
+      <div class="tab-pane fade" id="tab-oc" role="tabpanel" aria-labelledby="tab-oc-btn">
+      <div style="max-height:560px;overflow-y:auto">
+        {% for fila in estado_oc %}
+        <div class="p-3 border-bottom animate-fadein">
+          <div class="d-flex justify-content-between align-items-start mb-1">
+            <div>
+              <span class="fw-bold small text-dark d-block">
+                <i class="bi {% if fila.purchase_order.u_mss_tdb == 'MP' %}bi-flask{% else %}bi-cart{% endif %} text-success me-1"></i>
+                OC {{ fila.purchase_order.doc_num }}
+              </span>
+              <small class="text-muted text-xxs">{{ fila.purchase_order.card_name }}</small>
+            </div>
+            <span class="badge rounded-pill text-xxs fw-bold
+              {% if fila.estado == 'PENDIENTE' %}bg-secondary text-white
+              {% elif fila.estado == 'EN_PROCESO' %}bg-warning text-dark
+              {% else %}bg-success text-white{% endif %}">
+              {{ fila.estado_display }}
+            </span>
+          </div>
+
+          {% if fila.sede_nombre or fila.fecha_cita %}
+          <div class="d-flex align-items-center gap-3 text-muted text-xs mb-2">
+            {% if fila.sede_nombre %}<span><i class="bi bi-geo-alt-fill text-success me-1"></i>{{ fila.sede_nombre }}</span>{% endif %}
+            {% if fila.fecha_cita %}<span><i class="bi bi-calendar-event text-success me-1"></i>{{ fila.fecha_cita|date:"d M Y" }}</span>{% endif %}
+          </div>
+          {% endif %}
+
+          <div class="d-flex align-items-center justify-content-between text-xxs">
+            <span class="text-muted">
+              <i class="bi bi-receipt me-1"></i>Facturación: <span class="fst-italic">Próximamente</span>
+            </span>
+            {% if fila.ticket_id %}
+            <a href="{% url 'operations:trazabilidad_ticket' pk=fila.ticket_id %}" class="btn btn-outline-success btn-sm rounded-3 text-xxs">
+              <i class="bi bi-eye me-1"></i>Ver Trazabilidad
+            </a>
+            {% endif %}
+          </div>
+        </div>
+        {% empty %}
+        <div class="p-5 text-center">
+          <i class="bi bi-clipboard-x text-muted d-block mb-2 fs-1 opacity-25"></i>
+          <span class="text-muted small">Sin Órdenes de Compra en el período seleccionado</span>
+        </div>
+        {% endfor %}
+      </div>
+      </div>{# /tab-oc #}
+
+      </div>{# /tab-content #}
     </div>
 
   </div>{# /col-lg-4 #}
@@ -388,4 +458,5 @@
   const SEDE_ACTUAL_NOMBRE = "{{ sede_actual.nombre|default:'' }}";
 </script>
 <script src="{% static 'js/panels/portal_proveedor.js' %}?v=2.3"></script>
+<script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 {% endblock %}

@@ -43,6 +43,10 @@ urlpatterns = [
          views.exportar_historial_compras,
          name='exportar_historial_compras'),
 
+    path('compras/estado-oc/',
+         views.panel_estado_oc,
+         name='panel_estado_oc'),
+
     # ── Panel Almacén ────────────────────────────────────────────────────
     path('almacen/',
          views.panel_almacen,

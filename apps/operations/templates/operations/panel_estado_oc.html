@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Consulta de OC | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-clipboard-data text-success me-2"></i>Consulta de Órdenes de Compra
+    </h1>
+    <p class="page-header__subtitle">
+      Estado de despacho (recepción física) de todas las OC sincronizadas desde SAP
+    </p>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{% url 'operations:panel_compras' %}" class="btn btn-light btn-sm rounded-3 border">
+      <i class="bi bi-arrow-left me-1"></i>Volver
+    </a>
+  </div>
+</div>
+
+<div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-3">
+  <form method="get" class="d-flex align-items-end gap-2">
+    <div>
+      <label class="form-label text-xxs fw-bold text-muted text-uppercase mb-1 d-block">Proveedor / OC</label>
+      <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm rounded-3 bg-white"
+             placeholder="Buscar por N° de OC o razón social…" style="min-width:240px">
+    </div>
+    {% include "partials/campo_filtro_periodo.html" %}
+    <button type="submit" class="btn btn-success btn-sm rounded-3 shadow-sm">
+      <i class="bi bi-funnel me-1"></i>Filtrar
+    </button>
+  </form>
+</div>
+
+<div class="dz-card p-0 overflow-hidden">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th class="text-xxs fw-bold text-muted">OC</th>
+          <th class="text-xxs fw-bold text-muted">Proveedor</th>
+          <th class="text-xxs fw-bold text-muted">Sede</th>
+          <th class="text-xxs fw-bold text-muted">Fecha de cita</th>
+          <th class="text-xxs fw-bold text-muted text-center">Despacho</th>
+          <th class="text-xxs fw-bold text-muted text-center">Facturación</th>
+          <th class="text-xxs fw-bold text-muted text-center">Trazabilidad</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for fila in filas %}
+        <tr>
+          <td>
+            <span class="badge rounded-pill px-2 py-1 text-xxs fw-bold
+              {% if fila.purchase_order.u_mss_tdb == 'MP' %}bg-info-subtle text-info border border-info-subtle
+              {% else %}bg-light text-dark border border-secondary-subtle{% endif %}">
+              OC {{ fila.purchase_order.doc_num }}
+            </span>
+          </td>
+          <td class="text-xs">
+            <strong>{{ fila.purchase_order.card_name }}</strong>
+          </td>
+          <td class="text-xs text-muted">{{ fila.sede_nombre|default:"—" }}</td>
+          <td class="text-xs text-muted">{{ fila.fecha_cita|date:"d/m/Y"|default:"—" }}</td>
+          <td class="text-center">
+            {% if fila.estado == 'PENDIENTE' %}
+              <span class="badge bg-secondary text-xxs">PENDIENTE</span>
+            {% elif fila.estado == 'EN_PROCESO' %}
+              <span class="badge bg-warning text-dark text-xxs">EN PROCESO</span>
+            {% elif fila.estado == 'DESPACHADA' %}
+              <span class="badge bg-success text-xxs">DESPACHADA</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            <span class="badge bg-light text-muted border text-xxs fst-italic">Próximamente</span>
+          </td>
+          <td class="text-center">
+            {% if fila.ticket_id %}
+            <a href="{% url 'operations:trazabilidad_ticket' pk=fila.ticket_id %}" class="btn btn-sm btn-outline-success rounded-3">
+              <i class="bi bi-clock-history me-1"></i>Ver
+            </a>
+            {% else %}
+            <span class="text-muted text-xxs">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-5">
+            <i class="bi bi-inbox fs-1 d-block mb-2 opacity-25"></i>
+            <span class="small">No hay Órdenes de Compra que coincidan con el filtro.</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
