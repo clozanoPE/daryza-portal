@@ -139,6 +139,10 @@ main.page-main{padding:1.5rem 1.75rem;flex:1}
 #diasTabsMobile{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 #diasTabsMobile::-webkit-scrollbar{display:none}
 
+#portalTabs .nav-link{border:none;color:rgba(255,255,255,.65);border-radius:var(--dz-radius-sm) var(--dz-radius-sm) 0 0}
+#portalTabs .nav-link:hover{color:#fff}
+#portalTabs .nav-link.active{background:#fff;color:var(--dz-green-dark)}
+
 /* ─── 6. TICKET / OPERACIONES ─────────────────────────────────────────────── */
 .ticket-card{border-radius:var(--dz-radius);border-left:4px solid transparent;background:var(--dz-surface);box-shadow:var(--dz-shadow-sm);transition:box-shadow .2s,transform .2s}
 .ticket-card:hover{box-shadow:var(--dz-shadow);transform:translateY(-2px)}
