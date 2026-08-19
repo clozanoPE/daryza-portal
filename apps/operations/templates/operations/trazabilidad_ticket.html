@@ -26,6 +26,14 @@
       <span class="badge bg-light text-dark border text-xxs">
         <i class="bi bi-eye me-1"></i>Solo lectura
       </span>
+      {% if ticket.entrada_mercaderia %}
+      <span class="badge text-xxs
+        {% if ticket.entrada_mercaderia.estado_sap == 'Y' %}bg-success-subtle text-success border border-success-subtle
+        {% elif ticket.entrada_mercaderia.estado_sap == 'B' %}bg-warning-subtle text-warning border border-warning-subtle
+        {% else %}bg-secondary-subtle text-secondary border border-secondary-subtle{% endif %}">
+        <i class="bi bi-box-seam me-1"></i>SAP: {{ ticket.entrada_mercaderia.get_estado_sap_display }}
+      </span>
+      {% endif %}
     </div>
     <p class="page-header__subtitle">
       Creado el {{ ticket.fecha_creacion|date:"d/m/Y H:i" }}

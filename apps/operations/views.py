@@ -1203,6 +1203,7 @@ def trazabilidad_ticket(request, pk: int):
             'appointment__slot',
             'appointment__user',
             'datos_ingreso',
+            'entrada_mercaderia',
         ).prefetch_related(
             'stages__usuario',
             'appointment__purchase_orders__lines',

@@ -321,3 +321,97 @@ class TicketDatosIngreso(models.Model):
 
     def __str__(self):
         return f"Datos de ingreso Ticket {self.ticket_id}"
+
+
+class EntradaMercaderia(models.Model):
+    """
+    Borrador de Entrada de Mercadería (Goods Receipt PO) para SAP, generado
+    automáticamente cuando Vigilancia registra la salida (Ticket →
+    FINALIZADO — ver OperationsService.registrar_salida). Un solo registro
+    por Ticket, con sus líneas en EntradaMercaderiaLinea.
+
+    Ciclo de vida de estado_sap, sincronizado por el daemon VB.NET vía los
+    endpoints de api/v1/entradas-pendientes/ (GET lista las 'L' pendientes,
+    POST .../confirmar-borrador/ y .../confirmar-definitivo/ avanzan el
+    estado) — mismo patrón de upsert ya usado para la sincronización de OC
+    (apps/sap_sync/serializers.py, sesión 49): el daemon puede reintentar
+    cualquiera de los 2 POST sin que un reintento accidental rompa nada.
+
+        ''  Sin generar (no debería verse en un registro ya persistido —
+            este modelo solo se crea directamente en 'L')
+        'L' Generado en el Portal, pendiente de que el daemon cree el
+            borrador en SAP
+        'B' Borrador confirmado en SAP (doc_entry_borrador ya asignado)
+        'Y' Documento definitivo confirmado en SAP (doc_entry_definitivo
+            ya asignado) — fin del ciclo
+    """
+    ESTADO_SAP_CHOICES = [
+        ('', 'Sin generar'),
+        ('L', 'Pendiente de confirmar en SAP'),
+        ('B', 'Borrador confirmado en SAP'),
+        ('Y', 'Definitivo confirmado en SAP'),
+    ]
+
+    ticket = models.OneToOneField(
+        Ticket, on_delete=models.CASCADE, related_name='entrada_mercaderia'
+    )
+    estado_sap = models.CharField(
+        max_length=1, choices=ESTADO_SAP_CHOICES, default='', blank=True
+    )
+    doc_entry_borrador = models.IntegerField(
+        null=True, blank=True,
+        help_text="DocEntry del borrador en SAP, asignado por el daemon al confirmar (estado_sap='B')."
+    )
+    doc_entry_definitivo = models.IntegerField(
+        null=True, blank=True,
+        help_text="DocEntry del documento definitivo en SAP, asignado por el daemon (estado_sap='Y')."
+    )
+    error_mensaje = models.TextField(
+        blank=True, default='',
+        help_text="Mensaje de error reportado por el daemon si SAP rechaza la entrada (diagnóstico)."
+    )
+
+    # Timestamps por transición — fecha_generada coincide con la creación del
+    # registro (siempre se crea directamente en 'L', nunca en '').
+    fecha_generada = models.DateTimeField(auto_now_add=True)
+    fecha_borrador_confirmado = models.DateTimeField(null=True, blank=True)
+    fecha_definitivo_confirmado = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Entrada de Mercadería"
+        verbose_name_plural = "Entradas de Mercadería"
+
+    def __str__(self):
+        return f"Entrada Mercadería Ticket {self.ticket_id} [{self.estado_sap or 'sin generar'}]"
+
+
+class EntradaMercaderiaLinea(models.Model):
+    """
+    Línea de la Entrada de Mercadería — una por PurchaseOrderLine recibida.
+    `cantidad` es la cantidad REAL final inspeccionada (la fila más
+    reciente de TicketLineInspection por línea, sea cual sea la etapa que
+    la generó — mismo criterio que OperationsService.get_estado_actual_
+    por_oc, sesión 6/9), NUNCA PurchaseOrderLine.quantity_sap.
+
+    po_line usa on_delete=PROTECT, mismo criterio que TicketLineInspection/
+    TicketLineCOA (sesión 49): una línea de OC nunca se borra físicamente
+    (solo se desactiva, PurchaseOrderLine.activa=False), así que esta FK
+    nunca debería toparse con una eliminación real — protegida de todos
+    modos por consistencia con el resto del proyecto.
+    """
+    entrada = models.ForeignKey(
+        EntradaMercaderia, on_delete=models.CASCADE, related_name='lineas'
+    )
+    po_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT)
+    cantidad = models.DecimalField(max_digits=18, decimal_places=4)
+
+    class Meta:
+        unique_together = ('entrada', 'po_line')
+        verbose_name = "Línea de Entrada de Mercadería"
+        verbose_name_plural = "Líneas de Entrada de Mercadería"
+
+    def __str__(self):
+        return (
+            f"Entrada Mercadería Ticket {self.entrada.ticket_id} | "
+            f"OC {self.po_line.purchase_order.doc_num} L{self.po_line.line_num} | {self.cantidad}"
+        )

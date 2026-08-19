@@ -3,7 +3,10 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 from collections import defaultdict
-from .models import Ticket, TicketStage, TicketLineInspection, TicketLineCOA, TicketDatosIngreso
+from .models import (
+    Ticket, TicketStage, TicketLineInspection, TicketLineCOA, TicketDatosIngreso,
+    EntradaMercaderia, EntradaMercaderiaLinea,
+)
 
 
 class TicketEtapaError(ValidationError):
@@ -525,8 +528,54 @@ class OperationsService:
         appointment.status = 'FINALIZADA'
         appointment.save(update_fields=['status'])
 
+        OperationsService._generar_entrada_mercaderia(ticket)
+
         return ticket
-    
+
+    @staticmethod
+    def _generar_entrada_mercaderia(ticket: Ticket) -> EntradaMercaderia:
+        """
+        Crea automáticamente la EntradaMercaderia (borrador de Entrada de
+        Mercadería para SAP) al finalizar el Ticket — mismo trigger que
+        registrar_salida usa para cerrar el ciclo (sesión 57).
+
+        Idempotente por diseño (get_or_create por ticket, update_or_create
+        por línea): un reintento de este método sobre el mismo Ticket no
+        duplica el registro ni sus líneas. En la práctica, registrar_salida
+        ya está protegido por _validar_etapa (el ticket deja de estar en
+        ETAPA_VIGILANCIA_SALIDA en cuanto se ejecuta una vez), así que no
+        debería reintentarse solo — la idempotencia es una capa de
+        seguridad adicional, no la única barrera.
+
+        La cantidad de cada línea es la fila MÁS RECIENTE de
+        TicketLineInspection por po_line, entre TODAS las etapas ya
+        ejecutadas (mismo criterio exacto que OperationsService.
+        get_estado_actual_por_oc, sesión 6/9 — "cantidad real final",
+        nunca PurchaseOrderLine.quantity_sap ni TicketLineInspection.
+        cantidad_sap).
+        """
+        entrada, created = EntradaMercaderia.objects.get_or_create(
+            ticket=ticket, defaults={'estado_sap': 'L'},
+        )
+        if not created:
+            return entrada
+
+        inspecciones = TicketLineInspection.objects.filter(
+            ticket=ticket
+        ).order_by('po_line_id', '-fecha_registro')
+
+        mas_reciente_por_linea = {}
+        for insp in inspecciones:
+            mas_reciente_por_linea.setdefault(insp.po_line_id, insp)
+
+        for po_line_id, insp in mas_reciente_por_linea.items():
+            EntradaMercaderiaLinea.objects.update_or_create(
+                entrada=entrada, po_line_id=po_line_id,
+                defaults={'cantidad': insp.cantidad_modificada},
+            )
+
+        return entrada
+
     # ─── Gestión de COA / OneDrive (Fase 3: Proveedor sube archivos) ─────────
 
     @staticmethod

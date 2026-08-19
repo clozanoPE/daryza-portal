@@ -24,15 +24,20 @@ requiere_calidad directamente sobre el modelo) — así cualquier regresión
 en el propio flujo de construcción también haría fallar la suite.
 """
 import itertools
+from decimal import Decimal
 
 from django.contrib.auth.models import User, Group
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 from apps.appointments.services import AppointmentService
 from apps.appointments.models import AppointmentSlot
 from apps.base.models import Sede
-from apps.operations.models import Ticket, TicketLineInspection
+from apps.operations.models import (
+    Ticket, TicketLineInspection, EntradaMercaderia, EntradaMercaderiaLinea,
+)
 from apps.operations.services import OperationsService, TicketEtapaError
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
@@ -1040,3 +1045,212 @@ class NumeracionUnificadaTests(OperationsTestBase):
         self.assertNotEqual(ticket.id, ticket.appointment_id, 'Sin divergencia el test no prueba nada.')
         self.assertIn(f'Ticket #{ticket.appointment_id}', resp.json()['msg'])
         self.assertNotIn(f'Ticket #{ticket.id}', resp.json()['msg'])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. EntradaMercaderia — generación automática al finalizar (sesión 57)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EntradaMercaderiaTests(OperationsTestBase):
+    """
+    Cubre lo pedido explícitamente: (1) creación automática al finalizar el
+    Ticket, (2) idempotencia del upsert (get_or_create/update_or_create al
+    reintentar el trigger), (3) EntradaMercaderiaLinea.cantidad = cantidad
+    REAL inspeccionada (TicketLineInspection.cantidad_modificada), nunca
+    PurchaseOrderLine.quantity_sap.
+
+    Todos los Tickets se construyen con requiere_calidad=False (actor
+    ALMACEN cierra su propia inspección y avanza directo a
+    VIGILANCIA_SALIDA, sesión 37) — el trigger de EntradaMercaderia no
+    depende de si el ticket pasó por Calidad o no, así que un solo camino
+    basta para probarlo sin acoplar este test a esa otra máquina de estados.
+    """
+
+    def _finalizar_ticket(self, cantidad_real=None):
+        """
+        Construye un Ticket real hasta FINALIZADO. Si se pasa cantidad_real,
+        se registra deliberadamente distinta a quantity_sap (fijo en 10 por
+        _crear_cita_confirmada) para poder distinguir "cantidad real" de
+        "cantidad SAP" en el test, en vez de asumirlo.
+        """
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        insp = TicketLineInspection.objects.get(ticket=ticket, etapa='ALMACEN')
+        self.assertEqual(insp.cantidad_sap, Decimal('10.0000'))  # sanity del helper base
+
+        if cantidad_real is None:
+            resultados = self._resultados_para(ticket)
+        else:
+            resultados = [{
+                'inspeccion_id': insp.id,
+                'estado': 'CONFORME',
+                'cantidad_modificada': str(cantidad_real),
+            }]
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen, resultados=resultados,
+        )
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        ticket.refresh_from_db()
+        return ticket, insp.po_line
+
+    def test_creacion_automatica_al_finalizar_ticket(self):
+        """No existe EntradaMercaderia antes de FINALIZADO; existe justo después, con estado_sap='L'."""
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        self.assertFalse(EntradaMercaderia.objects.filter(ticket=ticket).exists())
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+
+        entrada = EntradaMercaderia.objects.get(ticket=ticket)
+        self.assertEqual(entrada.estado_sap, 'L')
+        self.assertIsNotNone(entrada.fecha_generada)
+        self.assertIsNone(entrada.doc_entry_borrador)
+        self.assertIsNone(entrada.doc_entry_definitivo)
+        self.assertTrue(entrada.lineas.exists())
+
+    def test_idempotencia_no_duplica_registro_ni_lineas_en_reintento(self):
+        """
+        Reintentar el trigger sobre el mismo Ticket (simulando el caso
+        defensivo — en la práctica registrar_salida ya está bloqueado por
+        _validar_etapa, ETAPA_FINALIZADO no es ETAPA_VIGILANCIA_SALIDA) no
+        crea un segundo registro ni duplica las líneas.
+        """
+        ticket, _ = self._finalizar_ticket()
+
+        entrada_1 = EntradaMercaderia.objects.get(ticket=ticket)
+        n_lineas_1 = entrada_1.lineas.count()
+        self.assertEqual(EntradaMercaderia.objects.filter(ticket=ticket).count(), 1)
+
+        entrada_2 = OperationsService._generar_entrada_mercaderia(ticket)
+
+        self.assertEqual(entrada_1.id, entrada_2.id)
+        self.assertEqual(EntradaMercaderia.objects.filter(ticket=ticket).count(), 1)
+        self.assertEqual(EntradaMercaderiaLinea.objects.filter(entrada=entrada_1).count(), n_lineas_1)
+
+    def test_cantidad_es_la_real_inspeccionada_no_la_de_sap(self):
+        ticket, po_line = self._finalizar_ticket(cantidad_real='7.5000')
+        entrada = EntradaMercaderia.objects.get(ticket=ticket)
+        linea = entrada.lineas.get(po_line=po_line)
+
+        self.assertEqual(linea.cantidad, Decimal('7.5000'))
+        self.assertEqual(po_line.quantity_sap, Decimal('10.0000'))
+        self.assertNotEqual(linea.cantidad, po_line.quantity_sap)
+
+    def test_endpoint_ajax_registrar_salida_tambien_dispara_la_creacion(self):
+        """Cubre el camino HTTP real (ajax_registrar_salida), no solo el service directo."""
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
+        self.client.force_login(self.u_vigilancia)
+        resp = self.client.post(
+            '/operations/api/registrar-salida/',
+            data={'ticket_id': ticket.id}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(EntradaMercaderia.objects.filter(ticket=ticket, estado_sap='L').exists())
+
+
+class EntradaMercaderiaAPITests(OperationsTestBase):
+    """
+    Endpoints del daemon (api/entrada_mercaderia_api.py) — mismo criterio de
+    upsert retry-safe ya probado para el sync de OC (apps/sap_sync/tests.py,
+    sesión 49): confirmar-borrador/confirmar-definitivo nunca fallan en un
+    reintento, solo actualizan el valor.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.daemon_user = User.objects.create_user(username='daemon_test_em', password='x')
+        cls.token = Token.objects.create(user=cls.daemon_user)
+
+    def setUp(self):
+        self.api = APIClient()
+        self.api.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
+
+    def _finalizar_ticket(self):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
+        )
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        return EntradaMercaderia.objects.get(ticket_id=ticket.id)
+
+    def test_get_lista_solo_las_pendientes_L(self):
+        entrada = self._finalizar_ticket()
+        resp = self.api.get('/api/v1/entradas-pendientes/')
+        self.assertEqual(resp.status_code, 200)
+        ids = [row['id'] for row in resp.data]
+        self.assertIn(entrada.id, ids)
+
+        entrada.estado_sap = 'Y'
+        entrada.save(update_fields=['estado_sap'])
+        resp2 = self.api.get('/api/v1/entradas-pendientes/')
+        ids2 = [row['id'] for row in resp2.data]
+        self.assertNotIn(entrada.id, ids2, 'Una entrada ya en Y no debe listarse como pendiente.')
+
+    def test_confirmar_borrador_marca_B_y_guarda_doc_entry(self):
+        entrada = self._finalizar_ticket()
+        resp = self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-borrador/',
+            {'doc_entry_borrador': 90001}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado_sap, 'B')
+        self.assertEqual(entrada.doc_entry_borrador, 90001)
+        self.assertIsNotNone(entrada.fecha_borrador_confirmado)
+
+    def test_confirmar_borrador_es_idempotente_en_reintento(self):
+        """Reintentar con el MISMO o distinto doc_entry no falla, solo actualiza."""
+        entrada = self._finalizar_ticket()
+        r1 = self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-borrador/',
+            {'doc_entry_borrador': 90002}, format='json',
+        )
+        r2 = self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-borrador/',
+            {'doc_entry_borrador': 90002}, format='json',
+        )
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.doc_entry_borrador, 90002)
+        self.assertEqual(entrada.estado_sap, 'B')
+
+    def test_confirmar_definitivo_marca_Y_y_guarda_doc_entry(self):
+        entrada = self._finalizar_ticket()
+        self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-borrador/',
+            {'doc_entry_borrador': 90003}, format='json',
+        )
+        resp = self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-definitivo/',
+            {'doc_entry_definitivo': 90004}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado_sap, 'Y')
+        self.assertEqual(entrada.doc_entry_definitivo, 90004)
+        self.assertIsNotNone(entrada.fecha_definitivo_confirmado)
+
+    def test_confirmar_borrador_sin_doc_entry_devuelve_400(self):
+        entrada = self._finalizar_ticket()
+        resp = self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-borrador/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado_sap, 'L')
+
+    def test_endpoints_exigen_token_del_daemon(self):
+        entrada = self._finalizar_ticket()
+        api_sin_token = APIClient()
+        resp = api_sin_token.get('/api/v1/entradas-pendientes/')
+        self.assertEqual(resp.status_code, 401)
