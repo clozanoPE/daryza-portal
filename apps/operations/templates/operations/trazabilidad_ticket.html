@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load static %}
 
-{% block title %}Trazabilidad Ticket #{{ ticket.id }} | Daryza VBS{% endblock %}
+{% block title %}Trazabilidad Ticket #{{ ticket.appointment.id }} | Daryza VBS{% endblock %}
 
 {% block extra_head %}{% include "operations/_partials/inspeccion_styles.html" %}{% endblock %}
 
@@ -12,7 +12,7 @@
   <div>
     <div class="d-flex align-items-center gap-3 mb-1">
       <h1 class="page-header__title m-0">
-        <i class="bi bi-clock-history text-success me-2"></i>Trazabilidad — Ticket #{{ ticket.id }}
+        <i class="bi bi-clock-history text-success me-2"></i>Trazabilidad — Ticket #{{ ticket.appointment.id }}
       </h1>
       {% if ticket.estado == 'PROGRAMADO' %}
         <span class="badge bg-primary fs-6 rounded-3 px-3">PROGRAMADO</span>

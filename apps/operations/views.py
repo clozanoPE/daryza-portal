@@ -367,7 +367,12 @@ def ajax_confirmar_cita_compras(request):
             usuario_almacen=request.user
         )
         return _json_ok(
-            msg=f'Cita #{appointment_id} aprobada. Ticket #{ticket.id} generado.',
+            # Ticket #{appointment_id}, no ticket.id (sesión 56): el Ticket
+            # y la Appointment tienen secuencias de BD independientes que
+            # solo coinciden por casualidad — el número que el proveedor ya
+            # conoce desde el QR (DYZ-{appointment_id}-...) es appointment_id,
+            # así que "Ticket #X" debe mostrar siempre ese mismo número.
+            msg=f'Cita #{appointment_id} aprobada. Ticket #{appointment_id} generado.',
             ticket_id=ticket.id,
             codigo_qr=ticket.codigo_qr,
             tipo_flujo=ticket.tipo_flujo,
@@ -519,7 +524,9 @@ def ajax_confirmar_cita(request):
             usuario_almacen=request.user
         )
         return _json_ok(
-            msg=f'Cita #{appointment_id} confirmada. Ticket #{ticket.id} generado.',
+            # Ticket #{appointment_id}, no ticket.id — mismo criterio de la
+            # sesión 56 (ver ajax_confirmar_cita_compras).
+            msg=f'Cita #{appointment_id} confirmada. Ticket #{appointment_id} generado.',
             ticket_id=ticket.id,
             codigo_qr=ticket.codigo_qr,
         )
@@ -587,7 +594,7 @@ def ajax_autorizar_almacen(request):
             grupo_requerido = OperationsService.grupo_requerido_por_etapa(ticket)
             if not grupo_requerido or not request.user.groups.filter(name=grupo_requerido).exists():
                 return _json_err(
-                    f'No tienes permiso para iniciar la recepción del Ticket #{ticket.id}. '
+                    f'No tienes permiso para iniciar la recepción del Ticket #{ticket.appointment_id}. '
                     f'Se requiere pertenecer al grupo {grupo_requerido or "correspondiente"}.',
                     status=403
                 )
@@ -859,7 +866,7 @@ def ajax_autorizar_ingreso(request):
             ticket_id=ticket_id,
             usuario_vigilancia=request.user
         )
-        return _json_ok(msg=f'Ingreso autorizado. Ticket #{ticket.id} EN_PLANTA.')
+        return _json_ok(msg=f'Ingreso autorizado. Ticket #{ticket.appointment_id} EN_PLANTA.')
 
     return _safe_post(request, handle)
 
@@ -880,7 +887,7 @@ def ajax_registrar_salida(request):
             h, m = divmod(mins, 60)
             tiempo = f'{h}h {m}min' if h else f'{m}min'
         return _json_ok(
-            msg=f'Salida registrada. Ticket #{ticket.id} FINALIZADO.',
+            msg=f'Salida registrada. Ticket #{ticket.appointment_id} FINALIZADO.',
             tiempo_total=tiempo,
         )
 
@@ -1029,7 +1036,7 @@ def ajax_registrar_inspeccion(request):
             grupo_requerido = OperationsService.grupo_requerido_por_etapa(ticket)
             if not grupo_requerido or not request.user.groups.filter(name=grupo_requerido).exists():
                 return _json_err(
-                    f'No tienes permiso para registrar esta etapa del Ticket #{ticket.id}. '
+                    f'No tienes permiso para registrar esta etapa del Ticket #{ticket.appointment_id}. '
                     f'Se requiere pertenecer al grupo {grupo_requerido or "correspondiente"}.',
                     status=403
                 )
@@ -1258,5 +1265,5 @@ def imprimir_cargo_pdf(request, pk: int):
         return HttpResponse('No se pudo generar el PDF del cargo.', status=500)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = f'inline; filename="cargo_ticket_{ticket.id}.pdf"'
+    response['Content-Disposition'] = f'inline; filename="cargo_ticket_{ticket.appointment_id}.pdf"'
     return response

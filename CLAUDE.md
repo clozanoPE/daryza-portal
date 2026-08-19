@@ -1590,3 +1590,83 @@ Implementa el panel pedido, acotado explícitamente a estado de **despacho** (re
 - `GET /operations/compras/estado-oc/` (Compras real): `200`, `table-responsive` presente.
 
 **Fuera de alcance de esta sesión (no tocado):** no se tocó `etapa_actual`, permisos ni ningún modelo — los 2 fixes son 100% de CSS/markup. No se revisó el contraste de ningún otro `nav-tabs`/header oscuro del proyecto (el hallazgo B se limitó al bloque nuevo de la sesión 52, no se buscó exhaustivamente si existe el mismo patrón en otra pantalla) — señalado aquí como posible punto a revisar en una sesión futura si el usuario lo pide.
+
+### 2026-08-18 (sesión 54) — Datos de prueba para ronda manual (sesiones 45-52): sin cambios de código
+
+Sesión de solo carga de datos, pedida explícitamente sin tocar ningún archivo de código — confirmado con `git status` al cierre: `0` archivos modificados.
+
+**Hallazgo antes de cargar nada:** no había **ningún** `AppointmentSlot` futuro en ninguna de las 2 sedes (`LURIN`/`PUNTA_NEGRA` en `0` ambas) — sin esto, la ronda pedida no habría sido testeable en absoluto (el proveedor no podría solicitar ninguna cita). Se generaron **64 slots nuevos** (32 por sede): 8 días hábiles (19-21 y 24-28 de agosto de 2026), 4 horarios/día (08:00, 09:00, 10:15, 14:00), capacidad 2, sin muelle asignado — mismo criterio ya usado en sesiones 7b/34/40 (creación directa por ORM, sin `ScheduleTemplate`, que sigue en `0` filas en el sistema).
+
+**Proveedor nuevo** `P20544332211` / "PROVEEDOR DE PRUEBAS RONDA 3 S.A.C." (contraseña `Prueba2026!`, grupo `PROVEEDORES`) — los proveedores de rondas anteriores (QA, Ronda 2, ALICORP, Kimberly-Clark) ya tenían la mayoría de sus OCs consumidas por pruebas previas.
+
+**6 OCs nuevas** (`doc_num` 16089920-16089925, `status='PENDIENTE'`, sin ningún `Appointment` vinculado — confirmado `tiene_appointment=False` en las 6):
+
+| OC | Tipo | Sede sugerida al agendar | Líneas | COA requerido |
+|---|---|---|---|---|
+| **16089920** | MP | Lurín | `MP00000401` Ácido Ascórbico Grado Alimenticio (250 KG), `MP00000402` Goma Guar (100 KG) | Ambas **SÍ** |
+| **16089921** | Comercial | Lurín | `40701` Bolsas de Polipropileno Laminado (3000 UND), `40702` Tapas Plásticas Rosca 38mm (5000 UND) | Ambas **SÍ** (comercial con COA obligatorio — caso del fix de la sesión 36) |
+| **16089922** | MP | Punta Negra | `MP00000403` Bicarbonato de Sodio Grado Alimenticio (500 KG), `MP00000404` Sorbato de Potasio (80 KG) | Ambas **SÍ** |
+| **16089923** | Comercial | Punta Negra | `40703` Guantes de Látex Talla L (1000 UND), `40704` Mascarillas Quirúrgicas 3 Pliegues (2000 UND) | Ninguna |
+| **16089924** | MP | Cualquiera | `MP00000405` Aceite Esencial de Naranja (50 KG, activa), `MP00000406` Conservante Benzoato de Sodio (120 KG, activa), `MP00000407` Estabilizante CMC (30 KG, **activa=False**) | Las 3 marcadas, pero la línea 2 (`MP00000407`) está inactiva — no debe aparecer como accionable en ningún punto (los 5 casos corregidos en la sesión 51) |
+| **16089925** | Comercial | Cualquiera | `40705` Precintos de Seguridad Numerados (500 UND) | No | 
+
+La sede "sugerida" no es un campo de la OC (`PurchaseOrder` no tiene `sede` — la sede se fija recién al elegir el slot en la Agenda de Cupos, sesión 48b); es solo la sede que conviene elegir al agendar cada una para cubrir la matriz pedida (Lurín/Punta Negra/cualquiera).
+
+**Verificación de las 5 cuentas de rol (punto 5 del pedido):** `ucompras`, `ualmacen`, `ucalidad`, `uvigilancia`, `umateriaprima` — las 5 ya estaban `is_active=True` con `Prueba2026!` vigente (`check_password` confirmado contra el hash real) antes de tocar nada; no fue necesario regenerar ninguna.
+
+**Verificado sin efectos colaterales:** `Appointment.objects.count()` sin cambios (`5`, igual que antes de la carga) — la creación de OCs/proveedor/slots no tocó ningún dato de rondas anteriores. Total de `PurchaseOrder` en el sistema: `13` → `19`.
+
+**Fuera de alcance de esta sesión (según lo pedido explícitamente):** no se creó ningún `Appointment`/`Ticket` para las 6 OCs nuevas — las 6 quedan disponibles para que el usuario las solicite desde el portal real, incluida la `16089925` (punto 1f), que debe verse en estado PENDIENTE en el Panel de Consulta de OC (sesión 52) desde el primer momento. No se tocó ningún archivo de código (`git status` limpio al cierre).
+
+### 2026-08-18/19 (sesión 55) — Diagnóstico (sin cambios de código): divergencia Appointment.id/Ticket.id, y por qué el Ticket #40 no aparecía en el Historial de Compras "por defecto"
+
+Sesión puramente de investigación, 2 temas independientes pedidos por el usuario tras notar el Ticket #40 (Appointment #59, OC `16089925` de la ronda 3, sesión 54) en sus propias pruebas manuales.
+
+**Tema 1 — confirmado el mecanismo, pero no la causa literal propuesta.** `Ticket` solo se crea en `AppointmentService.confirmar_cita` (`Ticket.objects.update_or_create`) — ni `ajax_rechazar_cita_compras` ni `ajax_rechazar_cita` crean nunca un `Ticket` (confirmado por inspección de código). `Appointment.id`/`Ticket.id` son secuencias de BD estructuralmente independientes. Pero el conteo real de `Appointment` en `RECHAZADA`/`CANCELADA` hoy es **`0`** — la hipótesis literal ("esas filas explican el salto") no se sostiene con los datos actuales. La causa real, verificada contra Postgres (`last_value` de `appointments_appointment_id_seq`/`operations_ticket_id_seq` == máximo id realmente persistido, sin ningún hueco "fantasma" por encima): los huecos entre los 6 `Appointment`/6 `Ticket` reales (`16,17,32,37,41,59` / `14,15,26,31,41,40`) vienen del propio Claude — decenas de scripts de verificación en las sesiones 27-53, cada uno envuelto en `transaction.atomic()` con una excepción forzada al final para no dejar datos permanentes. Postgres no revierte el avance de una secuencia en un rollback (`nextval()` no es transaccional) — cada inserción revertida igual consumió un id para siempre, y muchos de esos scripts creaban un `Appointment` sin nunca llegar a `confirmar_cita` (pruebas de "OC ya en uso", del picker, de `SlotService`), consumiendo un id de `Appointment` sin el `Ticket` correspondiente — la misma asimetría planteada en la hipótesis, solo que la causa concreta es distinta a la propuesta.
+
+**Tema 2 — descartadas las 3 hipótesis planteadas; causa real no verificable desde la BD.** Reproduje exactamente `_historial_compras_qs(request)` con un request vacío (entrada "normal"): `resolver_periodo` sin parámetros devuelve agosto 2026 (mes actual real), la cita del Ticket #40 (`slot.date=2026-08-19`) cae dentro de ese mes, y el queryset resultante **sí incluye el Ticket #40** — descarta el filtro de período como causa. Descartada también la paginación (no existe ningún `Paginator`/`paginate_by` en `apps.operations`) y la caché de servidor (`grep` sin resultados de `cache_page`/`cache_control`/`CACHES` en todo el proyecto). Como la causa no está en la query, quedan 2 explicaciones de comportamiento del navegador/sesión del usuario que no pude confirmar ni descartar desde la BD: página ya cargada antes de que el Ticket #40 existiera (Django no empuja actualizaciones), o un `?periodo=` desactualizado ya en la URL de una navegación anterior en la misma sesión — pendiente de que el usuario confirme la URL exacta que tenía abierta.
+
+**Sin cambios de código en esta sesión**, según lo pedido explícitamente — ambos temas quedaron solo reportados al usuario, no corregidos.
+
+### 2026-08-19 (sesión 56) — Unifica la numeración visible: "Ticket #X" siempre muestra `appointment.id`, nunca `ticket.pk`
+
+A partir del diagnóstico de la sesión 55 (Tema 1, confirmado): como `Appointment.id` y `Ticket.id` son secuencias de BD independientes que solo coinciden por casualidad, esta divergencia **seguirá ocurriendo en producción real** cada vez que una solicitud se rechace o quede sin confirmar — no es un artefacto exclusivo de los scripts de prueba. El usuario pidió unificar toda la numeración visible al usuario para que muestre siempre `appointment.id` (el mismo número que ya vive en el código QR desde el día uno: `DYZ-{appointment.id}-...`) — `Ticket.pk` sigue siendo la clave primaria interna sin ningún cambio (URLs, FKs, parámetros AJAX al backend).
+
+**Búsqueda exhaustiva realizada antes de tocar nada** (`grep` de `Ticket #`/`Cita #`/`ticket.id`/`ticket_id`/`ticket.pk` en todo el proyecto — `.py`, `.html`, `.js`) para no limitarse a la lista de ejemplos del pedido. Clasificado cada resultado en 2 categorías: **display** (texto que el usuario lee — corregido) vs. **interno** (URLs con `{% url ... ticket.id %}`, parámetros `ticket_id` enviados al backend en AJAX, ids de elementos DOM para JS, claves JSON no consumidas para mostrar nada) — **no tocado intencionalmente**, tal como pidió el usuario ("Ticket.pk sigue existiendo como clave primaria interna").
+
+**16 archivos tocados:**
+
+| Archivo | Cambio |
+|---|---|
+| `apps/operations/views.py` | 6 mensajes JSON (`msg=`) de confirmar/rechazar/autorizar-ingreso/autorizar-almacén/registrar-inspección/registrar-salida: `ticket.id`/`ticket.appointment_id` en vez de mezclar; nombre de archivo del PDF (`cargo_ticket_{appointment_id}.pdf`) |
+| `apps/operations/services.py` | `_validar_etapa` (`TicketEtapaError`): `ticket.appointment_id` |
+| `apps/base/reporting.py` | `ticket_a_row`/`cita_a_row` (Historial + Excel/PDF de los 4 paneles): `appointment.id`/`cita.id` |
+| `detalle_ticket.html` | título, `<h1>`, texto del confirm de "Autorizar ingreso", llamada a `iniciarRecepcion` (nuevo argumento `appointmentId`) |
+| `trazabilidad_ticket.html` | título, `<h1>` |
+| `panel_vigilancia.html` | 3 tarjetas ("Programados"/"En Planta"/"Finalizados") |
+| `panel_almacen.html` | botón "Ver Ticket #" (las 3 tarjetas "Cita #" ya usaban `cita.id` = `appointment.id`, correctas desde siempre — no tocadas) |
+| `panel_calidad.html` | cabecera del ticket pendiente |
+| `panel_materia_prima.html` | cabecera del ticket pendiente |
+| `cargo_ticket_pdf.html` | `<title>`, `<h1>` (comentario interno también actualizado, no es lo que se ve pero mantiene la documentación consistente) |
+| `_partials/historial_tickets.html` | columna "Ticket" de la tabla (Historial de Compras/Vigilancia/Calidad) |
+| `panel_compras.html` | solo cache-busting de `ticket_actions.js` (no tenía ningún "Ticket #" propio — su "Pendientes" ya usa `Solicitud #{{ cita.id }}`, correcto) |
+| `static/js/panels/ticket_actions.js` | `iniciarRecepcion(ticketId, appointmentId, esMateriaPrima)` — nuevo parámetro para el texto del confirm dialog (antes solo tenía `ticketId`, usado también para el `POST` real; separar ambos era la única forma de no romper el envío al backend) |
+| `static/js/panel_horarios.js` | offcanvas de citas de un slot: `'Ticket #' + c.appointment_id` (antes `c.ticket_id`) |
+| `apps/scheduling/templates/scheduling/panel_horarios.html` | solo cache-busting de `panel_horarios.js` |
+| `apps/operations/tests.py` | 4 tests nuevos (`NumeracionUnificadaTests`) |
+
+**Casos NO tocados, deliberadamente, con justificación:**
+- `Ticket.__str__`/`TicketStage.__str__`/`TicketLineInspection.__str__`/`TicketLineCOA.__str__`/`TicketDatosIngreso.__str__` (`apps/operations/models.py`): usan `self.id`/`self.ticket_id` — son representaciones para el shell/logs de Python, no hay ningún `admin.py` registrado en el proyecto (confirmado sesión 17) así que tampoco se ven en Django Admin. Cambiarlas a mostrar un número distinto del PK real sería **más confuso** para quien depura por shell (`Ticket.objects.get(id=X)` usa el PK real; que `__str__` muestre un número distinto rompería esa correspondencia). No son pantallas de usuario final.
+- 4 mensajes de error en `OperationsService` que usan el parámetro crudo `ticket_id` (no un objeto `ticket` ya cargado) dentro de una rama `except Ticket.DoesNotExist`: no hay ningún `Ticket` del cual leer `.appointment_id` — technically imposible de resolver ahí. Caso de borde raro (el `ticket_id` que llega siempre es el PK real, nunca tecleado a mano por un usuario).
+- `_partials/datos_cita.html`: ya mostraba `#{{ ticket.appointment.id }}` bajo la etiqueta "Cita ID" desde la sesión 22 — ya estaba correcto, cero cambios.
+- `portal_proveedor.html`/`historial_listado.html` ("Ver mi Ticket"/"Ver Ticket"): confirmado que ninguno de los 2 botones muestra ningún número en el texto — solo la etiqueta, sin cifra — `cita.ticket.id` en esos archivos se usa únicamente para construir la URL (correcto, sin cambios).
+- `panel_estado_oc.html` (Panel de Consulta de OC, sesión 52): `fila.ticket_id` solo se usa para la URL del botón "Ver", nunca se muestra como texto — sin cambios.
+- El nombre de la etiqueta ("Cita" vs. "Ticket") en `panel_almacen.html` **no se unificó a una sola palabra** — se interpretó el pedido ("unifica... al mismo número") como unificar el **número** mostrado bajo cualquiera de las 2 palabras, no forzar que ambas digan siempre lo mismo: las 3 tarjetas "Cita #{{ cita.id }}" de ese panel son citas `SOLICITADO`/`CONFIRMADA`/`RECHAZADA` (conceptualmente correcto llamarlas "Cita", no "Ticket" — algunas ni siquiera tienen Ticket todavía), y ya usaban `cita.id` (= `appointment.id`) desde siempre.
+
+**Verificación con un caso real ya divergente en la BD** (sin necesidad de forzar nada con rollback — el Ticket #40/Appointment #59 de la sesión 54 ya diverge de forma genuina y persistida): `detalle_ticket`, `trazabilidad_ticket`, "Imprimir Cargo" (nombre de archivo `cargo_ticket_59.pdf`), `panel_vigilancia` y la fila de `ticket_a_row` (Historial/Reporte de Compras) muestran/usan `59`, nunca `40`. 2 "fallas" iniciales del script de verificación resultaron ser falsos positivos, confirmados al depurar: `panel_almacen` no mostraba "Ticket #59" porque ese ticket ya está `FINALIZADO` y salió del Kanban de "Confirmadas" (nada que ver ahí, no un bug — el único "Ver Ticket #" visible hoy en ese panel corresponde a otro ticket, #41, y muestra correctamente `cita.id`); la celda del Historial de Compras muestra `#59` sin la palabra "Ticket" delante (correcto, la palabra ya está en el encabezado de columna) — el script buscaba el string exacto "Ticket #59" que nunca fue el formato real de esa celda.
+
+**Test de regresión permanente** (`NumeracionUnificadaTests`, 4 tests): fuerza la divergencia de ids de la misma forma en que ocurre en producción (solicita y rechaza una cita de sobra ANTES de construir el Ticket real bajo prueba — consume 1 id de `Appointment` sin `Ticket` correspondiente, mismo mecanismo confirmado en la sesión 55), con un `assertNotEqual(ticket.id, ticket.appointment_id)` de guardia al inicio de cada test (si la divergencia no se logra forzar, el test se detiene ahí en vez de dar un falso OK). Cubre `detalle_ticket`, `trazabilidad_ticket`, `ticket_a_row`, y el mensaje JSON de `ajax_confirmar_cita_compras`.
+
+**Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios (sin cambios de modelo — cambio 100% de presentación). `manage.py test apps.sap_sync apps.operations`: **52/52 OK** (48 anteriores + 4 nuevos). Barrido de `{#` multilínea (regla permanente, sesión 26): **0 instancias**. Cache-busting bumpeado donde correspondía: `ticket_actions.js` (2.1/2.2 → 2.3 en sus 5 puntos de carga) y `panel_horarios.js` (1.2 → 1.3).
+
+**Fuera de alcance de esta sesión (no tocado):** no se corrigió el Tema 2 de la sesión 55 (el Ticket #40 ausente del Historial "por defecto" en el navegador del usuario) — sigue pendiente de que el usuario confirme la URL exacta que tenía abierta, tal como se dejó reportado. No se tocó `etapa_actual`, `_validar_etapa` (como candado de orden, solo su mensaje de texto), `grupo_requerido_por_etapa` ni ningún modelo — el cambio es puramente de qué número se le muestra al usuario, confirmado con la suite completa sin ninguna regresión de comportamiento.

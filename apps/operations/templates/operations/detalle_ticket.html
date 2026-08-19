@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load static %}
 
-{% block title %}Ticket #{{ ticket.id }} | Daryza VBS{% endblock %}
+{% block title %}Ticket #{{ ticket.appointment.id }} | Daryza VBS{% endblock %}
 
 {% block extra_head %}{% include "operations/_partials/inspeccion_styles.html" %}{% endblock %}
 
@@ -12,7 +12,7 @@
   <div>
     <div class="d-flex align-items-center gap-3 mb-1">
       <h1 class="page-header__title m-0">
-        <i class="bi bi-ticket-detailed text-success me-2"></i>Ticket #{{ ticket.id }}
+        <i class="bi bi-ticket-detailed text-success me-2"></i>Ticket #{{ ticket.appointment.id }}
       </h1>
       {% if ticket.estado == 'PROGRAMADO' %}
         <span class="badge bg-primary fs-6 rounded-3 px-3">PROGRAMADO</span>
@@ -143,7 +143,7 @@
       {% endif %}
 
       <button class="btn btn-primary rounded-3 shadow-sm px-4"
-              onclick="accionTicket('autorizar-ingreso', {{ ticket.id }}, '¿Autorizar ingreso a planta para Ticket #{{ ticket.id }}?')">
+              onclick="accionTicket('autorizar-ingreso', {{ ticket.id }}, '¿Autorizar ingreso a planta para Ticket #{{ ticket.appointment.id }}?')">
         <i class="bi bi-box-arrow-in-right me-2"></i>Autorizar Ingreso
       </button>
     </div>
@@ -175,7 +175,7 @@
 
       <button id="btn-iniciar-recepcion"
               class="btn {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}btn-materia-prima{% else %}btn-success{% endif %} rounded-3 shadow-sm px-4"
-              onclick="iniciarRecepcion({{ ticket.id }}, {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}true{% else %}false{% endif %})">
+              onclick="iniciarRecepcion({{ ticket.id }}, {{ ticket.appointment.id }}, {% if acciones.grupo_etapa_activa == 'MATERIA_PRIMA' %}true{% else %}false{% endif %})">
         <i class="bi bi-inboxes me-2"></i>Iniciar Recepción
       </button>
     </div>
@@ -257,5 +257,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.1"></script>
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.3"></script>
 {% endblock %}

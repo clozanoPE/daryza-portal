@@ -925,3 +925,118 @@ class ValidacionCoaObligatorioIngresoTests(OperationsTestBase):
             OperationsService.iniciar_ingreso_planta(
                 ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. Numeración visible al usuario: siempre appointment.id, nunca ticket.pk
+#    (sesión 56)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class NumeracionUnificadaTests(OperationsTestBase):
+    """
+    Ticket.id y Appointment.id son secuencias de BD independientes que solo
+    coinciden por casualidad (sesión 54: confirmado con datos reales, un
+    Appointment que nunca llega a confirmarse consume su id sin que exista
+    ningún Ticket correspondiente). Toda pantalla que muestre "Ticket #X"
+    debe mostrar appointment.id, el mismo número que ya vive en el código QR
+    (DYZ-{appointment.id}-...) — nunca ticket.pk.
+
+    Para probarlo de verdad (no solo confiar en que "debería" divergir), se
+    fuerza la divergencia igual que ocurre en producción: se solicita y
+    rechaza una cita de sobra ANTES de construir el Ticket real bajo prueba
+    — consume un id de Appointment sin generar ningún Ticket, exactamente
+    el mecanismo confirmado en la sesión 54.
+    """
+
+    def _forzar_divergencia_de_ids(self):
+        """Consume 1 id de Appointment sin Ticket correspondiente."""
+        doc_num = next(_doc_num_counter)
+        po = PurchaseOrder.objects.create(
+            doc_entry=doc_num, doc_num=doc_num, card_code='TESTCODE',
+            card_name='TEST SAC DESCARTABLE', e_mail='test@test.com',
+            status='PENDIENTE', u_mss_tdb='',
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code='ITEM-DESCARTABLE',
+            description='x', quantity_sap=1, und_medida='UND',
+        )
+        slot = AppointmentSlot.objects.create(
+            sede=Sede.objects.get(codigo='LURIN'),
+            date='2026-09-02', start_time='08:00', dock='TEST', max_capacity=5,
+        )
+        appointment = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
+        )
+        appointment.status = 'RECHAZADO'
+        appointment.save(update_fields=['status'])
+
+    def _crear_ticket_con_ids_divergentes(self, **kwargs) -> Ticket:
+        self._forzar_divergencia_de_ids()
+        ticket = self._crear_cita_confirmada(**kwargs)
+        # Sanity check: si esto falla, la divergencia no se forzó y el resto
+        # del test no estaría probando nada real.
+        self.assertNotEqual(
+            ticket.id, ticket.appointment_id,
+            "No se logró forzar la divergencia de ids — el test no prueba nada.",
+        )
+        return ticket
+
+    def test_detalle_ticket_muestra_appointment_id_no_ticket_pk(self):
+        ticket = self._crear_ticket_con_ids_divergentes(u_mss_tdb='CDL', requiere_coa=False)
+        self.client.force_login(self.u_vigilancia)
+
+        resp = self.client.get(f'/operations/ticket/{ticket.id}/')
+        html = resp.content.decode('utf-8')
+        self.assertIn(f'Ticket #{ticket.appointment_id}', html)
+        self.assertNotIn(f'Ticket #{ticket.id}', html)
+
+    def test_trazabilidad_ticket_muestra_appointment_id_no_ticket_pk(self):
+        ticket = self._crear_ticket_con_ids_divergentes(u_mss_tdb='CDL', requiere_coa=False)
+        self.client.force_login(self.u_compras)
+
+        resp = self.client.get(f'/operations/ticket/{ticket.id}/trazabilidad/')
+        html = resp.content.decode('utf-8')
+        self.assertIn(f'Ticket #{ticket.appointment_id}', html)
+        self.assertNotIn(f'Ticket #{ticket.id}', html)
+
+    def test_ticket_a_row_usa_appointment_id(self):
+        from apps.base.reporting import ticket_a_row
+
+        ticket = self._crear_ticket_con_ids_divergentes(u_mss_tdb='CDL', requiere_coa=False)
+        row = ticket_a_row(Ticket.objects.select_related('appointment').get(id=ticket.id))
+        self.assertEqual(row.ticket, f'#{ticket.appointment_id}')
+
+    def test_mensajes_de_confirmacion_y_error_usan_appointment_id(self):
+        """
+        Los mensajes JSON (toasts) de confirmar_cita/autorizar_almacen/
+        autorizar_ingreso/registrar_salida, y los de error de permiso/etapa,
+        también deben citar appointment.id, no ticket.pk.
+        """
+        self._forzar_divergencia_de_ids()
+        doc_num = next(_doc_num_counter)
+        po = PurchaseOrder.objects.create(
+            doc_entry=doc_num, doc_num=doc_num, card_code='TESTCODE', card_name='TEST SAC',
+            e_mail='test@test.com', status='PENDIENTE', u_mss_tdb='',
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code='ITEM-TEST', description='x',
+            quantity_sap=1, und_medida='UND',
+        )
+        slot = AppointmentSlot.objects.create(
+            sede=Sede.objects.get(codigo='LURIN'),
+            date='2026-09-03', start_time='08:00', dock='TEST', max_capacity=5,
+        )
+        appointment = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
+        )
+
+        self.client.force_login(self.u_compras)
+        resp = self.client.post(
+            '/operations/api/compras/confirmar-cita/',
+            data={'appointment_id': appointment.id}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        ticket = Ticket.objects.get(appointment_id=appointment.id)
+        self.assertNotEqual(ticket.id, ticket.appointment_id, 'Sin divergencia el test no prueba nada.')
+        self.assertIn(f'Ticket #{ticket.appointment_id}', resp.json()['msg'])
+        self.assertNotIn(f'Ticket #{ticket.id}', resp.json()['msg'])

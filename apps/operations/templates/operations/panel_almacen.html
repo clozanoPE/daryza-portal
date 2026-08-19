@@ -177,7 +177,7 @@
       {% if cita.ticket %}
       <a href="{% url 'operations:detalle_ticket' cita.ticket.id %}"
          class="btn btn-outline-success btn-sm w-100 rounded-3 text-xs">
-        <i class="bi bi-ticket-detailed me-1"></i>Ver Ticket #{{ cita.ticket.id }}
+        <i class="bi bi-ticket-detailed me-1"></i>Ver Ticket #{{ cita.id }}
       </a>
       {% endif %}
     </div>
@@ -277,7 +277,7 @@
   {# confirmar/rechazar funcione con una cuenta que solo está en ALMACEN. #}
   const ACCION_CITA_API_PREFIX = '/operations/api/';
 </script>
-<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.2"></script>
+<script src="{% static 'js/panels/ticket_actions.js' %}?v=2.3"></script>
 <script src="{% static 'js/panels/tabs_historial.js' %}?v=1.0"></script>
 <script>
   /**

@@ -32,7 +32,7 @@ class OperationsService:
         if ticket.etapa_actual != esperada:
             labels = dict(Ticket.ETAPA_ACTUAL_CHOICES)
             raise TicketEtapaError(
-                f"El Ticket #{ticket.id} está en la etapa "
+                f"El Ticket #{ticket.appointment_id} está en la etapa "
                 f"'{labels.get(ticket.etapa_actual, ticket.etapa_actual)}'; "
                 f"se esperaba '{labels.get(esperada, esperada)}' para ejecutar esta acción."
             )

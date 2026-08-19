@@ -367,7 +367,7 @@ function construirListaCitas(citas) {
           </div>
           <div class="d-flex justify-content-between align-items-center mt-2">
             <small class="text-muted">
-              ${c.ticket_id ? 'Ticket #' + c.ticket_id : 'Cita #' + c.appointment_id + ' (sin confirmar)'}
+              ${c.ticket_id ? 'Ticket #' + c.appointment_id : 'Cita #' + c.appointment_id + ' (sin confirmar)'}
             </small>
             ${c.ticket_id
                 ? `<a href="/operations/ticket/${c.ticket_id}/trazabilidad/" class="btn btn-sm btn-outline-success rounded-3" target="_blank">

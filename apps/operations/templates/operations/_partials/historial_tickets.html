@@ -73,7 +73,7 @@ Parámetros esperados en el contexto del {% include %}:
       <tbody>
         {% for ticket in tickets_historial %}
         <tr>
-          <td class="fw-bold text-xs">#{{ ticket.id }}</td>
+          <td class="fw-bold text-xs">#{{ ticket.appointment.id }}</td>
           <td>
             {% for po in ticket.appointment.purchase_orders.all %}
             <span class="badge rounded-pill px-2 py-1 text-xxs fw-bold me-1 mb-1

@@ -64,10 +64,13 @@ async function accionTicket(accion, ticketId, mensaje, _csrf) {
  * confirmación explícito adicional antes de enviar; si el usuario cancela,
  * no se envía ninguna petición. Almacén no necesita este paso extra.
  *
- * @param {number} ticketId
+ * @param {number} ticketId      - Ticket.pk real, usado solo para la llamada al backend.
+ * @param {number} appointmentId - Número que ve el usuario ("Ticket #X", sesión 56:
+ *                                 Ticket.id y Appointment.id son secuencias
+ *                                 independientes que solo coinciden por casualidad).
  * @param {boolean} esMateriaPrima - true si el actor con el turno es MATERIA_PRIMA
  */
-async function iniciarRecepcion(ticketId, esMateriaPrima) {
+async function iniciarRecepcion(ticketId, appointmentId, esMateriaPrima) {
   const { confirmDialog, showToast, btnLoading } = DzUI;
   const { postJSON } = DzApi;
 
@@ -77,7 +80,7 @@ async function iniciarRecepcion(ticketId, esMateriaPrima) {
   if (esMateriaPrima) {
     const confirmado = await confirmDialog(
       'Confirmar Iniciar Recepción — Materia Prima',
-      `Vas a iniciar la recepción como Materia Prima para el Ticket #${ticketId}` +
+      `Vas a iniciar la recepción como Materia Prima para el Ticket #${appointmentId}` +
         (requiereCalidad ? ', con Inspección de Calidad.' : ', SIN Inspección de Calidad.') +
         ' Esta acción requiere tu confirmación explícita antes de continuar. ¿Confirmas?',
       'warning'
@@ -86,7 +89,7 @@ async function iniciarRecepcion(ticketId, esMateriaPrima) {
   } else {
     const confirmado = await confirmDialog(
       'Confirmar acción',
-      `¿Iniciar recepción en Almacén para Ticket #${ticketId}?`,
+      `¿Iniciar recepción en Almacén para Ticket #${appointmentId}?`,
       'question'
     );
     if (!confirmado) return;

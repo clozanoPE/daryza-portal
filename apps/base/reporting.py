@@ -64,7 +64,12 @@ def ticket_a_row(ticket) -> HistorialRow:
     ocs = ', '.join(f'OC {po.doc_num}' for po in ticket.appointment.purchase_orders.all())
     proveedor_user = ticket.appointment.user
     return HistorialRow(
-        ticket=f'#{ticket.id}',
+        # appointment.id, no ticket.id (sesión 56): Ticket.id y Appointment.id
+        # son secuencias de BD independientes que solo coinciden por
+        # casualidad — el número que el proveedor conoce (desde el QR,
+        # DYZ-{appointment.id}-...) es appointment.id, así que "Ticket #X"
+        # debe mostrar siempre ese mismo número en toda la UI.
+        ticket=f'#{ticket.appointment.id}',
         ocs=ocs or '—',
         proveedor=proveedor_user.get_full_name() or proveedor_user.username,
         sede=ticket.appointment.sede.nombre,
@@ -84,7 +89,8 @@ def cita_a_row(cita) -> HistorialRow:
     ocs = ', '.join(f'OC {oc.doc_num}' for oc in cita.purchase_orders.all())
     ticket = getattr(cita, 'ticket', None)
     if ticket:
-        ticket_label = f'#{ticket.id}'
+        # cita.id, no ticket.id (sesión 56) — mismo criterio que ticket_a_row.
+        ticket_label = f'#{cita.id}'
         estado = ticket.get_estado_display()
         etapa_activa = _etapa_activa_de_ticket(ticket)
     else:

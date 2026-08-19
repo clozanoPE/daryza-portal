@@ -1,5 +1,5 @@
 {% comment %}
-Cargo de Entrega — Ticket #{{ ticket.id }} (Fase 12).
+Cargo de Entrega — Ticket #{{ ticket.appointment.id }} (Fase 12).
 
 Documento standalone (NO extiende base.html): xhtml2pdf soporta un
 subconjunto de CSS 2.1 (sin flexbox/grid, sin box-shadow ni gradientes),
@@ -10,7 +10,7 @@ Mismos datos que trazabilidad_ticket.html (Fase 5), en formato impreso.
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Cargo de Entrega — Ticket #{{ ticket.id }}</title>
+  <title>Cargo de Entrega — Ticket #{{ ticket.appointment.id }}</title>
   <style>
     @page { size: A4; margin: 2cm; }
     body { font-family: Helvetica, Arial, sans-serif; font-size: 11pt; color: #222222; }
@@ -28,7 +28,7 @@ Mismos datos que trazabilidad_ticket.html (Fase 5), en formato impreso.
   </style>
 </head>
 <body>
-  <h1>Cargo de Entrega — Ticket #{{ ticket.id }}</h1>
+  <h1>Cargo de Entrega — Ticket #{{ ticket.appointment.id }}</h1>
   <p class="subtitle">Daryza S.A.C. &middot; Generado el {{ fecha_generacion|date:"d/m/Y H:i" }}</p>
 
   <table class="datos-cita">
