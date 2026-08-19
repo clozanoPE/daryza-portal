@@ -8,6 +8,9 @@ SAPIntegrationViewSet (api/sap_api.py) para la sincronización de OC.
 GET  /api/v1/entradas-pendientes/                             -> 'L' pendientes
 POST /api/v1/entradas-pendientes/<id>/confirmar-borrador/     -> 'L' -> 'B'
 POST /api/v1/entradas-pendientes/<id>/confirmar-definitivo/   -> 'B' -> 'Y'
+POST /api/v1/entradas-pendientes/<id>/reportar-error/         -> guarda error_mensaje,
+                                                                   NO toca estado_sap
+                                                                   (sesión 58)
 
 <id> es EntradaMercaderia.pk (identificador interno consumido solo por el
 daemon, nunca mostrado a un usuario — no aplica el criterio de la sesión
@@ -84,5 +87,29 @@ class EntradaMercaderiaViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         ])
         return Response(
             {'status': 'success', 'message': 'Documento definitivo confirmado.'},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=['post'], url_path='reportar-error')
+    def reportar_error(self, request, pk=None):
+        """
+        Guarda error_mensaje SIN tocar estado_sap (sesión 58) — la entrada
+        queda tal como estaba (normalmente 'L'), lista para que el daemon
+        la reintente en el siguiente ciclo sin que el Portal la marque como
+        procesada. No es un estado nuevo del ciclo (''/'L'/'B'/'Y' se
+        mantiene igual); error_mensaje es solo diagnóstico.
+        """
+        entrada = self.get_object()
+        mensaje = (request.data.get('error_mensaje') or '').strip()
+        if not mensaje:
+            return Response(
+                {'status': 'error', 'errors': {'error_mensaje': ['Este campo es obligatorio.']}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        entrada.error_mensaje = mensaje
+        entrada.save(update_fields=['error_mensaje'])
+        return Response(
+            {'status': 'success', 'message': 'Error registrado.'},
             status=status.HTTP_200_OK,
         )

@@ -1154,6 +1154,23 @@ class EntradaMercaderiaTests(OperationsTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(EntradaMercaderia.objects.filter(ticket=ticket, estado_sap='L').exists())
 
+    def test_trazabilidad_ticket_muestra_error_mensaje_junto_al_badge(self):
+        """Sesión 58, punto 2: error_mensaje visible en trazabilidad_ticket si no está vacío."""
+        ticket, _ = self._finalizar_ticket()
+        entrada = EntradaMercaderia.objects.get(ticket=ticket)
+
+        self.client.force_login(self.u_compras)
+        resp_sin_error = self.client.get(f'/operations/ticket/{ticket.id}/trazabilidad/')
+        self.assertNotIn('Error SAP', resp_sin_error.content.decode('utf-8'))
+
+        entrada.error_mensaje = 'SAP rechazó: BaseEntry inválido'
+        entrada.save(update_fields=['error_mensaje'])
+
+        resp_con_error = self.client.get(f'/operations/ticket/{ticket.id}/trazabilidad/')
+        html = resp_con_error.content.decode('utf-8')
+        self.assertIn('Error SAP', html)
+        self.assertIn('SAP rechazó: BaseEntry inválido', html)
+
 
 class EntradaMercaderiaAPITests(OperationsTestBase):
     """
@@ -1254,3 +1271,36 @@ class EntradaMercaderiaAPITests(OperationsTestBase):
         api_sin_token = APIClient()
         resp = api_sin_token.get('/api/v1/entradas-pendientes/')
         self.assertEqual(resp.status_code, 401)
+
+    def test_reportar_error_guarda_mensaje_sin_tocar_estado_sap(self):
+        """
+        Sesión 58: reportar-error guarda error_mensaje y deja estado_sap tal
+        como estaba (sigue en 'L', lista para que el daemon reintente) —
+        no es una transición del ciclo, es solo diagnóstico.
+        """
+        entrada = self._finalizar_ticket()
+        self.assertEqual(entrada.estado_sap, 'L')
+
+        resp = self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/reportar-error/',
+            {'error_mensaje': 'SAP rechazó: BaseEntry inválido en línea 1'}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado_sap, 'L')
+        self.assertEqual(entrada.error_mensaje, 'SAP rechazó: BaseEntry inválido en línea 1')
+
+        # Sigue apareciendo en la lista de pendientes ('L' intacto) — el
+        # daemon puede reintentarla en el siguiente ciclo sin fricción.
+        resp_lista = self.api.get('/api/v1/entradas-pendientes/')
+        ids = [row['id'] for row in resp_lista.data]
+        self.assertIn(entrada.id, ids)
+
+    def test_reportar_error_sin_mensaje_devuelve_400(self):
+        entrada = self._finalizar_ticket()
+        resp = self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/reportar-error/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.error_mensaje, '')
