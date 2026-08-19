@@ -59,7 +59,8 @@ INSTALLED_APPS = [
     'apps.sap_sync',
     'apps.appointments',
     'apps.operations',
-    'apps.scheduling',    
+    'apps.scheduling',
+    'apps.invoicing',
 ]
 
 MIDDLEWARE = [
