@@ -1,8 +1,12 @@
 asgiref==3.11.1
+dj-database-url==3.1.2
 Django==6.0.3
 django-cors-headers==4.9.0
 django-extensions==4.1
 djangorestframework==3.17.0
+# gunicorn: servidor WSGI de produccion (Procfile) — manage.py runserver
+# no es apto para producción.
+gunicorn==26.1.0
 # lxml + xmlsec: validacion de firma XAdES de comprobantes SUNAT
 # (apps/invoicing/services_validacion.py, sesion 59). xmlsec requiere
 # libxmlsec1 (dependencia de SISTEMA, no solo de Python) — ver la nota

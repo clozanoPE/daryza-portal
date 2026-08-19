@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv # Requisito: pip install python-dotenv
+import dj_database_url # Requisito: pip install dj-database-url
 from django.core.exceptions import ImproperlyConfigured
 
 
@@ -97,22 +98,43 @@ TEMPLATES = [
 WSGI_APPLICATION = 'core.wsgi.application'
 
 # 5. Base de Datos (PostgreSQL)
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-if not DB_PASSWORD:
-    raise ImproperlyConfigured(
-        "DB_PASSWORD no está definida. Configúrala en core/.env antes de iniciar el servidor."
-    )
+#
+# Detecta automáticamente cuál de las 2 formas de configurar la conexión
+# está presente, en vez de asumir una sola:
+#   - DATABASE_URL: una sola variable con toda la cadena de conexión
+#     (postgres://user:pass@host:port/dbname) — lo que expone el addon de
+#     Postgres de Railway (y Heroku). Si está definida, tiene prioridad.
+#   - Variables individuales DB_NAME/DB_USER/DB_PASSWORD/DB_HOST/DB_PORT
+#     (comportamiento local ya existente, sin cambios) — se usa cuando NO
+#     hay DATABASE_URL, típicamente en desarrollo local vía core/.env.
+DATABASE_URL = os.getenv('DATABASE_URL')
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME', 'daryza_portal_db'),
-        'USER': os.getenv('DB_USER', 'postgres'),
-        'PASSWORD': DB_PASSWORD,
-        'HOST': os.getenv('DB_HOST', '127.0.0.1'),
-        'PORT': os.getenv('DB_PORT', '5432'),
+if DATABASE_URL:
+    DATABASES = {
+        # conn_max_age reutiliza conexiones entre requests (pool simple) —
+        # razonable en un contenedor de vida corta como Railway.
+        'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)
     }
-}
+else:
+    DB_PASSWORD = os.getenv('DB_PASSWORD')
+    if not DB_PASSWORD:
+        raise ImproperlyConfigured(
+            "Falta la configuración de base de datos: definí DATABASE_URL "
+            "(formato Railway/Heroku) o DB_PASSWORD junto con el resto de "
+            "variables DB_* individuales en core/.env antes de iniciar el "
+            "servidor."
+        )
+
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME', 'daryza_portal_db'),
+            'USER': os.getenv('DB_USER', 'postgres'),
+            'PASSWORD': DB_PASSWORD,
+            'HOST': os.getenv('DB_HOST', '127.0.0.1'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+        }
+    }
 
 # 6. Internacionalización (Ajustado a Perú)
 LANGUAGE_CODE = 'es-pe'
@@ -152,3 +174,30 @@ ONEDRIVE_TENANT_ID     = os.getenv('ONEDRIVE_TENANT_ID', '')
 ONEDRIVE_CLIENT_SECRET = os.getenv('ONEDRIVE_CLIENT_SECRET', '')
 ONEDRIVE_DRIVE_ID      = os.getenv('ONEDRIVE_DRIVE_ID', '')
 #print(f"VERIFICACIÓN AMBIENTE -> TENANT: {ONEDRIVE_TENANT_ID}")
+
+# 10. Seguridad detrás de un proxy HTTPS (Railway u otro PaaS equivalente)
+#
+# CSRF_TRUSTED_ORIGINS: orígenes completos (con esquema) desde los que se
+# aceptan POST con verificación CSRF pasada — Django lo exige explícitamente
+# desde la 4.0 para cualquier origen público. Variable CSRF_TRUSTED_ORIGINS,
+# CSV, ej: "https://daryza-portal.up.railway.app,https://mi-dominio.pe".
+# Vacío por defecto: en local (http://localhost) no hace falta.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()
+]
+
+# Railway (como la mayoría de PaaS) termina TLS en su borde y reenvía el
+# tráfico en texto plano hacia el contenedor, marcando el esquema original
+# en el header X-Forwarded-Proto. Sin esto, Django nunca detecta HTTPS
+# detrás del proxy — afecta request.is_secure(), las cookies "Secure" de
+# abajo, y la propia verificación de CSRF_TRUSTED_ORIGINS. Seguro de dejar
+# siempre activo: en local, sin proxy, ese header simplemente no llega en
+# la request y Django sigue viendo la conexión como no seguros (correcto,
+# http://localhost no tiene TLS).
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Solo se activan fuera de DEBUG local — evita romper http://localhost
+# (sin TLS, sin proxy que ponga X-Forwarded-Proto) mientras se desarrolla.
+SECURE_SSL_REDIRECT = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
