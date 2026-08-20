@@ -25,10 +25,22 @@ load_dotenv(dotenv_path=env_path)
 # Sin fallback inseguro: si falta la variable de entorno, se falla fuerte y
 # claro al arrancar en vez de seguir silenciosamente con un valor inseguro
 # hardcodeado en el código fuente.
+#
+# os.getenv() lee SIEMPRE el entorno real del proceso (os.environ) — esto
+# funciona igual en Railway/producción (donde la variable se inyecta
+# directo al contenedor, sin ningún archivo .env) que en local. load_dotenv()
+# (arriba) solo agrega una comodidad: si core/.env existe, precarga su
+# contenido a os.environ antes de este punto; si no existe (como en
+# Railway), no hace nada y no falla — os.getenv() sigue leyendo el entorno
+# real de todos modos. El mensaje de abajo lo aclara explícitamente para no
+# inducir a pensar que hace falta el archivo (sesión 63: confusión real).
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 if not SECRET_KEY:
     raise ImproperlyConfigured(
-        "DJANGO_SECRET_KEY no está definida. Configúrala en core/.env antes de iniciar el servidor."
+        "DJANGO_SECRET_KEY no está definida como variable de entorno del "
+        "proceso. En Railway/producción: configurala en Settings → "
+        "Variables del servicio (no hace falta ningún archivo .env ahí). "
+        "En desarrollo local: definila en core/.env o exportala en tu shell."
     )
 
 # Por defecto DEBUG=False si la variable no está definida (fail-safe para
@@ -119,10 +131,11 @@ else:
     DB_PASSWORD = os.getenv('DB_PASSWORD')
     if not DB_PASSWORD:
         raise ImproperlyConfigured(
-            "Falta la configuración de base de datos: definí DATABASE_URL "
-            "(formato Railway/Heroku) o DB_PASSWORD junto con el resto de "
-            "variables DB_* individuales en core/.env antes de iniciar el "
-            "servidor."
+            "Falta la configuración de base de datos como variables de "
+            "entorno del proceso: definí DATABASE_URL (formato Railway/"
+            "Heroku) o DB_PASSWORD junto con el resto de variables DB_* "
+            "individuales. En Railway: Settings → Variables del servicio. "
+            "En desarrollo local: core/.env o exportadas en tu shell."
         )
 
     DATABASES = {
