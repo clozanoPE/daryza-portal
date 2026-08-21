@@ -1832,3 +1832,35 @@ Con eso, Railway valida la propiedad del dominio automáticamente (vía el propi
 **Validación general**: ninguna variable ni configuración tocó el entorno local (`core/.env`, `manage.py runserver`) — todo lo hecho esta sesión fue contra el `web`/`production` remoto de Railway vía CLI ya autenticado por el usuario. Ningún archivo del repositorio se modificó en esta sesión — solo estado remoto de infraestructura, documentado aquí por ser un hito real de despliegue.
 
 **Fuera de alcance de esta sesión (no tocado):** no se agregó todavía ningún registro DNS del lado del usuario (el CNAME reportado arriba queda pendiente de que él lo configure en su portal de DNS); no se verificó el certificado TLS de `nexo.daryza.com` como emitido (depende de la propagación DNS, fuera del control de esta sesión); no se tocó el proyecto `empathetic-courtesy`/`LogiPlan` en ningún momento.
+
+### 2026-08-21 (sesión 65) — 400 Bad Request en `nexo.daryza.pe`: `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS` sin el dominio custom
+
+**Contexto:** el usuario reportó `400 Bad Request` al entrar por `https://nexo.daryza.pe` (mismo dominio funcionando por `web-production-ac867.up.railway.app`). **Nota:** el dominio custom real configurado en Railway es `nexo.daryza.pe`, no `nexo.daryza.com` como se documentó al agregarlo en la sesión 64 — confirmado con `railway status --json` (`customDomains: [{"domain": "nexo.daryza.pe"}]`, `RAILWAY_PUBLIC_DOMAIN=nexo.daryza.pe`); el usuario cambió de `.com` a `.pe` en algún punto entre sesiones, sin que quedara registrado aquí. DNS y certificado TLS de `nexo.daryza.pe` ya validados por el usuario antes de esta sesión (confirmado por él, no verificado desde este entorno).
+
+**Causa raíz confirmada** (`railway variables --service web --environment production --json`): `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS` (configuradas en la sesión 64) solo tenían `web-production-ac867.up.railway.app` — cualquier request con `Host: nexo.daryza.pe` es rechazado por Django (`DisallowedHost`) antes de llegar a ninguna vista, devolviendo `400`. No era un problema de DNS/certificado/código — la app simplemente no reconocía el host.
+
+**Fix**: `railway variables --service web --environment production --set "ALLOWED_HOSTS=web-production-ac867.up.railway.app,nexo.daryza.pe" --set "CSRF_TRUSTED_ORIGINS=https://web-production-ac867.up.railway.app,https://nexo.daryza.pe"` — formato CSV confirmado contra `core/settings.py:52,198-200` antes de aplicar. Disparó un redeploy automático (sin `--skip-deploys`), verificado `SUCCESS` vía `railway status --json`.
+
+**Validación**: `curl -s -o /dev/null -w "%{http_code}" https://nexo.daryza.pe/login/` → **`200`** (antes `400`); `https://web-production-ac867.up.railway.app/login/` → `200`, sin regresión. Sin cambios de código ni de archivos del repositorio — solo variables de entorno remotas en Railway, vía CLI ya autenticado por el usuario (sesión 64).
+
+**Fuera de alcance de esta sesión (no tocado):** no se investigó por qué el dominio quedó en `.pe` en vez de `.com` (documentado como discrepancia, pendiente de que el usuario confirme si fue intencional); no se tocó ningún otro servicio/proyecto de Railway.
+
+### 2026-08-21 (sesión 66) — Verificación de salud de producción (Railway) + preparación de `U_MSSL_TOP`/`U_MSSL_CBS`, antes de iniciar la Sub-fase 3.1 (modelo `Factura`)
+
+Sesión de solo investigación/preparación, pedida explícitamente antes de tocar código de la Sub-fase 3.1 — **ningún archivo de código tocado, ninguna escritura en la BD de producción**.
+
+**PARTE 1 — Salud de producción**, verificado vía `railway ssh --service web --environment production` (ejecuta dentro del contenedor real, con acceso a la red interna de Postgres) + `curl` contra `https://nexo.daryza.pe`:
+
+1. **Migraciones al día**: `showmigrations` en producción vs. local, las 41 migraciones de las 11 apps (incluidas todas las de Materia Prima/Sede/Facturación-spike de las sesiones 27-59) coinciden `[X]` en ambos lados. Sin nada pendiente de `migrate`.
+2. **Variables configuradas**: `DJANGO_SECRET_KEY`, `DATABASE_URL` (usada en vez de `DB_*` individuales, sesión 61), `DEBUG`, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS` (sesión 65). **Faltan**: `ONEDRIVE_CLIENT_ID`/`TENANT_ID`/`CLIENT_SECRET`/`DRIVE_ID` (sin esto, subir un COA en producción fallará en el primer uso real), `SAP_SYNC_TOKEN`, `FACTURA_DRAFT_SAP_HABILITADO`.
+3. **`FACTURA_DRAFT_SAP_HABILITADO`**: no configurada en Railway, y confirmado por `grep` que **tampoco existe todavía en ningún archivo del código** — es un flag que nace recién con la Fase 3 de Facturación, no hay ningún valor actual que verificar. Señalado para que nazca con default `False` explícito cuando se implemente.
+4. **Login/routing**: `GET /login/` → `200` (título "Daryza VBS" renderiza); `GET /operations/compras/` y `/home/` sin sesión → `302` a `/login/?next=...` (confirma middleware de auth + routing); estáticos WhiteNoise → `200`. No se verificó el contenido renderizado de un panel ya autenticado — no hay ningún usuario en la BD de producción con el cual entrar sin crear datos nuevos (ver punto 5).
+5. **Sin superusuario**: `User.objects.count() == 0`, `Group.objects.count() == 0` en la BD de producción — vacía por completo (es una instancia Postgres nueva de Railway, nunca recibió los datos/usuarios de la BD local usada en las sesiones 1-64). Falta `createsuperuser` + crear los 5 grupos operativos — ninguno de los dos ejecutado, pendiente de confirmación del usuario.
+
+**PARTE 2 — Propuesta de campos, sin implementar el modelo:**
+- `U_MSSL_TOP` ("Tipo de Operación"): `CharField(max_length=2, choices=[('02', 'Compra Nacional')], default='02')` — catálogo acotado a un solo valor por ahora, el resto se agrega bajo demanda.
+- `U_MSSL_CBS` ("Clasificación de Bienes/Servicios Adquiridos"): `IntegerField(choices=[(1,'Mercadería'),(2,'Activo'),(3,'Otros activos'),(4,'Gastos de educación'),(5,'Otros gastos')])`.
+
+**TODO pendiente de confirmación del usuario, antes de fijar el modelo real de `Factura` (Sub-fase 3.1):** el código `5` para "Otros gastos" en `U_MSSL_CBS` es una suposición (siguiente entero libre tras 1-4) — la fuente del usuario tiene "Otros gastos" duplicado bajo el código `4` junto con "Gastos de educación". **No usar `5` en el modelo real sin que el usuario lo confirme explícitamente primero.**
+
+**Fuera de alcance de esta sesión (según lo pedido):** no se ejecutó `migrate` en producción (no hacía falta, ya está al día); no se creó ningún superusuario/grupo en producción; no se configuró ninguna variable de entorno faltante; no se implementó el modelo `Factura` ni ningún archivo de código de la Sub-fase 3.1.
