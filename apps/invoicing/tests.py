@@ -25,18 +25,21 @@ import threading
 import time
 from decimal import Decimal
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connections, transaction
+from django.db.models import Sum
 from django.test import SimpleTestCase, TransactionTestCase
 
+from apps.appointments.models import AppointmentSlot
+from apps.appointments.services import AppointmentService
 from apps.base.models import Sede
 from apps.invoicing import services_validacion as sv
 from apps.operations.models import Ticket, TicketLineInspection
 from apps.operations.services import OperationsService
 from apps.operations.tests import OperationsTestBase
-from apps.sap_sync.models import PurchaseOrder
+from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 from .models import Factura, FacturaLinea, FacturaOrdenCompra
 from .services import InvoicingService
@@ -535,3 +538,134 @@ class ValidarOcDisponibleConcurrenciaTests(TransactionTestCase):
         self.assertEqual(
             Factura.objects.filter(ordenes_compra__purchase_order=self.po).count(), 1,
         )
+
+
+class SaldoDisponibleConcurrenciaTests(TransactionTestCase):
+    """
+    Mismo patrón que ValidarOcDisponibleConcurrenciaTests (sesión 70),
+    aplicado a saldo_disponible: 2 hilos intentan "facturar" 60 unidades
+    cada uno contra una línea con 100 disponibles — si ambos pasaran sin
+    esperarse, el resultado sería 120 facturado contra 100 real
+    (sobre-facturación).
+
+    Verificación pedida explícitamente (sesión 71): a diferencia de
+    validar_oc_disponible (que SÍ tenía el bug — select_for_update()
+    sobre un queryset vacío no bloquea nada), saldo_disponible bloquea
+    primero EntradaMercaderiaLinea.objects.select_for_update().get(
+    po_line=po_line) — una fila que, por precondición del propio método
+    (lanza ValidationError si no existe), SIEMPRE existe antes de llegar
+    ahí. Confirmado con la SQL real (FOR UPDATE sobre
+    operations_entradamercaderialinea, filtrado por po_line_id — nunca
+    sobre una tabla vacía) y con este mismo escenario de 2 hilos:
+    verificado empíricamente, sin encontrar el mismo bug — no hizo falta
+    ningún cambio de código, solo este test de regresión.
+
+    No existe todavía ninguna función de servicio real que orqueste
+    "leer saldo -> decidir -> crear FacturaLinea" (Sub-fase 3.2/3.3, sin
+    construir) — este test arma esa orquestación mínima directamente
+    dentro de cada hilo (el mismo patrón que cualquier endpoint futuro
+    tendría que seguir: todo dentro de un único transaction.atomic()),
+    para probar que el lock que YA usa saldo_disponible es suficiente
+    por sí solo, sin necesitar ningún candado adicional en el futuro
+    orquestador.
+
+    TransactionTestCase, no TestCase: mismo motivo que la clase anterior
+    — cada hilo necesita su propia conexión/transacción real.
+    """
+
+    def setUp(self):
+        Sede.objects.get_or_create(codigo='LURIN', defaults={'nombre': 'Planta Lurín'})
+        g_compras, _ = Group.objects.get_or_create(name='COMPRAS')
+
+        self.proveedor = User.objects.create_user('saldo_conc_proveedor', password='x')
+        self.u_compras = User.objects.create_user('saldo_conc_compras', password='x')
+        self.u_compras.groups.add(g_compras)
+        u_vigilancia = User.objects.create_user('saldo_conc_vigilancia', password='x')
+        u_almacen = User.objects.create_user('saldo_conc_almacen', password='x')
+
+        doc_num = 777666555
+        po = PurchaseOrder.objects.create(
+            doc_entry=doc_num, doc_num=doc_num, card_code='SALDOCONC', card_name='SALDO CONC SAC',
+            e_mail='saldoconc@test.com', status='PENDIENTE', u_mss_tdb='CDL',
+        )
+        self.po_line = PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code='ITEM-SALDO-CONC',
+            description='Item saldo concurrencia', quantity_sap=100, und_medida='KG',
+        )
+
+        slot = AppointmentSlot.objects.create(
+            sede=Sede.objects.get(codigo='LURIN'),
+            date='2026-09-16', start_time='09:30', dock='TEST', max_capacity=5,
+        )
+        appointment = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+        )
+        ticket = AppointmentService.confirmar_cita(
+            appointment_id=appointment.id, usuario_almacen=self.u_compras,
+        )
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=u_vigilancia,
+        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=u_almacen)
+        ticket.refresh_from_db()
+
+        # Cierra el ciclo con la cantidad REAL = 100 (todo el saldo
+        # disponible al arrancar el test) — mismo criterio de
+        # InvoicingTestBase._finalizar_ticket (apps.operations.tests).
+        resultados_insp = [
+            {'inspeccion_id': insp.id, 'estado': 'CONFORME', 'cantidad_modificada': '100.0000'}
+            for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=u_almacen, resultados=resultados_insp,
+        )
+        ticket.refresh_from_db()
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=u_vigilancia)
+
+    def test_dos_intentos_concurrentes_de_facturar_60_contra_saldo_100_no_sobrefacturan(self):
+        resultados = {}
+
+        def intentar(nombre, retraso_antes_de_comitear):
+            try:
+                with transaction.atomic():
+                    po_line = PurchaseOrderLine.objects.get(pk=self.po_line.pk)
+                    saldo = InvoicingService.saldo_disponible(po_line)
+                    time.sleep(retraso_antes_de_comitear)
+                    if Decimal('60.0000') > saldo:
+                        raise ValidationError(
+                            f"Saldo insuficiente: se pidió 60, disponible {saldo}."
+                        )
+                    factura = Factura.objects.create(
+                        proveedor=self.proveedor, sede=Sede.objects.get(codigo='LURIN'),
+                        estado='BORRADOR',
+                    )
+                    FacturaLinea.objects.create(
+                        factura=factura, po_line=po_line,
+                        cantidad_oc=po_line.quantity_sap, precio_oc=Decimal('1.0000'),
+                        cantidad=Decimal('60.0000'), precio=Decimal('1.0000'),
+                    )
+                resultados[nombre] = 'OK'
+            except ValidationError:
+                resultados[nombre] = 'RECHAZADO'
+            finally:
+                connections.close_all()
+
+        # t1 arranca primero y retiene la transacción abierta 0.5s antes
+        # de comitear — misma ventana que el bug real de validar_oc_
+        # disponible explotaba; aquí se espera que NO haya bug.
+        t1 = threading.Thread(target=intentar, args=('t1', 0.5))
+        t2 = threading.Thread(target=intentar, args=('t2', 0.0))
+        t1.start()
+        time.sleep(0.05)
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Exactamente uno "OK" y el otro "RECHAZADO" — nunca ambos "OK"
+        # (eso sería la sobre-facturación: 120 contra 100 real).
+        self.assertEqual(sorted(resultados.values()), ['OK', 'RECHAZADO'])
+
+        total_facturado = FacturaLinea.objects.filter(po_line=self.po_line).aggregate(
+            total=Sum('cantidad')
+        )['total'] or Decimal('0')
+        self.assertEqual(total_facturado, Decimal('60.0000'))

@@ -1941,3 +1941,19 @@ El usuario pidió, antes de seguir con la Fase 3, verificar empíricamente (no s
 **Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios (sin cambios de modelo). `manage.py test apps.invoicing apps.operations apps.sap_sync`: **100/100 OK** (99 anteriores + 1 nuevo). Commit separado del de la sesión 69 (bug de concurrencia real, merece su propio commit).
 
 **Fuera de alcance de esta sesión (no tocado):** no se construyó el mismo harness de concurrencia para `saldo_disponible` (razonado como seguro, no confirmado empíricamente — ver nota arriba); no se tocó ningún endpoint/UI (siguen sin existir, Sub-fase 3.2 en adelante).
+
+### 2026-08-21 (sesión 71) — Confirmación empírica de `saldo_disponible`: sin el bug de la sesión 70, sin cambios de código
+
+Cierra la nota pendiente de la sesión 70. El usuario pidió el mismo tratamiento (`TransactionTestCase`, threads reales, corrido 4 veces) aplicado a `saldo_disponible`, con un escenario concreto de sobre-facturación (saldo=100, 2 requests intentando facturar 60 cada uno — si ambos pasaran, 120 contra 100 real).
+
+**SQL real verificada primero** (mismo método que la sesión 70): `EntradaMercaderiaLinea.objects.select_for_update().filter(po_line_id=X)` genera `FOR UPDATE` sobre `operations_entradamercaderialinea` filtrado por `po_line_id` — una fila que, por precondición del propio método (`saldo_disponible` lanza `ValidationError` si no existe), **siempre** está presente antes de llegar a ese punto. Distinto estructuralmente del bug de `validar_oc_disponible` (que bloqueaba `Factura`, una fila que la primera vez no existe).
+
+**Reproducido con 2 hilos + conexiones/transacciones reales contra Postgres** (script descartable en el scratchpad, mismo patrón que la sesión 70 — Ticket real construido de punta a punta vía `AppointmentService`/`OperationsService` hasta `FINALIZADO`, con cantidad real=100): t1 entra a `saldo_disponible`, ve `saldo=100`, retiene la transacción abierta 0.6s antes de comitear su `FacturaLinea` de 60. t2, arrancado 0.05s después mientras t1 seguía sin comitear, **quedó bloqueado 0.612s** (no pasó de inmediato) y, al desbloquearse, vio el saldo **ya actualizado** (`40.0000`, no `100.0000`) — correctamente rechazado (`60 > 40`). Total real facturado contra la línea: `60.0000`, no `120.0000`. **Sin bug — confirmado, no solo razonado.**
+
+**Sin cambios de código** (a diferencia de la sesión 70): `apps/invoicing/services.py` queda exactamente igual. Se agregó únicamente el test de regresión permanente `apps/invoicing/tests.py::SaldoDisponibleConcurrenciaTests` (mismo patrón que `ValidarOcDisponibleConcurrenciaTests` — `TransactionTestCase`, Ticket real construido en `setUp()` hasta `FINALIZADO` con cantidad real=100, 2 hilos orquestando "leer saldo → decidir → crear `FacturaLinea`" dentro de un único `transaction.atomic()`, ya que esa orquestación todavía no existe como función de servicio real — Sub-fase 3.2/3.3). Corrido **4 veces seguidas** para descartar inestabilidad por temporización — las 4 pasaron (2.6-3.8s cada una, sin fallos).
+
+**Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios (sin cambios de modelo). `manage.py test apps.invoicing apps.operations apps.sap_sync`: **101/101 OK** (100 anteriores + 1 nuevo).
+
+**Estado final de los 2 candados de concurrencia de la Fase 3, ambos confirmados empíricamente (no solo por lectura de código):** `validar_oc_disponible` — bug real encontrado y corregido (sesión 70). `saldo_disponible` — sin bug, confirmado (esta sesión). Ningún candado de la Fase 3 queda ya "razonado pero no verificado".
+
+**Fuera de alcance de esta sesión (no tocado):** ningún endpoint/UI (Sub-fase 3.2 en adelante, siguen sin existir); no se tocó `apps/invoicing/services.py` (sin necesidad, sin bug encontrado).
