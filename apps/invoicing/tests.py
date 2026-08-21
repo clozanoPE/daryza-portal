@@ -1,31 +1,39 @@
 # apps/invoicing/tests.py
 """
-Suite de apps.invoicing — Sub-fase 3.1 (sesión 59): validación de firma
-XAdES + extracción de datos UBL, servicio aislado sin modelo Factura
-todavía.
+Suite de apps.invoicing. 2 partes independientes, sin dependencias entre
+sí (services_validacion.py es Python puro sin modelos; el resto de este
+archivo sí toca la base de datos):
 
-Fixtures (apps/invoicing/fixtures/*.xml) — IMPORTANTE, no son los 2
-archivos reales que el usuario mencionó tener disponibles: esta sesión no
-recibió ningún adjunto real (no llegó ningún archivo a la conversación),
-así que se generaron 4 XML SINTÉTICOS que replican la estructura UBL 2.1
-descrita explícitamente por el usuario (certificado embebido en ds:
-KeyInfo/X509Data/X509Certificate, cac:DocumentResponse/cbc:ResponseCode +
-cbc:Description en el CDR), firmados de verdad con xmlsec contra un
-certificado autofirmado de prueba generado solo para esto — así que la
-verificación de firma que prueban es real (matemáticamente válida/
-inválida), aunque el contenido de negocio (RUC, montos, etc.) es
-inventado. Nombrados con el prefijo "sintetic_"/"sintetica_" a propósito,
-para que nunca se confundan con datos reales de SUNAT si se revisan más
-adelante. Si el usuario proporciona los 2 archivos reales, pueden
-sumarse como fixtures adicionales sin reemplazar estas (que igual siguen
-siendo útiles: no dependen de que el certificado real de un proveedor no
-haya expirado).
+  1. Sub-fase 3.1a (sesión 59): validación de firma XAdES + extracción de
+     datos UBL — servicio aislado, sin modelo Factura.
+
+  2. Sub-fase 3.1b (esta sesión): modelo Factura + InvoicingService
+     (saldo_disponible / validar_oc_disponible / validar_retencion_
+     detraccion). Reutiliza OperationsTestBase (apps.operations.tests)
+     para construir Tickets reales de principio a fin (vía
+     AppointmentService/OperationsService, nunca escribiendo estado
+     directo sobre el modelo) hasta FINALIZADO — solo así existe una
+     EntradaMercaderiaLinea real, la fuente de dato que saldo_disponible
+     necesita (ver su docstring: nunca PurchaseOrderLine.quantity_sap).
+
+No cubre carga de archivos con hash (ya cubierto en la parte 1, salvo el
+hash en sí, que tampoco se implementó todavía) ni ningún endpoint
+(Sub-fase 3.2/3.3, todavía no existen).
 """
 import os
+from decimal import Decimal
 
+from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
 
 from apps.invoicing import services_validacion as sv
+from apps.operations.models import Ticket, TicketLineInspection
+from apps.operations.services import OperationsService
+from apps.operations.tests import OperationsTestBase
+
+from .models import Factura, FacturaLinea, FacturaOrdenCompra
+from .services import InvoicingService
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
 
@@ -34,6 +42,10 @@ def _leer_fixture(nombre: str) -> bytes:
     with open(os.path.join(FIXTURES_DIR, nombre), 'rb') as f:
         return f.read()
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Parte 1 (sesión 59) — validación de firma XAdES + extracción UBL
+# ═══════════════════════════════════════════════════════════════════════════
 
 class ValidarFirmaXMLTests(SimpleTestCase):
     """
@@ -112,7 +124,6 @@ class ExtraerDatosFacturaTests(SimpleTestCase):
         self.assertEqual(self.datos.fecha_emision, '2026-08-19')
 
     def test_importe_total_y_moneda(self):
-        from decimal import Decimal
         self.assertEqual(self.datos.importe_total, Decimal('1180.50'))
         self.assertEqual(self.datos.moneda, 'PEN')
 
@@ -178,3 +189,279 @@ class ExtraerEstadoCDRTests(SimpleTestCase):
         cdr_vacio = b'<ApplicationResponse xmlns="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2"/>'
         with self.assertRaises(sv.ValidacionXMLError):
             sv.extraer_estado_cdr(cdr_vacio)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Parte 2 (esta sesión) — modelo Factura + InvoicingService
+# ═══════════════════════════════════════════════════════════════════════════
+
+class InvoicingTestBase(OperationsTestBase):
+    """
+    Agrega, sobre la base ya existente de apps.operations, el paso final
+    que esa base no necesitaba (registrar_calidad + registrar_salida) —
+    aquí sí hace falta: sin un Ticket FINALIZADO no existe ninguna
+    EntradaMercaderia/EntradaMercaderiaLinea real.
+    """
+
+    def _finalizar_ticket(self, u_mss_tdb: str, cantidad_real, requiere_calidad: bool = False) -> Ticket:
+        """
+        Construye un Ticket real hasta FINALIZADO, con la cantidad REAL
+        inspeccionada (no la de SAP) fijada explícitamente en
+        `cantidad_real` — esa es la cantidad que terminará en
+        EntradaMercaderiaLinea.cantidad, la base de saldo_disponible.
+        """
+        ticket = self._crear_ticket_en_etapa(
+            Ticket.ETAPA_ALMACEN, u_mss_tdb,
+            requiere_coa=(u_mss_tdb == 'MP'), requiere_calidad=requiere_calidad,
+        )
+
+        def _resultados():
+            return [
+                {
+                    'inspeccion_id': insp.id,
+                    'estado': 'CONFORME',
+                    'cantidad_modificada': str(cantidad_real),
+                }
+                for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+            ]
+
+        actor = self.u_materia_prima if ticket.es_materia_prima else self.u_almacen
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=actor, resultados=_resultados(),
+        )
+        ticket.refresh_from_db()
+
+        if ticket.requiere_calidad:
+            OperationsService.registrar_calidad(
+                ticket_id=ticket.id, usuario_calidad=self.u_calidad, resultados=_resultados(),
+            )
+            ticket.refresh_from_db()
+
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        ticket.refresh_from_db()
+        return ticket
+
+    def _po_line_de(self, ticket: Ticket):
+        """La (única) PurchaseOrderLine del Ticket construido por _finalizar_ticket."""
+        po = ticket.appointment.purchase_orders.first()
+        return po.lines.first()
+
+    def _crear_factura(self, estado='BORRADOR', proveedor=None):
+        return Factura.objects.create(
+            proveedor=proveedor or self.proveedor,
+            sede=self._sede(),
+            estado=estado,
+        )
+
+    def _sede(self):
+        from apps.base.models import Sede
+        return Sede.objects.get(codigo='LURIN')
+
+    def _crear_factura_linea(self, factura, po_line, cantidad, **extra):
+        defaults = dict(
+            cantidad_oc=po_line.quantity_sap,
+            precio_oc=Decimal('10.0000'),
+            cantidad=cantidad,
+            precio=Decimal('10.0000'),
+        )
+        defaults.update(extra)
+        return FacturaLinea.objects.create(factura=factura, po_line=po_line, **defaults)
+
+
+class SaldoDisponibleTests(InvoicingTestBase):
+
+    def test_sin_entrada_mercaderia_lanza_validation_error(self):
+        """Ticket construido pero no finalizado -> sin EntradaMercaderiaLinea todavía."""
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        po_line = self._po_line_de(ticket)
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.saldo_disponible(po_line)
+
+    def test_saldo_igual_a_lo_recibido_sin_ninguna_factura(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('8.0000'))
+        po_line = self._po_line_de(ticket)
+
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('8.0000'))
+
+    def test_saldo_disminuye_con_factura_activa(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+
+        factura = self._crear_factura(estado='EN_REVISION_COMPRAS')
+        self._crear_factura_linea(factura, po_line, cantidad=Decimal('4.0000'))
+
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('6.0000'))
+
+    def test_saldo_ignora_lineas_de_factura_cancelada(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+
+        factura_cancelada = self._crear_factura(estado='CANCELADO')
+        self._crear_factura_linea(factura_cancelada, po_line, cantidad=Decimal('4.0000'))
+
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('10.0000'))
+
+    def test_excluir_factura_propia_al_editar(self):
+        """
+        Al recalcular el saldo para la MISMA Factura que ya tiene una línea
+        sobre esa po_line, excluir_factura evita descontarla dos veces.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+
+        factura = self._crear_factura(estado='BORRADOR')
+        self._crear_factura_linea(factura, po_line, cantidad=Decimal('3.0000'))
+
+        # Sin excluir: la propia línea ya cuenta contra el saldo.
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('7.0000'))
+        # Excluyéndola: como si la Factura no existiera todavía.
+        self.assertEqual(
+            InvoicingService.saldo_disponible(po_line, excluir_factura=factura),
+            Decimal('10.0000'),
+        )
+
+    def test_saldo_suma_multiples_facturas_activas(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+
+        f1 = self._crear_factura(estado='BORRADOR')
+        self._crear_factura_linea(f1, po_line, cantidad=Decimal('3.0000'))
+        f2 = self._crear_factura(estado='APROBADA_COMPRAS')
+        self._crear_factura_linea(f2, po_line, cantidad=Decimal('2.0000'))
+
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('5.0000'))
+
+
+class ValidarOcDisponibleTests(InvoicingTestBase):
+    """Candado de unicidad de OC (InvoicingService.validar_oc_disponible)."""
+
+    def test_oc_libre_no_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+
+        InvoicingService.validar_oc_disponible(po)  # no debe lanzar
+
+    def test_oc_ya_usada_por_factura_activa_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+
+        factura = self._crear_factura(estado='EN_REVISION_COMPRAS')
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.validar_oc_disponible(po)
+
+    def test_oc_ya_usada_rechaza_sin_importar_el_estado_no_cancelado(self):
+        """BORRADOR/EN_REVISION_COMPRAS/OBSERVADA/APROBADA_COMPRAS bloquean por igual."""
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+
+        for estado in ('BORRADOR', 'EN_REVISION_COMPRAS', 'OBSERVADA', 'APROBADA_COMPRAS'):
+            with self.subTest(estado=estado):
+                factura = self._crear_factura(estado=estado)
+                FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+                with self.assertRaises(ValidationError):
+                    InvoicingService.validar_oc_disponible(po)
+                # Limpieza para el siguiente estado del mismo subTest.
+                factura.delete()
+
+    def test_cancelar_factura_libera_el_candado_de_oc(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+
+        factura = self._crear_factura(estado='EN_REVISION_COMPRAS')
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.validar_oc_disponible(po)
+
+        factura.estado = 'CANCELADO'
+        factura.save(update_fields=['estado'])
+
+        InvoicingService.validar_oc_disponible(po)  # ya no debe lanzar
+
+    def test_excluir_factura_propia_al_editar(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+
+        factura = self._crear_factura(estado='BORRADOR')
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+
+        # Sin excluir: se bloquea a sí misma.
+        with self.assertRaises(ValidationError):
+            InvoicingService.validar_oc_disponible(po)
+        # Excluyéndola: no se bloquea a sí misma.
+        InvoicingService.validar_oc_disponible(po, excluir_factura=factura)
+
+
+class ValidarRetencionDetraccionTests(InvoicingTestBase):
+
+    def _linea(self, ticket, **extra):
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura(estado='BORRADOR')
+        return self._crear_factura_linea(factura, po_line, cantidad=Decimal('1.0000'), **extra)
+
+    def test_retencion_sin_documento_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        linea = self._linea(ticket, aplica_retencion=True)
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.validar_retencion_detraccion(linea)
+
+    def test_retencion_con_documento_no_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        archivo = SimpleUploadedFile('retencion.pdf', b'contenido-de-prueba', content_type='application/pdf')
+        linea = self._linea(ticket, aplica_retencion=True, documento_retencion=archivo)
+
+        InvoicingService.validar_retencion_detraccion(linea)  # no debe lanzar
+
+    def test_detraccion_sin_documento_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        linea = self._linea(ticket, aplica_detraccion=True)
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.validar_retencion_detraccion(linea)
+
+    def test_ninguna_bandera_activa_no_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        linea = self._linea(ticket)
+
+        InvoicingService.validar_retencion_detraccion(linea)  # no debe lanzar
+
+
+class FacturaLineaDifiereDeOCTests(InvoicingTestBase):
+    """FacturaLinea.difiere_de_oc, calculado en save()."""
+
+    def test_difiere_de_oc_false_cuando_coincide(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura()
+
+        linea = self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('10.0000'),
+            cantidad_oc=Decimal('10.0000'), precio_oc=Decimal('5.0000'), precio=Decimal('5.0000'),
+        )
+        self.assertFalse(linea.difiere_de_oc)
+
+    def test_difiere_de_oc_true_si_cantidad_distinta(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura()
+
+        linea = self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('9.0000'),
+            cantidad_oc=Decimal('10.0000'), precio_oc=Decimal('5.0000'), precio=Decimal('5.0000'),
+        )
+        self.assertTrue(linea.difiere_de_oc)
+
+    def test_difiere_de_oc_true_si_precio_distinto(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura()
+
+        linea = self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('10.0000'),
+            cantidad_oc=Decimal('10.0000'), precio_oc=Decimal('5.0000'), precio=Decimal('5.5000'),
+        )
+        self.assertTrue(linea.difiere_de_oc)
