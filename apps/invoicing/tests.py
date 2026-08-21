@@ -21,16 +21,22 @@ hash en sí, que tampoco se implementó todavía) ni ningún endpoint
 (Sub-fase 3.2/3.3, todavía no existen).
 """
 import os
+import threading
+import time
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import SimpleTestCase
+from django.db import connections, transaction
+from django.test import SimpleTestCase, TransactionTestCase
 
+from apps.base.models import Sede
 from apps.invoicing import services_validacion as sv
 from apps.operations.models import Ticket, TicketLineInspection
 from apps.operations.services import OperationsService
 from apps.operations.tests import OperationsTestBase
+from apps.sap_sync.models import PurchaseOrder
 
 from .models import Factura, FacturaLinea, FacturaOrdenCompra
 from .services import InvoicingService
@@ -465,3 +471,67 @@ class FacturaLineaDifiereDeOCTests(InvoicingTestBase):
             cantidad_oc=Decimal('10.0000'), precio_oc=Decimal('5.0000'), precio=Decimal('5.5000'),
         )
         self.assertTrue(linea.difiere_de_oc)
+
+
+class ValidarOcDisponibleConcurrenciaTests(TransactionTestCase):
+    """
+    Regresión del BUG REAL encontrado y corregido en la sesión de esta
+    prueba: sin bloquear PurchaseOrder, 2 llamadas concurrentes intentando
+    crear la PRIMERA Factura para la misma OC pasaban AMBAS la validación
+    (select_for_update() sobre un queryset vacío no bloquea nada) —
+    confirmado con hilos + conexiones reales contra Postgres antes de
+    arreglar, y otra vez después para confirmar el fix.
+
+    TransactionTestCase (no TestCase): TestCase envuelve el test entero en
+    una única transacción compartida por todo el test — eso impediría que
+    el bloqueo entre hilos ocurra de verdad (cada hilo necesita su propia
+    conexión/transacción real). TransactionTestCase no envuelve nada y
+    trunca las tablas al terminar cada test.
+    """
+
+    def setUp(self):
+        Sede.objects.get_or_create(codigo='LURIN', defaults={'nombre': 'Planta Lurín'})
+        self.proveedor = User.objects.create_user('concurrencia_test_proveedor', password='x')
+        self.po = PurchaseOrder.objects.create(
+            doc_entry=888777666, doc_num=888777666, card_code='CONC', card_name='CONCURRENCIA SAC',
+            e_mail='concurrencia@test.com', status='PENDIENTE', u_mss_tdb='CDL',
+        )
+
+    def test_dos_intentos_concurrentes_de_crear_factura_no_duplican_ni_pasan_ambos(self):
+        resultados = {}
+
+        def intentar(nombre, retraso_antes_de_comitear):
+            try:
+                with transaction.atomic():
+                    po = PurchaseOrder.objects.get(pk=self.po.pk)
+                    InvoicingService.validar_oc_disponible(po)
+                    time.sleep(retraso_antes_de_comitear)
+                    factura = Factura.objects.create(
+                        proveedor=self.proveedor, sede=Sede.objects.get(codigo='LURIN'),
+                        estado='BORRADOR',
+                    )
+                    FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+                resultados[nombre] = 'OK'
+            except ValidationError:
+                resultados[nombre] = 'RECHAZADO'
+            finally:
+                connections.close_all()
+
+        # t1 arranca primero (pequeña ventaja) y retiene la transacción
+        # abierta 0.5s antes de comitear — la ventana exacta donde el bug
+        # original dejaba pasar a un segundo llamador sin esperar.
+        t1 = threading.Thread(target=intentar, args=('t1', 0.5))
+        t2 = threading.Thread(target=intentar, args=('t2', 0.0))
+        t1.start()
+        time.sleep(0.05)
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Exactamente uno de los 2 debe pasar y el otro debe ser rechazado
+        # — nunca ambos "OK" (duplicaría el candado) ni ambos "RECHAZADO"
+        # (bloquearía a un llamador legítimo sin ningún motivo real).
+        self.assertEqual(sorted(resultados.values()), ['OK', 'RECHAZADO'])
+        self.assertEqual(
+            Factura.objects.filter(ordenes_compra__purchase_order=self.po).count(), 1,
+        )

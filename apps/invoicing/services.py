@@ -18,6 +18,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 
 from apps.operations.models import EntradaMercaderiaLinea
+from apps.sap_sync.models import PurchaseOrder
 
 from .models import Factura, FacturaLinea
 
@@ -91,14 +92,35 @@ class InvoicingService:
         `excluir_factura` permite validar una edición sobre una Factura ya
         existente sin que se bloquee a sí misma.
 
-        NOTA de implementación: se bloquean filas de `Factura` (no de
-        `FacturaOrdenCompra`) — `Factura.objects.select_for_update().filter(
-        ordenes_compra__purchase_order=...)` resuelve el join como INNER
-        JOIN (vía `.filter()` sobre la relación inversa, no `.exclude()`),
-        y el filtro `estado != CANCELADO` es sobre el propio campo de
-        Factura, no uno relacionado — evita por completo el mismo problema
-        de outer join + FOR UPDATE documentado en saldo_disponible.
+        BUG REAL corregido (reportado y verificado empíricamente antes de
+        arreglar, no solo sospechado — 2 hilos con conexiones/transacciones
+        separadas contra Postgres real, uno manteniendo la transacción
+        abierta antes de comitear): la versión anterior solo aplicaba
+        select_for_update() sobre `Factura.objects.filter(ordenes_compra__
+        purchase_order=...)` — un SELECT ... FOR UPDATE sobre un queryset
+        VACÍO no bloquea nada (no hay fila que lockear). Esto es exactamente
+        el caso que más importa: 2 requests intentando crear la PRIMERA
+        Factura para la misma OC casi al mismo tiempo — ninguna Factura
+        existe todavía para ninguno de los 2, así que ambos pasaban la
+        validación sin esperarse entre sí. Confirmado con el escenario real:
+        el segundo hilo pasó su validación en 46ms mientras el primero
+        seguía con la transacción abierta (sin comitear su Factura nueva).
+
+        FIX: se bloquea primero la fila de `PurchaseOrder` misma —
+        `SELECT ... FOR UPDATE` sobre `PurchaseOrder.objects.get(pk=...)`,
+        una fila que SIEMPRE existe (se recibe como parámetro ya
+        persistido), a diferencia de la Factura que todavía no existe la
+        primera vez. Esto serializa a cualquier llamador concurrente sobre
+        la MISMA OC en este punto: el primero que llega retiene el lock
+        hasta comitear/revertir; el segundo queda bloqueado en esta misma
+        línea hasta que el primero termine, y solo entonces re-lee el
+        estado real (ya con la Factura del primero, si se creó). Re-
+        verificado con el mismo escenario de 2 hilos tras el fix: el
+        segundo hilo ahora espera ~1s (el tiempo que el primero mantuvo la
+        transacción abierta) y correctamente es rechazado.
         """
+        PurchaseOrder.objects.select_for_update().get(pk=purchase_order.pk)
+
         facturas_bloqueando = Factura.objects.select_for_update().filter(
             ordenes_compra__purchase_order=purchase_order,
         ).exclude(estado='CANCELADO')
