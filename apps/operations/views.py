@@ -366,6 +366,13 @@ def ajax_confirmar_cita_compras(request):
             appointment_id=appointment_id,
             usuario_almacen=request.user
         )
+        # Si el correo de confirmación falló, la cita/ticket ya se
+        # confirmaron igual (no debe romper el flujo) — se agrega el
+        # error a la respuesta para que quede visible en algún lado
+        # (sin logging persistente en este proyecto), en vez de perderse
+        # en silencio en el print() de consola.
+        email_error = getattr(ticket, 'email_notificacion_error', None)
+        extra = {'email_error': email_error} if email_error else {}
         return _json_ok(
             # Ticket #{appointment_id}, no ticket.id (sesión 56): el Ticket
             # y la Appointment tienen secuencias de BD independientes que
@@ -376,6 +383,7 @@ def ajax_confirmar_cita_compras(request):
             ticket_id=ticket.id,
             codigo_qr=ticket.codigo_qr,
             tipo_flujo=ticket.tipo_flujo,
+            **extra,
         )
 
     return _safe_post(request, handle)
@@ -523,12 +531,15 @@ def ajax_confirmar_cita(request):
             appointment_id=appointment_id,
             usuario_almacen=request.user
         )
+        email_error = getattr(ticket, 'email_notificacion_error', None)
+        extra = {'email_error': email_error} if email_error else {}
         return _json_ok(
             # Ticket #{appointment_id}, no ticket.id — mismo criterio de la
             # sesión 56 (ver ajax_confirmar_cita_compras).
             msg=f'Cita #{appointment_id} confirmada. Ticket #{appointment_id} generado.',
             ticket_id=ticket.id,
             codigo_qr=ticket.codigo_qr,
+            **extra,
         )
 
     return _safe_post(request, handle)

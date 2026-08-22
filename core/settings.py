@@ -188,6 +188,15 @@ ONEDRIVE_CLIENT_SECRET = os.getenv('ONEDRIVE_CLIENT_SECRET', '')
 ONEDRIVE_DRIVE_ID      = os.getenv('ONEDRIVE_DRIVE_ID', '')
 #print(f"VERIFICACIÓN AMBIENTE -> TENANT: {ONEDRIVE_TENANT_ID}")
 
+# Buzón real de Daryza que envía las notificaciones (Microsoft Graph,
+# POST /users/{GRAPH_SENDER_EMAIL}/sendMail) — misma app de Azure AD que
+# ONEDRIVE_CLIENT_ID/TENANT_ID/CLIENT_SECRET (Mail.Send ya concedido ahí),
+# pero esto identifica un BUZÓN, no una credencial de app — variable
+# nueva, confirmada explícitamente con el usuario (sin valor por defecto
+# real: '' hace que apps.base.services_correo.enviar_correo falle con un
+# error explícito y visible, en vez de intentar enviar sin remitente).
+GRAPH_SENDER_EMAIL = os.getenv('GRAPH_SENDER_EMAIL', '')
+
 # 10. Seguridad detrás de un proxy HTTPS (Railway u otro PaaS equivalente)
 #
 # CSRF_TRUSTED_ORIGINS: orígenes completos (con esquema) desde los que se

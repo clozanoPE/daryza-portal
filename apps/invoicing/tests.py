@@ -24,6 +24,7 @@ import os
 import threading
 import time
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
@@ -35,6 +36,7 @@ from django.test import SimpleTestCase, TransactionTestCase
 from apps.appointments.models import AppointmentSlot
 from apps.appointments.services import AppointmentService
 from apps.base.models import Sede, SupplierProfile
+from apps.base.services_correo import ResultadoEnvioCorreo
 from apps.invoicing import services_validacion as sv
 from apps.operations.models import Ticket, TicketLineInspection
 from apps.operations.services import OperationsService
@@ -689,3 +691,56 @@ class SaldoDisponibleConcurrenciaTests(TransactionTestCase):
             total=Sum('cantidad')
         )['total'] or Decimal('0')
         self.assertEqual(total_facturado, Decimal('60.0000'))
+
+
+class NotificarFacturaObservadaTests(InvoicingTestBase):
+    """
+    InvoicingService.notificar_factura_observada — servicio listo para
+    que la Sub-fase 3.5 lo consuma, sin ningún endpoint que lo dispare
+    todavía (nadie la llama desde ningún flujo real en esta sesión).
+
+    Mockeado (apps.base.services_correo.enviar_correo parcheado en su
+    propio módulo — notificar_factura_observada hace un import local,
+    mismo criterio que apps.appointments.tests) — la prueba real contra
+    Graph ya se hizo manualmente para enviar_correo, no hace falta
+    repetirla aquí.
+    """
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_usa_el_email_de_la_cuenta_de_portal_si_existe(self, mock_enviar):
+        mock_enviar.return_value = ResultadoEnvioCorreo(enviado=True)
+        self.proveedor.email = 'cuenta_portal@daryza-test.com'
+        self.proveedor.save(update_fields=['email'])
+
+        factura = self._crear_factura(estado='OBSERVADA')
+        InvoicingService.notificar_factura_observada(factura, 'Falta el RUC en la línea 2.')
+
+        mock_enviar.assert_called_once()
+        _, kwargs = mock_enviar.call_args
+        self.assertEqual(kwargs['destinatario'], 'cuenta_portal@daryza-test.com')
+        self.assertIn('Falta el RUC en la línea 2.', kwargs['cuerpo_html'])
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_usa_correo_electronico_del_perfil_si_no_hay_cuenta_vinculada(self, mock_enviar):
+        mock_enviar.return_value = ResultadoEnvioCorreo(enviado=True)
+        perfil = self._supplier_profile()
+        perfil.user = None
+        perfil.correo_electronico = 'sap_sync@proveedor-test.com'
+        perfil.save(update_fields=['user', 'correo_electronico'])
+
+        factura = self._crear_factura(estado='OBSERVADA', proveedor=perfil)
+        InvoicingService.notificar_factura_observada(factura, 'Monto no coincide con la OC.')
+
+        mock_enviar.assert_called_once()
+        _, kwargs = mock_enviar.call_args
+        self.assertEqual(kwargs['destinatario'], 'sap_sync@proveedor-test.com')
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_fallo_de_envio_no_lanza(self, mock_enviar):
+        mock_enviar.return_value = ResultadoEnvioCorreo(enviado=False, error='Graph caído.')
+
+        factura = self._crear_factura(estado='OBSERVADA')
+        resultado = InvoicingService.notificar_factura_observada(factura, 'Motivo.')
+
+        self.assertFalse(resultado.enviado)
+        self.assertEqual(resultado.error, 'Graph caído.')

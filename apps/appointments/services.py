@@ -252,8 +252,18 @@ class AppointmentService:
             # Las filas de TicketLineInspection se crean recién cuando cada etapa
             # (Vigilancia, Almacén, Calidad) las procesa realmente.
 
-            # 8. Notificar al proveedor con el QR
-            AppointmentService._notificar_proveedor_qr(appointment, ticket)
+            # 8. Notificar al proveedor con el QR (correo real, Graph) — un
+            # fallo de envío NUNCA revierte la confirmación (pedido
+            # explícito): se captura y se deja visible en un atributo
+            # transitorio del ticket (no persistido, sin campo de BD
+            # nuevo) para que la vista que llamó a confirmar_cita pueda
+            # incluirlo en su respuesta JSON — no hay logging persistente
+            # en este proyecto (sesión 49), así que perderlo en silencio
+            # lo haría invisible por completo.
+            resultado_correo = AppointmentService._notificar_proveedor_qr(appointment, ticket)
+            ticket.email_notificacion_error = (
+                resultado_correo.error if resultado_correo and not resultado_correo.enviado else None
+            )
 
             return ticket
 
@@ -284,51 +294,57 @@ class AppointmentService:
         return appointment
 
     @staticmethod
-    def _notificar_proveedor_qr(appointment: Appointment, ticket: Ticket) -> None:
+    def _notificar_proveedor_qr(appointment: Appointment, ticket: Ticket):
         """
-        Centraliza la lógica de notificación al proveedor tras confirmar su cita.
+        Notifica al proveedor por correo real (Microsoft Graph, ver
+        apps/base/services_correo.py) que su cita fue confirmada — cierra
+        la deuda histórica de este método (antes solo hacía `print()`, sin
+        ningún envío real, desde que se escribió por primera vez).
 
-        Estado actual: Preparado para integración.
-        - Genera la URL del QR lista para ser incluida en un email o WhatsApp.
-        - El campo appointment.token_qr ya está guardado en BD.
-
-        Para integrar email real: descomentar el bloque de send_mail
-        y añadir las variables EMAIL_* en core/settings.py y .env
-
-        Para integrar WhatsApp (Twilio/Meta): llamar al servicio correspondiente
-        pasando appointment.user.profile.telefono y la url_qr generada.
-
-        CAPAS AFECTADAS cuando se implemente:
-          - core/settings.py  → EMAIL_BACKEND, EMAIL_HOST, etc.
-          - requirements.txt  → añadir twilio si se usa WhatsApp
+        Devuelve el ResultadoEnvioCorreo (o None si ni siquiera se intentó
+        por falta de email) — el llamador (confirmar_cita) decide dónde
+        dejarlo visible; esta función nunca lanza.
         """
-        # URL pública del QR (el proveedor accede a esta URL para ver su ticket)
-        # En producción, reemplazar con la URL real del dominio.
-        url_qr = f"/appointments/ticket/{appointment.token_qr}/"
+        from django.conf import settings
 
-        # ── Integración email (lista para activar) ──────────────────────────────
-        # from django.core.mail import send_mail
-        # from django.conf import settings
-        #
-        # proveedor_email = appointment.user.email
-        # if proveedor_email:
-        #     send_mail(
-        #         subject=f'[Daryza VBS] Cita #{appointment.id} Confirmada',
-        #         message=(
-        #             f'Su cita ha sido confirmada.\n'
-        #             f'Fecha: {appointment.slot.date.strftime("%d/%m/%Y")}\n'
-        #             f'Hora: {appointment.slot.start_time.strftime("%H:%M")}\n'
-        #             f'Código QR: {appointment.token_qr}\n'
-        #             f'Acceda aquí: {url_qr}\n'
-        #             f'Presente este código al llegar a planta.'
-        #         ),
-        #         from_email=settings.DEFAULT_FROM_EMAIL,
-        #         recipient_list=[proveedor_email],
-        #         fail_silently=True,  # No interrumpir el flujo si el email falla
-        #     )
+        from apps.base.services_correo import enviar_correo
 
-        # Por ahora: log en consola para desarrollo
-        print(
-            f"[VBS NOTIFICACIÓN] Cita #{appointment.id} confirmada. "
-            f"QR: {appointment.token_qr} | URL: {url_qr}"
+        # URL absoluta: el link va en un correo real, no en una página ya
+        # cargada en el navegador — una ruta relativa no resuelve a nada
+        # útil en un cliente de correo. Se construye desde ALLOWED_HOSTS
+        # (ya configurado, sin agregar ninguna variable de entorno nueva
+        # solo para esto) en vez de asumir un dominio fijo.
+        dominio = settings.ALLOWED_HOSTS[0] if settings.ALLOWED_HOSTS else 'localhost:8000'
+        esquema = 'http' if dominio.startswith('localhost') or dominio.startswith('127.') else 'https'
+        url_qr = f"{esquema}://{dominio}/appointments/ticket/{appointment.token_qr}/"
+
+        proveedor_email = appointment.user.email
+        if not proveedor_email:
+            print(
+                f"[VBS NOTIFICACIÓN] Cita #{appointment.id} confirmada, pero el "
+                f"proveedor ({appointment.user.username}) no tiene email registrado "
+                f"— no se envió ningún correo."
+            )
+            return None
+
+        cuerpo_html = (
+            f"<p>Su cita ha sido confirmada.</p>"
+            f"<ul>"
+            f"<li>Fecha: {appointment.slot.date.strftime('%d/%m/%Y')}</li>"
+            f"<li>Hora: {appointment.slot.start_time.strftime('%H:%M')}</li>"
+            f"<li>Código QR: {appointment.token_qr}</li>"
+            f"</ul>"
+            f"<p>Acceda aquí: <a href=\"{url_qr}\">{url_qr}</a></p>"
+            f"<p>Presente este código al llegar a planta.</p>"
         )
+        resultado = enviar_correo(
+            destinatario=proveedor_email,
+            asunto=f'[Daryza VBS] Cita #{appointment.id} Confirmada',
+            cuerpo_html=cuerpo_html,
+        )
+        if not resultado.enviado:
+            print(
+                f"[VBS NOTIFICACIÓN] Error al enviar correo de confirmación "
+                f"(Cita #{appointment.id}, destinatario {proveedor_email}): {resultado.error}"
+            )
+        return resultado

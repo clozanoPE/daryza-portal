@@ -14,6 +14,8 @@ import io
 import requests
 from django.conf import settings
 
+from .graph_auth import obtener_token_graph
+
 
 class OneDriveClient:
     """
@@ -39,32 +41,16 @@ class OneDriveClient:
         #print(f"DEBUG - PROBANDO URL FINAL: {url}")
 
     def _get_token(self) -> str:
-        """Obtiene un access token usando Client Credentials (no interactivo)."""
+        """
+        Obtiene un access token usando Client Credentials (no interactivo).
+        Delega la llamada real a apps.base.graph_auth.obtener_token_graph
+        (compartida con el servicio de correo) — no duplica la lógica de
+        autenticación contra Graph.
+        """
         if self._token:
             return self._token
 
-        url = self.TOKEN_URL.format(tenant_id=self.tenant_id)
-
-        # Debug para asegurar que las variables no lleguen vacías
-        #print(f"--- SOLICITUD DE TOKEN ---")
-        #print(f"URL: {url}")
-        #print(f"Client ID: {self.client_id[:5]}***")
-
-        resp = requests.post(url, data={
-            'grant_type':    'client_credentials',
-            'client_id':     self.client_id,
-            'client_secret': self.client_secret,
-            'scope':         'https://graph.microsoft.com/.default',
-        }, timeout=15)
-
-        # Si Microsoft responde con error (401, 400), esto nos dirá EXACTAMENTE por qué
-        if resp.status_code != 200:
-            print(f"!!! ERROR DE AUTENTICACIÓN MICROSOFT ({resp.status_code}) !!!")
-            print(f"Respuesta: {resp.text}")
-            resp.raise_for_status()
-
-        resp.raise_for_status()
-        self._token = resp.json()['access_token']
+        self._token = obtener_token_graph()
 
         # --- BLOQUE PARA TRAER EL ID DEL DRIVE AUTOMÁTICAMENTE ---
         if self._token:

@@ -154,3 +154,51 @@ class InvoicingService:
             )
         if errores:
             raise ValidationError(errores)
+
+    @staticmethod
+    def notificar_factura_observada(factura, texto_observacion: str):
+        """
+        Envía al proveedor el aviso de que Compras observó su Factura.
+
+        Servicio ya listo para que la Sub-fase 3.5 (el flujo real de
+        observación — endpoint/vista que crea el FacturaObservacion y
+        cambia Factura.estado a OBSERVADA, todavía sin construir) lo
+        consuma sin duplicar esta lógica; esta función no dispara nada
+        por sí sola — nadie la llama todavía desde ningún endpoint.
+
+        Destinatario: el email de la cuenta de Portal si ya existe
+        (SupplierProfile.user), si no el correo_electronico del propio
+        SupplierProfile (el que llega del sync de OC, ver
+        apps/base/supplier_sync.py) — el proveedor puede no tener cuenta
+        de Portal activada todavía (SupplierProfile.user es nullable,
+        sesión anterior) y aun así necesitar este aviso.
+
+        Nunca lanza — mismo criterio que enviar_correo: el resultado
+        (éxito/error) se devuelve para que el llamador decida dónde
+        dejarlo visible.
+        """
+        from apps.base.services_correo import enviar_correo
+
+        proveedor = factura.proveedor
+        destinatario = ''
+        if proveedor.user_id and proveedor.user.email:
+            destinatario = proveedor.user.email
+        elif proveedor.correo_electronico:
+            destinatario = proveedor.correo_electronico
+
+        comprobante = (
+            f"{factura.serie_comprobante}-{factura.numero_comprobante}"
+            if factura.serie_comprobante else f"#{factura.pk}"
+        )
+        cuerpo_html = (
+            f"<p>Su factura <strong>{comprobante}</strong> fue observada por Compras "
+            f"y requiere corrección.</p>"
+            f"<p><strong>Motivo:</strong></p>"
+            f"<p>{texto_observacion}</p>"
+            f"<p>Ingrese al Portal para corregirla y volver a enviarla.</p>"
+        )
+        return enviar_correo(
+            destinatario=destinatario,
+            asunto='[Daryza VBS] Factura observada — corrección requerida',
+            cuerpo_html=cuerpo_html,
+        )
