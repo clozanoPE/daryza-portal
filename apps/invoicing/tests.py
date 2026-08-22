@@ -20,6 +20,7 @@ No cubre carga de archivos con hash (ya cubierto en la parte 1, salvo el
 hash en sí, que tampoco se implementó todavía) ni ningún endpoint
 (Sub-fase 3.2/3.3, todavía no existen).
 """
+import hashlib
 import os
 import threading
 import time
@@ -43,6 +44,7 @@ from apps.operations.services import OperationsService
 from apps.operations.tests import OperationsTestBase
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
+from . import services_archivos as sa
 from .models import Factura, FacturaLinea, FacturaOrdenCompra
 from .services import InvoicingService
 
@@ -744,3 +746,287 @@ class NotificarFacturaObservadaTests(InvoicingTestBase):
 
         self.assertFalse(resultado.enviado)
         self.assertEqual(resultado.error, 'Graph caído.')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Carga segura de archivos (services_archivos.py) — punto 5: casos
+# adversariales, no solo felices.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CargarArchivoFacturaTests(InvoicingTestBase):
+    """
+    cargar_archivo_factura — reutiliza services_validacion._parse_xml_
+    seguro (sesión 59, protección XXE ya validada ahí) sin duplicarla.
+    OneDriveClient mockeado en la mayoría de los tests (la subida real
+    solo importa en el camino feliz; los casos adversariales rechazan
+    ANTES de llegar a OneDrive, así que ni siquiera lo invocan) — una
+    verificación manual real contra OneDrive se hizo aparte, no repetida
+    en cada corrida de `manage.py test`.
+    """
+
+    def _factura_borrador(self, estado='BORRADOR', **extra):
+        return self._crear_factura(estado=estado, **extra)
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_xml_valido_se_carga_y_calcula_hash_sha256(self, mock_cls):
+        mock_cls.return_value.upload_documento_factura.return_value = (
+            'https://onedrive.example.com/factura/xml'
+        )
+        factura = self._factura_borrador()
+        xml_valido = _leer_fixture('factura_sintetica_firmada.xml')
+        archivo = SimpleUploadedFile('factura.xml', xml_valido, content_type='application/xml')
+
+        sa.cargar_archivo_factura(factura, 'xml', archivo, self.proveedor)
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.xml_file, 'https://onedrive.example.com/factura/xml')
+        self.assertEqual(factura.hash_xml, hashlib.sha256(xml_valido).hexdigest())
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_pdf_valido_se_carga_y_calcula_hash_sha256(self, mock_cls):
+        mock_cls.return_value.upload_documento_factura.return_value = (
+            'https://onedrive.example.com/factura/pdf'
+        )
+        factura = self._factura_borrador()
+        pdf_valido = b'%PDF-1.4\n%contenido de prueba, no un PDF real completo\n%%EOF'
+        archivo = SimpleUploadedFile('factura.pdf', pdf_valido, content_type='application/pdf')
+
+        sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.pdf_file, 'https://onedrive.example.com/factura/pdf')
+        self.assertEqual(factura.hash_pdf, hashlib.sha256(pdf_valido).hexdigest())
+
+    def test_xml_malformado_rechaza_sin_guardar_nada(self):
+        """XML mal formado — debe rechazar sin guardar nada (punto 5)."""
+        factura = self._factura_borrador()
+        archivo = SimpleUploadedFile(
+            'factura.xml', b'<Invoice><etiqueta_sin_cerrar>', content_type='application/xml',
+        )
+
+        with self.assertRaises(ValidationError):
+            sa.cargar_archivo_factura(factura, 'xml', archivo, self.proveedor)
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.xml_file, '')
+        self.assertEqual(factura.hash_xml, '')
+
+    def test_exe_renombrado_a_xml_rechaza_por_contenido_real(self):
+        """.exe renombrado a .xml — debe rechazar por tipo real, no por extensión (punto 5)."""
+        factura = self._factura_borrador()
+        cabecera_pe = b'MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00' + b'\x00' * 100
+        archivo = SimpleUploadedFile('factura.xml', cabecera_pe, content_type='application/xml')
+
+        with self.assertRaises(ValidationError) as cm:
+            sa.cargar_archivo_factura(factura, 'xml', archivo, self.proveedor)
+        self.assertIn('XML válido', str(cm.exception))
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.xml_file, '')
+
+    def test_exe_renombrado_a_pdf_rechaza_por_firma_de_archivo(self):
+        """Mismo caso adversarial, aplicado a PDF (firma b'%PDF-' ausente)."""
+        factura = self._factura_borrador()
+        cabecera_pe = b'MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00' + b'\x00' * 100
+        archivo = SimpleUploadedFile('factura.pdf', cabecera_pe, content_type='application/pdf')
+
+        with self.assertRaises(ValidationError) as cm:
+            sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
+        self.assertIn('PDF válido', str(cm.exception))
+
+    def test_archivo_de_50mb_rechaza_por_tamano(self):
+        """Archivo de 50MB — debe rechazar por tamaño (límite 10MB, punto 5)."""
+        factura = self._factura_borrador()
+        contenido_grande = b'%PDF-' + b'0' * (50 * 1024 * 1024)
+        archivo = SimpleUploadedFile('factura.pdf', contenido_grande, content_type='application/pdf')
+
+        with self.assertRaises(ValidationError) as cm:
+            sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
+        self.assertIn('tamaño máximo', str(cm.exception))
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_intento_de_xxe_explicito_no_filtra_ningun_dato(self, mock_cls):
+        """
+        Intento de XXE explícito — mismo payload ya probado contra
+        services_validacion (sesión 59). Confirmado ahí (test_xxe_no_
+        resuelve_entidad_externa): con resolve_entities=False, lxml NO
+        resuelve la entidad pero TAMPOCO lanza — el parseo es válido, la
+        entidad simplemente queda sin expandir. Por eso esta carga NO se
+        "rechaza" en el sentido de una excepción (reutiliza el servicio
+        de validación tal cual, sin duplicarlo ni cambiar su
+        comportamiento ya validado) — lo que sí se confirma aquí es que
+        el contenido subido a OneDrive es el XML tal cual, con &xxe; sin
+        resolver, nunca el contenido real de /etc/passwd.
+        """
+        mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/x'
+        factura = self._factura_borrador()
+        malicioso = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE Invoice [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>'
+            b'<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">'
+            b'<cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">'
+            b'&xxe;</cbc:ID></Invoice>'
+        )
+        archivo = SimpleUploadedFile('factura.xml', malicioso, content_type='application/xml')
+
+        sa.cargar_archivo_factura(factura, 'xml', archivo, self.proveedor)
+
+        contenido_subido = mock_cls.return_value.upload_documento_factura.call_args.kwargs['contenido']
+        self.assertNotIn(b'root:', contenido_subido)  # /etc/passwd real empieza con esto
+        self.assertIn(b'&xxe;', contenido_subido)  # la entidad quedó sin resolver, tal cual
+
+    # ── Candado de servicio (punto 4): dueño + estado ───────────────────────
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_proveedor_no_dueno_rechaza(self, mock_cls):
+        factura = self._factura_borrador()
+        otro_proveedor = User.objects.create_user('otro_proveedor_test', password='x')
+        archivo = SimpleUploadedFile('factura.pdf', b'%PDF-1.4', content_type='application/pdf')
+
+        with self.assertRaises(ValidationError) as cm:
+            sa.cargar_archivo_factura(factura, 'pdf', archivo, otro_proveedor)
+        self.assertIn('dueño', str(cm.exception))
+        mock_cls.return_value.upload_documento_factura.assert_not_called()
+
+    def test_en_revision_compras_bloquea_la_carga(self):
+        factura = self._factura_borrador(estado='EN_REVISION_COMPRAS')
+        archivo = SimpleUploadedFile('factura.pdf', b'%PDF-1.4', content_type='application/pdf')
+
+        with self.assertRaises(ValidationError) as cm:
+            sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
+        self.assertIn('En Revisión', str(cm.exception))
+
+    def test_aprobada_compras_bloquea_la_carga(self):
+        factura = self._factura_borrador(estado='APROBADA_COMPRAS')
+        archivo = SimpleUploadedFile('factura.pdf', b'%PDF-1.4', content_type='application/pdf')
+
+        with self.assertRaises(ValidationError):
+            sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_observada_reabre_la_posibilidad_de_recargar(self, mock_cls):
+        """Si Compras observa la Factura, se reabre la carga (punto 4)."""
+        mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/x'
+        factura = self._factura_borrador(estado='OBSERVADA')
+        archivo = SimpleUploadedFile('factura.pdf', b'%PDF-1.4', content_type='application/pdf')
+
+        sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)  # no debe lanzar
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.pdf_file, 'https://onedrive.example.com/x')
+
+    def test_tipo_desconocido_rechaza(self):
+        factura = self._factura_borrador()
+        archivo = SimpleUploadedFile('factura.pdf', b'%PDF-1.4', content_type='application/pdf')
+
+        with self.assertRaises(ValidationError):
+            sa.cargar_archivo_factura(factura, 'formato_inventado', archivo, self.proveedor)
+
+
+class CargarArchivoFacturaLineaTests(InvoicingTestBase):
+
+    def _linea_con_retencion(self, ticket_u_mss_tdb='CDL'):
+        ticket = self._finalizar_ticket(ticket_u_mss_tdb, cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura(estado='BORRADOR')
+        return self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('10.0000'), aplica_retencion=True,
+        )
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_documento_retencion_valido_se_carga_y_calcula_hash(self, mock_cls):
+        mock_cls.return_value.upload_documento_factura.return_value = (
+            'https://onedrive.example.com/retencion'
+        )
+        linea = self._linea_con_retencion()
+        pdf_valido = b'%PDF-1.4\n%constancia de retencion de prueba\n%%EOF'
+        archivo = SimpleUploadedFile('retencion.pdf', pdf_valido, content_type='application/pdf')
+
+        sa.cargar_archivo_factura_linea(linea, 'retencion', archivo, self.proveedor)
+
+        linea.refresh_from_db()
+        self.assertEqual(linea.documento_retencion, 'https://onedrive.example.com/retencion')
+        self.assertEqual(linea.hash_documento_retencion, hashlib.sha256(pdf_valido).hexdigest())
+
+    def test_retencion_sin_aplica_retencion_rechaza(self):
+        """No tiene sentido cargar un documento de retención si la línea no la aplica."""
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura(estado='BORRADOR')
+        linea = self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('10.0000'), aplica_retencion=False,
+        )
+        archivo = SimpleUploadedFile('retencion.pdf', b'%PDF-1.4', content_type='application/pdf')
+
+        with self.assertRaises(ValidationError) as cm:
+            sa.cargar_archivo_factura_linea(linea, 'retencion', archivo, self.proveedor)
+        self.assertIn('aplica_retencion', str(cm.exception))
+
+    def test_exe_renombrado_rechaza_tambien_a_nivel_de_linea(self):
+        linea = self._linea_con_retencion()
+        cabecera_pe = b'MZ\x90\x00\x03\x00\x00\x00' + b'\x00' * 50
+        archivo = SimpleUploadedFile('retencion.pdf', cabecera_pe, content_type='application/pdf')
+
+        with self.assertRaises(ValidationError):
+            sa.cargar_archivo_factura_linea(linea, 'retencion', archivo, self.proveedor)
+
+
+class SubirArchivoFacturaEndpointTests(InvoicingTestBase):
+    """Vistas HTTP reales (apps/invoicing/views.py) — no solo el servicio."""
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_endpoint_real_carga_xml_correctamente(self, mock_cls):
+        mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/x'
+        factura = self._crear_factura(estado='BORRADOR')
+        xml_valido = _leer_fixture('factura_sintetica_firmada.xml')
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.post(
+            f'/invoicing/factura/{factura.id}/archivo/xml/',
+            data={'archivo': SimpleUploadedFile('f.xml', xml_valido, content_type='application/xml')},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['status'], 'success')
+        factura.refresh_from_db()
+        self.assertEqual(factura.xml_file, 'https://onedrive.example.com/x')
+
+    def test_endpoint_real_rechaza_xml_malformado_con_400(self):
+        factura = self._crear_factura(estado='BORRADOR')
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.post(
+            f'/invoicing/factura/{factura.id}/archivo/xml/',
+            data={'archivo': SimpleUploadedFile(
+                'f.xml', b'<no_cierra>', content_type='application/xml',
+            )},
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['status'], 'error')
+
+    def test_endpoint_real_404_para_proveedor_no_dueno(self):
+        factura = self._crear_factura(estado='BORRADOR')
+        otro_proveedor = User.objects.create_user('endpoint_otro_proveedor', password='x')
+        otro_proveedor.groups.add(self.g_proveedores)  # necesita pasar @proveedor_required
+
+        self.client.force_login(otro_proveedor)
+        resp = self.client.post(
+            f'/invoicing/factura/{factura.id}/archivo/xml/',
+            data={'archivo': SimpleUploadedFile(
+                'f.xml', b'<a/>', content_type='application/xml',
+            )},
+        )
+
+        # 404, no 403/400: no revela si la Factura existe a alguien que
+        # no es su dueño (mismo criterio ya establecido en
+        # subir_coa_linea_ajax, apps/appointments/views.py).
+        self.assertEqual(resp.status_code, 404)
+
+    def test_endpoint_rechaza_sin_archivo_adjunto(self):
+        factura = self._crear_factura(estado='BORRADOR')
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.post(f'/invoicing/factura/{factura.id}/archivo/xml/', data={})
+
+        self.assertEqual(resp.status_code, 400)

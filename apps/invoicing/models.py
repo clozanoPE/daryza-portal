@@ -18,6 +18,17 @@ migrar que no había ninguna `Factura` real (ni local ni en producción) —
 la migración de esquema (`0002_alter_factura_proveedor.py`) es una
 `AlterField` limpia, sin `RunPython` de datos.
 
+DECISIÓN — archivos como URLField, no FileField/MEDIA_ROOT (sesión de
+carga segura de archivos): los 5 campos de archivo (`xml_file`/
+`pdf_file`/`cdr_xml_file` en Factura; `documento_retencion`/
+`documento_detraccion` en FacturaLinea) se migraron de `FileField` a
+`URLField` — Railway usa un filesystem EFÍMERO (hallazgo ya documentado
+en la auditoría de despliegue, sesión 60: "MEDIA_ROOT en disco local,
+efímero en Railway"), así que cualquier archivo guardado ahí se perdería
+en el siguiente redeploy. Se sube a OneDrive (`apps/base/utils.py::
+OneDriveClient`, `apps/invoicing/services_archivos.py`) y se guarda el
+link — mismo patrón exacto que `TicketLineCOA.coa_url` (`apps.operations`).
+
 DECISIÓN — candado de unicidad de OC (FacturaOrdenCompra): NO se
 implementó como `UniqueConstraint` de Postgres con `condition`. Un índice
 parcial de Postgres solo puede referenciar columnas de la propia tabla
@@ -157,12 +168,13 @@ class Factura(TimeStampedModel):
         max_digits=10, decimal_places=6, null=True, blank=True,
     )
 
-    # Archivos + hash (llenados en Sub-fase 3.2 — sin validación todavía).
-    xml_file = models.FileField(upload_to='facturas/xml/%Y/%m/%d/', null=True, blank=True)
+    # Archivos (link de OneDrive, ver DECISIÓN arriba) + hash SHA-256,
+    # calculados/guardados por services_archivos.cargar_archivo_factura.
+    xml_file = models.URLField(max_length=500, blank=True, default='')
     hash_xml = models.CharField(max_length=128, blank=True, default='')
-    pdf_file = models.FileField(upload_to='facturas/pdf/%Y/%m/%d/', null=True, blank=True)
+    pdf_file = models.URLField(max_length=500, blank=True, default='')
     hash_pdf = models.CharField(max_length=128, blank=True, default='')
-    cdr_xml_file = models.FileField(upload_to='facturas/cdr/%Y/%m/%d/', null=True, blank=True)
+    cdr_xml_file = models.URLField(max_length=500, blank=True, default='')
     hash_cdr = models.CharField(max_length=128, blank=True, default='')
 
     estado_cdr = models.CharField(
@@ -284,14 +296,12 @@ class FacturaLinea(models.Model):
     )
 
     aplica_retencion = models.BooleanField(default=False)
-    documento_retencion = models.FileField(
-        upload_to='facturas/retenciones/%Y/%m/%d/', null=True, blank=True,
-    )
+    documento_retencion = models.URLField(max_length=500, blank=True, default='')
+    hash_documento_retencion = models.CharField(max_length=128, blank=True, default='')
 
     aplica_detraccion = models.BooleanField(default=False)
-    documento_detraccion = models.FileField(
-        upload_to='facturas/detracciones/%Y/%m/%d/', null=True, blank=True,
-    )
+    documento_detraccion = models.URLField(max_length=500, blank=True, default='')
+    hash_documento_detraccion = models.CharField(max_length=128, blank=True, default='')
 
     def save(self, *args, **kwargs):
         self.difiere_de_oc = (

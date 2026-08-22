@@ -13,7 +13,8 @@ urlpatterns = [
     path('home/', redirect_by_role, name='home_router'),
     path('appointments/', include('apps.appointments.urls')),
     path('operations/',  include('apps.operations.urls')),   
-    path('scheduling/',  include('apps.scheduling.urls')),   
+    path('scheduling/',  include('apps.scheduling.urls')),
+    path('invoicing/',   include('apps.invoicing.urls')),
     # Rutas de Autenticación
     path('login/', auth_views.LoginView.as_view(template_name='login.html'), name='login'),
     path('logout/', auth_views.LogoutView.as_view(), name='logout'),

@@ -104,6 +104,36 @@ class OneDriveClient:
             requests.post(url, headers=headers, json=data, timeout=10)
             current_path += f"/{part}"
 
+    def _subir_y_compartir(self, remote_full_path: str, contenido: bytes, content_type: str) -> str:
+        """
+        PUT del contenido a `remote_full_path` + creación del link
+        compartido de solo lectura — lógica común de upload_coa/
+        upload_documento_factura, extraída para no duplicarla (mismo
+        principio ya aplicado a la autenticación, apps/base/graph_auth.py).
+        """
+        token = self._get_token()
+        headers = {'Authorization': f'Bearer {token}', 'Content-Type': content_type}
+
+        upload_url = f"{self.GRAPH_BASE}/drives/{self.drive_id}/root:{remote_full_path}:/content"
+        # PUT simple para archivos < 4MB; usar upload session para >4MB
+        # (no aplica hoy: los límites de tamaño de esta app son de 5-10MB).
+        resp = requests.put(upload_url, headers=headers, data=contenido, timeout=30)
+        resp.raise_for_status()
+
+        item_id = resp.json().get('id')
+        if not item_id:
+            raise ValueError("OneDrive no retornó el ID del archivo subido.")
+
+        share_url = f"{self.GRAPH_BASE}/drives/{self.drive_id}/items/{item_id}/createLink"
+        share_resp = requests.post(
+            share_url,
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            json={'type': 'view', 'scope': 'organization'},
+            timeout=15,
+        )
+        share_resp.raise_for_status()
+        return share_resp.json()['link']['webUrl']
+
     def upload_coa(self, file_obj, ruc: str, oc_num: str, item_code: str, sede: str) -> str:
         """
         Sube un archivo COA a OneDrive en la ruta:
@@ -125,43 +155,32 @@ class OneDriveClient:
                          necesidad; sus URLs ya guardadas en TicketLineCOA
                          siguen apuntando ahí y siguen funcionando igual.
         """
-        token = self._get_token()
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/pdf',
-        }
-
-        # 1. Definir la ruta y asegurar que las carpetas existan
         folder_path = f"/VBS/{sede}/PROVEEDORES/{ruc}/{oc_num}"
         self._ensure_folder_path(folder_path)
-        
-        # 2. Subir el archivo
         remote_full_path = f"{folder_path}/{item_code}.pdf"
-        upload_url = f"{self.GRAPH_BASE}/drives/{self.drive_id}/root:{remote_full_path}:/content"
+        contenido = file_obj.read()
+        return self._subir_y_compartir(remote_full_path, contenido, 'application/pdf')
 
+    def upload_documento_factura(
+        self, contenido: bytes, sede: str, ruc: str, identificador: str,
+        nombre_archivo: str, content_type: str,
+    ) -> str:
+        """
+        Sube un archivo de Factura/FacturaLinea a OneDrive en la ruta:
+            /VBS/{SEDE}/FACTURAS/{RUC}/{IDENTIFICADOR}/{NOMBRE_ARCHIVO}
 
+        `identificador` puede incluir subcarpetas (ej. "42/L1" para la
+        línea 1 de la Factura 42) — se usa Factura.pk, no
+        numero_comprobante: ese campo puede seguir vacío mientras la
+        Factura está en BORRADOR (se completa recién en una fase
+        posterior a partir del propio XML), y el pk siempre existe.
 
-        # Leer contenido del archivo en memoria
-        file_content = file_obj.read()
-
-        # Subir (PUT simple para archivos < 4MB; usar upload session para >4MB)
-        resp = requests.put(upload_url, headers=headers, data=file_content, timeout=30)
-        resp.raise_for_status()
-
-        item_id = resp.json().get('id')
-        if not item_id:
-            raise ValueError("OneDrive no retornó el ID del archivo subido.")
-
-        # Crear link compartido de solo lectura
-        share_url = (
-            f"{self.GRAPH_BASE}/drives/{self.drive_id}/items/{item_id}/createLink"
-        )
-        share_resp = requests.post(
-            share_url,
-            headers={**headers, 'Content-Type': 'application/json'},
-            json={'type': 'view', 'scope': 'organization'},
-            timeout=15
-        )
-        share_resp.raise_for_status()
-        link = share_resp.json()['link']['webUrl']
-        return link
+        A diferencia de upload_coa, recibe `contenido` (bytes) ya leído
+        en vez de un file_obj — quien llama (services_archivos.py) ya
+        necesita los bytes en memoria para el hash SHA-256 y la
+        validación de contenido real, así que se leen una sola vez.
+        """
+        folder_path = f"/VBS/{sede}/FACTURAS/{ruc}/{identificador}"
+        self._ensure_folder_path(folder_path)
+        remote_full_path = f"{folder_path}/{nombre_archivo}"
+        return self._subir_y_compartir(remote_full_path, contenido, content_type)

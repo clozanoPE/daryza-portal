@@ -1,0 +1,192 @@
+# apps/invoicing/services_archivos.py
+"""
+Carga segura de archivos para Factura/FacturaLinea. Reutiliza
+services_validacion.py (Sub-fase 3.0, sesión 59) para el parseo seguro
+de XML (protección XXE ya validada ahí) sin duplicar esa lógica, y
+OneDriveClient (apps/base/utils.py) para el almacenamiento — mismo
+patrón ya usado para los COA de Ticket.
+
+DECISIÓN — tipo de contenido real sin python-magic: libmagic no está
+instalado (ni localmente ni en el entorno de despliegue) y agregarlo
+introduciría una dependencia de SISTEMA nueva (mismo tipo de riesgo ya
+documentado para xmlsec/lxml en la sesión 59 — un paquete Nix/Debian
+adicional a coordinar con el builder de Railway). Para los 2 formatos
+que este servicio acepta, hay una verificación de contenido real MÁS
+estricta que una firma MIME genérica, sin ninguna librería nueva:
+  - XML/CDR: debe parsear como XML bien formado con el parser seguro ya
+    validado (services_validacion._parse_xml_seguro — protección XXE
+    incluida). Un .exe renombrado a .xml no es XML válido en absoluto,
+    así que esto ya lo rechaza — cubre el caso adversarial pedido sin
+    necesitar libmagic.
+  - PDF: firma de archivo real — los primeros bytes deben ser
+    literalmente b'%PDF-' (el propio estándar del formato, lo que usa
+    cualquier herramienta de detección de tipo internamente para PDF),
+    sin la dependencia de sistema.
+
+DECISIÓN — tamaño máximo: 10 MB por archivo, igual para los 5 tipos
+(sugerido explícitamente, sin objeción).
+
+Candado de estado (pedido explícito, en el servicio no solo en la UI):
+solo el proveedor dueño de la Factura, mientras Factura.estado esté en
+BORRADOR u OBSERVADA, puede cargar/reemplazar archivos —
+EN_REVISION_COMPRAS/APROBADA_COMPRAS/CANCELADO bloquean la carga.
+"""
+import hashlib
+
+from django.core.exceptions import ValidationError
+
+from apps.base.utils import OneDriveClient
+
+from . import services_validacion as sv
+
+TAMANO_MAXIMO_BYTES = 10 * 1024 * 1024  # 10 MB
+
+ESTADOS_CARGA_PERMITIDA = {'BORRADOR', 'OBSERVADA'}
+
+# tipo -> config. Una sola tabla por cada "nivel" (Factura vs.
+# FacturaLinea) en vez de 5 funciones casi idénticas — la diferencia
+# real entre tipos del mismo nivel es solo esta configuración.
+CONFIG_FACTURA = {
+    'xml': {
+        'campo_archivo': 'xml_file', 'campo_hash': 'hash_xml',
+        'es_xml': True, 'extension': 'xml', 'content_type': 'application/xml',
+    },
+    'pdf': {
+        'campo_archivo': 'pdf_file', 'campo_hash': 'hash_pdf',
+        'es_xml': False, 'extension': 'pdf', 'content_type': 'application/pdf',
+    },
+    'cdr': {
+        'campo_archivo': 'cdr_xml_file', 'campo_hash': 'hash_cdr',
+        'es_xml': True, 'extension': 'xml', 'content_type': 'application/xml',
+    },
+}
+
+CONFIG_FACTURA_LINEA = {
+    'retencion': {
+        'campo_archivo': 'documento_retencion', 'campo_hash': 'hash_documento_retencion',
+        'es_xml': False, 'extension': 'pdf', 'content_type': 'application/pdf',
+        'campo_flag': 'aplica_retencion',
+    },
+    'detraccion': {
+        'campo_archivo': 'documento_detraccion', 'campo_hash': 'hash_documento_detraccion',
+        'es_xml': False, 'extension': 'pdf', 'content_type': 'application/pdf',
+        'campo_flag': 'aplica_detraccion',
+    },
+}
+
+
+def _validar_permiso_carga(factura, usuario):
+    """
+    Candado de servicio (punto 4, pedido explícito): dueño + estado. Se
+    llama SIEMPRE al inicio de cargar_archivo_factura/
+    cargar_archivo_factura_linea, sin importar si el llamador (la vista)
+    ya filtró por dueño en su queryset — defensa en profundidad, y la
+    única fuente de verdad real para cualquier consumidor futuro del
+    servicio que no pase por esa vista.
+    """
+    if not factura.proveedor.user_id or factura.proveedor.user_id != usuario.pk:
+        raise ValidationError("Solo el proveedor dueño de esta Factura puede cargar archivos.")
+    if factura.estado not in ESTADOS_CARGA_PERMITIDA:
+        raise ValidationError(
+            f"No se pueden cargar archivos con la Factura en estado '{factura.get_estado_display()}' "
+            "— solo mientras está en Borrador u Observada."
+        )
+
+
+def _leer_y_validar_tamano(archivo) -> bytes:
+    contenido = archivo.read()
+    if not contenido:
+        raise ValidationError("El archivo está vacío.")
+    if len(contenido) > TAMANO_MAXIMO_BYTES:
+        raise ValidationError(
+            f"El archivo supera el tamaño máximo permitido "
+            f"({TAMANO_MAXIMO_BYTES // (1024 * 1024)} MB)."
+        )
+    return contenido
+
+
+def _validar_contenido_real(contenido: bytes, es_xml: bool):
+    """Verificación de tipo por CONTENIDO real, no por extensión — ver docstring del módulo."""
+    if es_xml:
+        try:
+            sv._parse_xml_seguro(contenido)
+        except sv.ValidacionXMLError as e:
+            raise ValidationError(f"El archivo no es un XML válido: {e}")
+    else:
+        if not contenido.startswith(b'%PDF-'):
+            raise ValidationError("El archivo no es un PDF válido (firma de archivo incorrecta).")
+
+
+def cargar_archivo_factura(factura, tipo: str, archivo, usuario):
+    """
+    Valida y carga uno de los 3 archivos a nivel de Factura (xml/pdf/cdr).
+    Guarda el link de OneDrive + hash SHA-256 en los campos
+    correspondientes. Lanza ValidationError en cualquier rechazo, sin
+    tocar la BD ni subir nada a OneDrive si la validación falla.
+    """
+    _validar_permiso_carga(factura, usuario)
+
+    config = CONFIG_FACTURA.get(tipo)
+    if config is None:
+        raise ValidationError(f"Tipo de archivo desconocido: '{tipo}'.")
+
+    contenido = _leer_y_validar_tamano(archivo)
+    _validar_contenido_real(contenido, config['es_xml'])
+    hash_sha256 = hashlib.sha256(contenido).hexdigest()
+
+    onedrive = OneDriveClient()
+    ruc = factura.proveedor.ruc or factura.proveedor.sap_card_code
+    url = onedrive.upload_documento_factura(
+        contenido=contenido,
+        sede=factura.sede.codigo,
+        ruc=ruc,
+        identificador=str(factura.pk),
+        nombre_archivo=f"{tipo}.{config['extension']}",
+        content_type=config['content_type'],
+    )
+
+    setattr(factura, config['campo_archivo'], url)
+    setattr(factura, config['campo_hash'], hash_sha256)
+    factura.save(update_fields=[config['campo_archivo'], config['campo_hash'], 'updated_at'])
+    return factura
+
+
+def cargar_archivo_factura_linea(factura_linea, tipo: str, archivo, usuario):
+    """
+    Valida y carga uno de los 2 archivos a nivel de FacturaLinea
+    (retencion/detraccion). Exige que la bandera correspondiente
+    (aplica_retencion/aplica_detraccion) ya esté activa — no tiene
+    sentido cargar un documento de retención en una línea que no la
+    aplica.
+    """
+    factura = factura_linea.factura
+    _validar_permiso_carga(factura, usuario)
+
+    config = CONFIG_FACTURA_LINEA.get(tipo)
+    if config is None:
+        raise ValidationError(f"Tipo de archivo desconocido: '{tipo}'.")
+    if not getattr(factura_linea, config['campo_flag']):
+        raise ValidationError(
+            f"Esta línea no tiene {config['campo_flag']}=True — no corresponde cargar este documento."
+        )
+
+    contenido = _leer_y_validar_tamano(archivo)
+    _validar_contenido_real(contenido, config['es_xml'])
+    hash_sha256 = hashlib.sha256(contenido).hexdigest()
+
+    onedrive = OneDriveClient()
+    ruc = factura.proveedor.ruc or factura.proveedor.sap_card_code
+    identificador = f"{factura.pk}/L{factura_linea.po_line.line_num}"
+    url = onedrive.upload_documento_factura(
+        contenido=contenido,
+        sede=factura.sede.codigo,
+        ruc=ruc,
+        identificador=identificador,
+        nombre_archivo=f"{tipo}.{config['extension']}",
+        content_type=config['content_type'],
+    )
+
+    setattr(factura_linea, config['campo_archivo'], url)
+    setattr(factura_linea, config['campo_hash'], hash_sha256)
+    factura_linea.save(update_fields=[config['campo_archivo'], config['campo_hash']])
+    return factura_linea
