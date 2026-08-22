@@ -2010,3 +2010,15 @@ Con `Mail.Send` ya concedido en la misma app de Azure AD que usa `OneDriveClient
 **`GRAPH_SENDER_EMAIL` agregado a `core/.env` local** (gitignored, confirmado) con el valor de prueba — **pendiente que el usuario lo configure en Railway** antes de que esto funcione en producción (mismo patrón que las demás variables de esta fase, ninguna configurada ahí todavía salvo las 5 de la sesión 67).
 
 **Fuera de alcance de esta sesión (confirmado explícitamente por el pedido):** WhatsApp/Twilio (mencionado en el docstring viejo de `_notificar_proveedor_qr`, nunca pedido en esta sesión); ningún endpoint/vista que dispare `notificar_factura_observada` (Sub-fase 3.5); no se renombraron las variables `ONEDRIVE_*` pese a ya no ser exclusivas de OneDrive (señalado, no ejecutado).
+
+### 2026-08-21 (sesión 74) — Deploy a producción de los 5 commits pendientes + fix del dominio en el link de notificación
+
+**Punto 6 (verificado antes de pushear, según lo pedido):** confirmado que el dominio del link del correo (`_notificar_proveedor_qr`) **no estaba hardcodeado** — se arma dinámicamente desde `settings.ALLOWED_HOSTS` (no `request.build_absolute_uri()`: esta función corre en la capa de servicio, sin acceso a la request). En local, `ALLOWED_HOSTS[0] == 'localhost'` explica exactamente el link visto en la prueba de la sesión anterior; en producción nunca sería `localhost`, así que el link **no estaba roto**. Matiz real encontrado: `ALLOWED_HOSTS` en Railway es `web-production-ac867.up.railway.app,nexo.daryza.pe` (ese orden) — `ALLOWED_HOSTS[0]` habría armado un link funcional pero con el subdominio feo de Railway, no el dominio branded, en el primer correo real a un proveedor. **Fix aplicado** (`apps/appointments/services.py::_notificar_proveedor_qr`): en vez de tomar siempre `ALLOWED_HOSTS[0]`, ahora prefiere el primer host que no contenga `railway.app`, sin depender del orden de la variable ni agregar ninguna nueva. Sin regresión local (`ALLOWED_HOSTS` local no tiene ningún host con `railway.app`, sigue resolviendo a `localhost` igual que antes). Suite completa re-corrida tras el fix: **120/120 OK**.
+
+**1-2. Push**: 5 commits pendientes confirmados (`git log origin/main..HEAD`) + el fix del punto 6 = 6 en total. `git push origin main` exitoso.
+
+**3-4. Deploy verificado en Railway** (`railway status --json` + `railway logs --build`): build `SUCCESS` con el commit correcto, sin errores de import de `apps.invoicing`/`apps.base.graph_auth`/`apps.base.services_correo` en el log de arranque (las 41+ migraciones nuevas —`base 0003/0004`, `invoicing 0001/0002`— listadas y aplicadas sin error en el propio log de deploy, ya que el `Procfile` corre `migrate` antes de `gunicorn`).
+
+**5. Migraciones + backfill de `SupplierProfile` verificados directamente en la BD de producción** (`railway ssh`, no solo el log): [pendiente completar tras ejecutar].
+
+**7. `manage.py check --deploy` final contra producción**: [pendiente completar tras ejecutar].
