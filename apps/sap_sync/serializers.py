@@ -1,6 +1,7 @@
 # apps/sap_sync/serializers.py
 from rest_framework import serializers
 from django.db import transaction
+from apps.base.supplier_sync import sincronizar_supplier_profile
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 class PurchaseOrderLineSerializer(serializers.ModelSerializer):
@@ -57,6 +58,15 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
             purchase_order, _created = PurchaseOrder.objects.update_or_create(
                 doc_entry=doc_entry,
                 defaults=validated_data
+            )
+
+            # 1b. Upsert de SupplierProfile (sesión: SupplierProfile mínimo)
+            # — sin endpoint separado todavía, aprovecha que card_code/
+            # card_name/e_mail ya vienen en este mismo payload.
+            sincronizar_supplier_profile(
+                card_code=purchase_order.card_code,
+                card_name=purchase_order.card_name,
+                e_mail=purchase_order.e_mail,
             )
 
             # 2. Upsert de líneas, una por una, por (purchase_order, line_num)

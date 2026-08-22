@@ -1,4 +1,5 @@
 # apps/base/models.py
+from django.conf import settings
 from django.db import models
 
 class TimeStampedModel(models.Model):
@@ -54,3 +55,62 @@ class Sede(TimeStampedModel):
         verbose_name = "Sede"
         verbose_name_plural = "Sedes"
         ordering = ['nombre']
+
+
+class SupplierProfile(TimeStampedModel):
+    """
+    Versión mínima del perfil de proveedor — desbloquea `Factura.proveedor`
+    (apps.invoicing) sin depender de `auth.User` directo. Vive en
+    `apps.base` por el mismo motivo que `Sede`/`filters.py`/`reporting.py`:
+    lo consumen más de una app de negocio (`apps.sap_sync`, que lo crea/
+    actualiza en cada sync de OC — ver `apps/base/supplier_sync.py` — y
+    `apps.invoicing`, que lo referencia).
+
+    `user` es NULLABLE a propósito: un `SupplierProfile` nace del sync de
+    OC (sin ninguna cuenta de Portal todavía) y se vincula a un `User`
+    real recién en una fase futura de activación (Microsoft Graph
+    Mail.Send, panel de administración — explícitamente NO parte de esta
+    sesión). `on_delete=SET_NULL`: el perfil (y cualquier Factura que lo
+    referencie con PROTECT) sobrevive si la cuenta de Portal se elimina.
+
+    `ruc` se puebla con el mismo valor que `sap_card_code` al sincronizar
+    (ver `supplier_sync.py`) — el propio código del proyecto ya trata
+    `card_code`/`username` como "ruc_proveedor" sin quitarle ningún
+    prefijo (`apps/appointments/views.py::PortalProveedorView`, línea
+    `ruc_proveedor = self.request.user.username`), así que no hay
+    evidencia de ninguna transformación adicional necesaria — si SAP
+    codifica el RUC real de otra forma, corregirlo es una tarea de una
+    fase futura con panel de administración, no algo para asumir aquí.
+    """
+    ESTADO_ACTIVO = 'ACTIVO'
+    ESTADO_INACTIVO = 'INACTIVO'
+    ESTADO_SUSPENDIDO = 'SUSPENDIDO'
+    ESTADO_CHOICES = [
+        (ESTADO_ACTIVO, 'Activo'),
+        (ESTADO_INACTIVO, 'Inactivo'),
+        (ESTADO_SUSPENDIDO, 'Suspendido'),
+    ]
+
+    ruc = models.CharField(max_length=50, blank=True, default='')
+    razon_social = models.CharField(max_length=255, blank=True, default='')
+    correo_electronico = models.CharField(max_length=255, blank=True, default='')
+    sap_card_code = models.CharField(
+        max_length=50, unique=True,
+        help_text="CardCode de SAP (mismo valor que PurchaseOrder.card_code).",
+    )
+    estado = models.CharField(max_length=15, choices=ESTADO_CHOICES, default=ESTADO_ACTIVO)
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='supplier_profile',
+        help_text="Cuenta de Portal vinculada. Nulo hasta que exista un flujo de activación.",
+    )
+
+    def __str__(self):
+        return f"{self.razon_social or self.sap_card_code} [{self.estado}]"
+
+    class Meta:
+        verbose_name = "Perfil de Proveedor"
+        verbose_name_plural = "Perfiles de Proveedor"
+        ordering = ['razon_social']

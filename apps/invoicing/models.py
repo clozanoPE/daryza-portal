@@ -7,15 +7,16 @@ services_validacion.py desde la sesión anterior) ni endpoints todavía
 (Sub-fase 3.2/3.3). El único servicio implementado en esta fase es el
 candado de saldo por línea (apps/invoicing/services.py).
 
-DECISIÓN — proveedor (Factura.proveedor): se investigó el proyecto
-completo (grep de "SupplierProfile" y de cualquier app de perfil de
-proveedor) antes de decidir. No existe ninguna app/modelo de perfil de
-proveedor — "Fase 1 de proveedores" no se ha construido todavía. Se usa
-directamente `settings.AUTH_USER_MODEL` (mismo patrón que
-`Appointment.user`), con un TODO explícito: si en el futuro se construye
-`SupplierProfile`, este campo debe migrarse de User a esa FK (requerirá
-una migración de datos, no solo de esquema, para mapear cada Factura
-existente a su SupplierProfile correspondiente).
+DECISIÓN — proveedor (Factura.proveedor): reemplazado por FK a
+`apps.base.SupplierProfile` (sesión posterior a la creación de este
+modelo). El TODO original de este docstring ("si se construye
+SupplierProfile, migrar de User a esa FK") ya se resolvió — el modelo
+mínimo de `SupplierProfile` se construyó específicamente para esto, con
+`sap_card_code` sincronizado automáticamente desde `apps.sap_sync` en
+cada OC entrante (ver `apps/base/supplier_sync.py`). Confirmado antes de
+migrar que no había ninguna `Factura` real (ni local ni en producción) —
+la migración de esquema (`0002_alter_factura_proveedor.py`) es una
+`AlterField` limpia, sin `RunPython` de datos.
 
 DECISIÓN — candado de unicidad de OC (FacturaOrdenCompra): NO se
 implementó como `UniqueConstraint` de Postgres con `condition`. Un índice
@@ -36,7 +37,7 @@ estructuralmente idéntico de "OC ya en uso" en una Appointment (sesión
 from django.conf import settings
 from django.db import models
 
-from apps.base.models import Sede, TimeStampedModel
+from apps.base.models import Sede, SupplierProfile, TimeStampedModel
 from apps.operations.models import EntradaMercaderia
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
@@ -104,13 +105,11 @@ class Factura(TimeStampedModel):
         (5, 'Otros gastos'),
     ]
 
-    # TODO (migración futura): reemplazar por FK a SupplierProfile cuando
-    # esa app exista — ver docstring del módulo.
     proveedor = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        SupplierProfile,
         on_delete=models.PROTECT,
         related_name='facturas',
-        help_text="Usuario proveedor (grupo PROVEEDORES) dueño de esta factura.",
+        help_text="Perfil de proveedor dueño de esta factura.",
     )
     sede = models.ForeignKey(
         Sede, on_delete=models.PROTECT, related_name='facturas',

@@ -34,7 +34,7 @@ from django.test import SimpleTestCase, TransactionTestCase
 
 from apps.appointments.models import AppointmentSlot
 from apps.appointments.services import AppointmentService
-from apps.base.models import Sede
+from apps.base.models import Sede, SupplierProfile
 from apps.invoicing import services_validacion as sv
 from apps.operations.models import Ticket, TicketLineInspection
 from apps.operations.services import OperationsService
@@ -257,10 +257,23 @@ class InvoicingTestBase(OperationsTestBase):
 
     def _crear_factura(self, estado='BORRADOR', proveedor=None):
         return Factura.objects.create(
-            proveedor=proveedor or self.proveedor,
+            proveedor=proveedor or self._supplier_profile(),
             sede=self._sede(),
             estado=estado,
         )
+
+    def _supplier_profile(self):
+        """
+        SupplierProfile vinculado a self.proveedor (User creado por
+        OperationsTestBase) — Factura.proveedor es FK a SupplierProfile,
+        no a User directo, desde la migración de esta sesión.
+        """
+        from apps.base.models import SupplierProfile
+        perfil, _ = SupplierProfile.objects.get_or_create(
+            sap_card_code=self.proveedor.username,
+            defaults={'ruc': self.proveedor.username, 'user': self.proveedor},
+        )
+        return perfil
 
     def _sede(self):
         from apps.base.models import Sede
@@ -494,7 +507,11 @@ class ValidarOcDisponibleConcurrenciaTests(TransactionTestCase):
 
     def setUp(self):
         Sede.objects.get_or_create(codigo='LURIN', defaults={'nombre': 'Planta Lurín'})
-        self.proveedor = User.objects.create_user('concurrencia_test_proveedor', password='x')
+        proveedor_user = User.objects.create_user('concurrencia_test_proveedor', password='x')
+        self.supplier_profile = SupplierProfile.objects.create(
+            sap_card_code='concurrencia_test_proveedor', ruc='concurrencia_test_proveedor',
+            user=proveedor_user,
+        )
         self.po = PurchaseOrder.objects.create(
             doc_entry=888777666, doc_num=888777666, card_code='CONC', card_name='CONCURRENCIA SAC',
             e_mail='concurrencia@test.com', status='PENDIENTE', u_mss_tdb='CDL',
@@ -510,7 +527,7 @@ class ValidarOcDisponibleConcurrenciaTests(TransactionTestCase):
                     InvoicingService.validar_oc_disponible(po)
                     time.sleep(retraso_antes_de_comitear)
                     factura = Factura.objects.create(
-                        proveedor=self.proveedor, sede=Sede.objects.get(codigo='LURIN'),
+                        proveedor=self.supplier_profile, sede=Sede.objects.get(codigo='LURIN'),
                         estado='BORRADOR',
                     )
                     FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
@@ -578,6 +595,9 @@ class SaldoDisponibleConcurrenciaTests(TransactionTestCase):
         g_compras, _ = Group.objects.get_or_create(name='COMPRAS')
 
         self.proveedor = User.objects.create_user('saldo_conc_proveedor', password='x')
+        self.supplier_profile = SupplierProfile.objects.create(
+            sap_card_code='saldo_conc_proveedor', ruc='saldo_conc_proveedor', user=self.proveedor,
+        )
         self.u_compras = User.objects.create_user('saldo_conc_compras', password='x')
         self.u_compras.groups.add(g_compras)
         u_vigilancia = User.objects.create_user('saldo_conc_vigilancia', password='x')
@@ -636,7 +656,7 @@ class SaldoDisponibleConcurrenciaTests(TransactionTestCase):
                             f"Saldo insuficiente: se pidió 60, disponible {saldo}."
                         )
                     factura = Factura.objects.create(
-                        proveedor=self.proveedor, sede=Sede.objects.get(codigo='LURIN'),
+                        proveedor=self.supplier_profile, sede=Sede.objects.get(codigo='LURIN'),
                         estado='BORRADOR',
                     )
                     FacturaLinea.objects.create(

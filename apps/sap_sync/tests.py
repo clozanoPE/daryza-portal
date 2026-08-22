@@ -25,6 +25,11 @@ garantizando la constraint de BD + update_or_create).
 Se prueba contra el endpoint HTTP real (APIClient + Token de DRF), no
 llamando al serializer directo, para que la suite ejercite exactamente lo
 que golpea el daemon VB.NET en producción.
+
+SyncOCCreaSupplierProfileTests (sesión posterior, SupplierProfile mínimo):
+confirma que el mismo POST real a /sync-oc/ crea/actualiza un
+SupplierProfile por card_code, sin necesitar ningún endpoint aparte —
+ver apps/base/supplier_sync.py.
 """
 from decimal import Decimal
 
@@ -35,6 +40,7 @@ from django.urls import reverse
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
+from apps.base.models import SupplierProfile
 from apps.operations.models import Ticket, TicketLineInspection, TicketLineCOA
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
@@ -201,3 +207,73 @@ class SyncOCUpsertLineaPorLineaTests(TestCase):
 
         with self.assertRaises(ProtectedError):
             self.po.lines.all().delete()
+
+
+class SyncOCCreaSupplierProfileTests(TestCase):
+    """
+    El daemon nunca llama a ningún endpoint separado para proveedores —
+    el mismo POST a /sync-oc/ (que ya trae card_code/card_name/e_mail)
+    debe upsertear el SupplierProfile correspondiente.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.daemon_user = User.objects.create_user(username='daemon_test_supplier', password='x')
+        cls.token = Token.objects.create(user=cls.daemon_user)
+        cls.url = reverse('sync-oc-list')
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
+
+    def _payload(self, doc_entry, doc_num, card_code, card_name, e_mail):
+        return {
+            'doc_entry': doc_entry, 'doc_num': doc_num,
+            'card_code': card_code, 'card_name': card_name, 'e_mail': e_mail,
+            'status': 'O', 'u_mss_tdb': 'CDL',
+            'lines': [
+                {'line_num': 0, 'item_code': 'ITEM-SP', 'description': 'Item',
+                 'quantity_sap': '10.0000', 'und_medida': 'UND'},
+            ],
+        }
+
+    def test_primer_sync_de_un_card_code_nuevo_crea_supplier_profile(self):
+        payload = self._payload(95001, 195001, 'P900010', 'PROVEEDOR SYNC TEST SAC', 'sync@test.com')
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+
+        perfil = SupplierProfile.objects.get(sap_card_code='P900010')
+        self.assertEqual(perfil.razon_social, 'PROVEEDOR SYNC TEST SAC')
+        self.assertEqual(perfil.correo_electronico, 'sync@test.com')
+        self.assertEqual(perfil.ruc, 'P900010')
+        self.assertEqual(perfil.estado, SupplierProfile.ESTADO_ACTIVO)
+        self.assertIsNone(perfil.user)
+
+    def test_resync_refresca_razon_social_y_correo_sin_tocar_estado_ni_user(self):
+        proveedor_user = User.objects.create_user(username='P900011', password='x')
+        perfil = SupplierProfile.objects.create(
+            sap_card_code='P900011', ruc='P900011', razon_social='NOMBRE VIEJO',
+            correo_electronico='viejo@test.com', estado=SupplierProfile.ESTADO_SUSPENDIDO,
+            user=proveedor_user,
+        )
+
+        payload = self._payload(95002, 195002, 'P900011', 'NOMBRE ACTUALIZADO SAC', 'nuevo@test.com')
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+
+        perfil.refresh_from_db()
+        # Los datos maestros de SAP se refrescan...
+        self.assertEqual(perfil.razon_social, 'NOMBRE ACTUALIZADO SAC')
+        self.assertEqual(perfil.correo_electronico, 'nuevo@test.com')
+        # ...pero estado/user (decisiones que un humano tomó) NUNCA se pisan
+        # por un resync automático de OC.
+        self.assertEqual(perfil.estado, SupplierProfile.ESTADO_SUSPENDIDO)
+        self.assertEqual(perfil.user_id, proveedor_user.id)
+
+    def test_dos_ocs_del_mismo_card_code_no_duplican_el_perfil(self):
+        payload_a = self._payload(95003, 195003, 'P900012', 'PROVEEDOR DOS OC', 'dosoc@test.com')
+        payload_b = self._payload(95004, 195004, 'P900012', 'PROVEEDOR DOS OC', 'dosoc@test.com')
+        self.client.post(self.url, payload_a, format='json')
+        self.client.post(self.url, payload_b, format='json')
+
+        self.assertEqual(SupplierProfile.objects.filter(sap_card_code='P900012').count(), 1)
