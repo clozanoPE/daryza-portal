@@ -18,10 +18,24 @@ estricta que una firma MIME genérica, sin ninguna librería nueva:
     incluida). Un .exe renombrado a .xml no es XML válido en absoluto,
     así que esto ya lo rechaza — cubre el caso adversarial pedido sin
     necesitar libmagic.
-  - PDF: firma de archivo real — los primeros bytes deben ser
-    literalmente b'%PDF-' (el propio estándar del formato, lo que usa
-    cualquier herramienta de detección de tipo internamente para PDF),
-    sin la dependencia de sistema.
+  - PDF: 2 pasos. (1) firma de archivo — los primeros bytes deben ser
+    literalmente b'%PDF-'; (2) estructura completa — se abre con pypdf
+    (puro Python, sin dependencia de sistema) y se recorre el árbol de
+    páginas. Un archivo con la firma correcta pero corrupto/truncado
+    (pasaba el paso 1 solo) ahora se rechaza también — cierre de la
+    Sub-fase 3.2. pypdf sí se agregó a requirements.txt (a diferencia de
+    libmagic, es una librería puro-Python, sin el mismo riesgo de
+    despliegue).
+
+DECISIÓN — la validación con pypdf aplica a los 3 slots de PDF (Factura.
+pdf_file y también FacturaLinea.documento_retencion/documento_detraccion),
+no solo a Factura.pdf_file como se nombró explícitamente en el pedido:
+los 3 son "un PDF cargado" con el mismo riesgo de corrupción/truncamiento,
+y la función que valida contenido (_validar_contenido_real) ya es
+compartida por los 5 tipos — limitar la verificación estructural a un
+único slot habría exigido un parámetro nuevo solo para dejar 2 de los 3
+PDF con una validación deliberadamente más débil, sin ninguna razón de
+negocio para esa asimetría.
 
 DECISIÓN — tamaño máximo: 10 MB por archivo, igual para los 5 tipos
 (sugerido explícitamente, sin objeción).
@@ -32,8 +46,11 @@ BORRADOR u OBSERVADA, puede cargar/reemplazar archivos —
 EN_REVISION_COMPRAS/APROBADA_COMPRAS/CANCELADO bloquean la carga.
 """
 import hashlib
+import io
 
+import pypdf
 from django.core.exceptions import ValidationError
+from pypdf.errors import PyPdfError
 
 from apps.base.utils import OneDriveClient
 
@@ -115,6 +132,11 @@ def _validar_contenido_real(contenido: bytes, es_xml: bool):
     else:
         if not contenido.startswith(b'%PDF-'):
             raise ValidationError("El archivo no es un PDF válido (firma de archivo incorrecta).")
+        try:
+            lector = pypdf.PdfReader(io.BytesIO(contenido))
+            len(lector.pages)  # fuerza a recorrer el árbol de páginas, no solo abrir el archivo
+        except PyPdfError as e:
+            raise ValidationError(f"El archivo no es un PDF válido o está corrupto: {e}")
 
 
 def cargar_archivo_factura(factura, tipo: str, archivo, usuario):

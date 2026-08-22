@@ -788,7 +788,11 @@ class CargarArchivoFacturaTests(InvoicingTestBase):
             'https://onedrive.example.com/factura/pdf'
         )
         factura = self._factura_borrador()
-        pdf_valido = b'%PDF-1.4\n%contenido de prueba, no un PDF real completo\n%%EOF'
+        # PDF ESTRUCTURALMENTE válido (no solo con la firma correcta) —
+        # desde que se agregó la validación con pypdf (cierre de la
+        # Sub-fase 3.2), un PDF fabricado a mano con solo la firma ya no
+        # basta para pasar el camino feliz.
+        pdf_valido = _leer_fixture('pdf_valido_minimo.pdf')
         archivo = SimpleUploadedFile('factura.pdf', pdf_valido, content_type='application/pdf')
 
         sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
@@ -833,6 +837,28 @@ class CargarArchivoFacturaTests(InvoicingTestBase):
         with self.assertRaises(ValidationError) as cm:
             sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
         self.assertIn('PDF válido', str(cm.exception))
+
+    def test_pdf_truncado_a_la_mitad_rechaza_pese_a_firma_valida(self):
+        """
+        Firma b'%PDF-' correcta al inicio, pero el archivo está cortado
+        a la mitad (corrupto) — antes del cierre de la Sub-fase 3.2 esto
+        pasaba la validación (solo se revisaba la firma); ahora pypdf
+        detecta que la estructura no cierra correctamente y rechaza.
+        """
+        factura = self._factura_borrador()
+        pdf_completo = _leer_fixture('pdf_valido_minimo.pdf')
+        pdf_truncado = pdf_completo[: len(pdf_completo) // 2]
+        self.assertTrue(pdf_truncado.startswith(b'%PDF-'))  # la firma SÍ sigue siendo válida
+
+        archivo = SimpleUploadedFile('factura.pdf', pdf_truncado, content_type='application/pdf')
+
+        with self.assertRaises(ValidationError) as cm:
+            sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)
+        self.assertIn('corrupto', str(cm.exception))
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.pdf_file, '')
+        self.assertEqual(factura.hash_pdf, '')
 
     def test_archivo_de_50mb_rechaza_por_tamano(self):
         """Archivo de 50MB — debe rechazar por tamaño (límite 10MB, punto 5)."""
@@ -908,7 +934,9 @@ class CargarArchivoFacturaTests(InvoicingTestBase):
         """Si Compras observa la Factura, se reabre la carga (punto 4)."""
         mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/x'
         factura = self._factura_borrador(estado='OBSERVADA')
-        archivo = SimpleUploadedFile('factura.pdf', b'%PDF-1.4', content_type='application/pdf')
+        archivo = SimpleUploadedFile(
+            'factura.pdf', _leer_fixture('pdf_valido_minimo.pdf'), content_type='application/pdf',
+        )
 
         sa.cargar_archivo_factura(factura, 'pdf', archivo, self.proveedor)  # no debe lanzar
 
@@ -939,7 +967,7 @@ class CargarArchivoFacturaLineaTests(InvoicingTestBase):
             'https://onedrive.example.com/retencion'
         )
         linea = self._linea_con_retencion()
-        pdf_valido = b'%PDF-1.4\n%constancia de retencion de prueba\n%%EOF'
+        pdf_valido = _leer_fixture('pdf_valido_minimo.pdf')
         archivo = SimpleUploadedFile('retencion.pdf', pdf_valido, content_type='application/pdf')
 
         sa.cargar_archivo_factura_linea(linea, 'retencion', archivo, self.proveedor)

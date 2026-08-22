@@ -1,0 +1,4 @@
+# Evita que Git aplique conversión de fin de línea (CRLF/LF) a archivos
+# binarios — core.autocrlf=true en este entorno corrompería un PDF real
+# (su estructura depende de offsets/longitudes de bytes exactos).
+*.pdf binary
