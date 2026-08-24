@@ -7,6 +7,18 @@ services_validacion.py desde la sesión anterior) ni endpoints todavía
 (Sub-fase 3.2/3.3). El único servicio implementado en esta fase es el
 candado de saldo por línea (apps/invoicing/services.py).
 
+DECISIÓN — Sub-fase 3.3 (validación de negocio sobre los 3 archivos):
+firma_valida/estado_cdr/importe_total_xml/moneda_xml/importe_no_coincide/
+mensaje_validacion_documentos se poblan automáticamente vía
+InvoicingService.procesar_validacion_documentos, disparado desde
+services_archivos.cargar_archivo_factura en cuanto xml_file/pdf_file/
+cdr_xml_file quedan los 3 presentes — no hace falta ningún endpoint nuevo
+para esto (Sub-fase 3.4/3.5, todavía sin construir). El candado real (no
+avanzar a EN_REVISION_COMPRAS con firma inválida/CDR rechazado/importe no
+coincide) vive en InvoicingService.enviar_a_revision — mismo principio ya
+establecido en este archivo: la máquina de estados de negocio la valida
+el servicio, no el modelo.
+
 DECISIÓN — proveedor (Factura.proveedor): reemplazado por FK a
 `apps.base.SupplierProfile` (sesión posterior a la creación de este
 modelo). El TODO original de este docstring ("si se construye
@@ -179,11 +191,44 @@ class Factura(TimeStampedModel):
 
     estado_cdr = models.CharField(
         max_length=10, choices=ESTADO_CDR_CHOICES, null=True, blank=True,
-        help_text="Resultado de services_validacion.extraer_estado_cdr (Sub-fase 3.2).",
+        help_text="Resultado de services_validacion.extraer_estado_cdr (Sub-fase 3.3).",
     )
     firma_valida = models.BooleanField(
         null=True, blank=True,
-        help_text="Resultado de services_validacion.validar_firma_xml (Sub-fase 3.2).",
+        help_text="Resultado de services_validacion.validar_firma_xml (Sub-fase 3.3).",
+    )
+
+    # Sub-fase 3.3: poblados por InvoicingService.procesar_validacion_
+    # documentos al completarse los 3 archivos (xml/pdf/cdr). importe_
+    # total_xml/moneda_xml son de solo REFERENCIA por ahora — el
+    # formulario del proveedor (Sub-fase 3.4) todavía no tiene un campo
+    # propio de importe declarado contra el cual comparar; cuando exista,
+    # se compara ahí. importe_no_coincide SÍ se calcula ya, contra la
+    # suma de FacturaLinea.cantidad*precio (ver services.py) — decisión
+    # de negocio confirmada explícitamente por el usuario: BLOQUEA el
+    # envío a revisión (InvoicingService.enviar_a_revision), mismo
+    # tratamiento que firma_valida/estado_cdr.
+    importe_total_xml = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="cac:LegalMonetaryTotal/cbc:PayableAmount extraído del XML. Referencia.",
+    )
+    moneda_xml = models.CharField(max_length=5, blank=True, default='')
+    importe_no_coincide = models.BooleanField(
+        default=False,
+        help_text=(
+            "True si importe_total_xml no coincide con la suma de "
+            "FacturaLinea.cantidad*precio ya cargadas (con tolerancia de "
+            "centavos). Bloquea el envío a revisión."
+        ),
+    )
+    mensaje_validacion_documentos = models.TextField(
+        blank=True, default='',
+        help_text=(
+            "Resumen legible de por qué firma_valida/estado_cdr/"
+            "importe_no_coincide quedaron como quedaron — para que la "
+            "razón del bloqueo (o de que todo esté OK) no quede oculta "
+            "en 3 campos sueltos."
+        ),
     )
 
     def __str__(self):

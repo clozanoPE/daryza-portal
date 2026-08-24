@@ -44,6 +44,13 @@ Candado de estado (pedido explícito, en el servicio no solo en la UI):
 solo el proveedor dueño de la Factura, mientras Factura.estado esté en
 BORRADOR u OBSERVADA, puede cargar/reemplazar archivos —
 EN_REVISION_COMPRAS/APROBADA_COMPRAS/CANCELADO bloquean la carga.
+
+Sub-fase 3.3: `cargar_archivo_factura` dispara automáticamente
+InvoicingService.procesar_validacion_documentos (apps/invoicing/
+services.py) en cuanto los 3 archivos de Factura (xml/pdf/cdr) quedan
+presentes, sin importar el orden en que se cargaron. `descargar_archivo_
+factura` (al final de este módulo) es lo que esa orquestación usa para
+re-obtener el contenido real del XML/CDR ya subidos.
 """
 import hashlib
 import io
@@ -170,7 +177,43 @@ def cargar_archivo_factura(factura, tipo: str, archivo, usuario):
     setattr(factura, config['campo_archivo'], url)
     setattr(factura, config['campo_hash'], hash_sha256)
     factura.save(update_fields=[config['campo_archivo'], config['campo_hash'], 'updated_at'])
+
+    # Sub-fase 3.3: apenas los 3 archivos de Factura quedan presentes
+    # (sin importar cuál de los 3 se acaba de subir), dispara la
+    # orquestación de validación de negocio. Import local (no a nivel de
+    # módulo) para no crear un ciclo con services.py, que a su vez llama
+    # de vuelta a este módulo (descargar_archivo_factura) — mismo
+    # principio ya usado por services.py::notificar_factura_observada
+    # para su import de apps.base.services_correo.
+    if factura.xml_file and factura.pdf_file and factura.cdr_xml_file:
+        from .services import InvoicingService
+        InvoicingService.procesar_validacion_documentos(factura)
+
     return factura
+
+
+def descargar_archivo_factura(factura, tipo: str) -> bytes:
+    """
+    Descarga el contenido real de un archivo de Factura ya cargado
+    (xml/pdf/cdr), reconstruyendo la misma ruta determinística que
+    `cargar_archivo_factura` usó para subirlo — usada por
+    InvoicingService.procesar_validacion_documentos (Sub-fase 3.3) para
+    re-obtener el XML/CDR y ejecutar la validación de negocio sobre su
+    contenido real (necesita los bytes crudos, no solo el link
+    compartido guardado en el campo — ver OneDriveClient._descargar).
+    """
+    config = CONFIG_FACTURA.get(tipo)
+    if config is None:
+        raise ValidationError(f"Tipo de archivo desconocido: '{tipo}'.")
+
+    onedrive = OneDriveClient()
+    ruc = factura.proveedor.ruc or factura.proveedor.sap_card_code
+    return onedrive.descargar_documento_factura(
+        sede=factura.sede.codigo,
+        ruc=ruc,
+        identificador=str(factura.pk),
+        nombre_archivo=f"{tipo}.{config['extension']}",
+    )
 
 
 def cargar_archivo_factura_linea(factura_linea, tipo: str, archivo, usuario):

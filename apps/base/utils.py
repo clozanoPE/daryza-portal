@@ -134,6 +134,35 @@ class OneDriveClient:
         share_resp.raise_for_status()
         return share_resp.json()['link']['webUrl']
 
+    def _descargar(self, remote_full_path: str) -> bytes:
+        """
+        GET del contenido crudo de `remote_full_path` (path-addressing de
+        Graph, mismo mecanismo que ya usa `_subir_y_compartir` para el
+        PUT) — deliberadamente NO se usa el webUrl del link compartido
+        guardado en BD para esto: ese link es de solo-lectura/preview
+        para un navegador humano, no un endpoint de descarga de bytes sin
+        resolución adicional. Reconstruir la ruta determinística (Sub-
+        fase 3.3, `descargar_documento_factura`) evita depender de un
+        `item_id` que `_subir_y_compartir` no retorna hoy.
+        """
+        token = self._get_token()
+        headers = {'Authorization': f'Bearer {token}'}
+        url = f"{self.GRAPH_BASE}/drives/{self.drive_id}/root:{remote_full_path}:/content"
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.content
+
+    def descargar_documento_factura(
+        self, sede: str, ruc: str, identificador: str, nombre_archivo: str,
+    ) -> bytes:
+        """
+        Descarga el contenido real (bytes) de un archivo de Factura ya
+        subido con `upload_documento_factura` — misma ruta determinística
+        que ese método usó para subirlo, ver su docstring.
+        """
+        remote_full_path = f"/VBS/{sede}/FACTURAS/{ruc}/{identificador}/{nombre_archivo}"
+        return self._descargar(remote_full_path)
+
     def upload_coa(self, file_obj, ruc: str, oc_num: str, item_code: str, sede: str) -> str:
         """
         Sube un archivo COA a OneDrive en la ruta:

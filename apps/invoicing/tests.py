@@ -16,9 +16,15 @@ archivo sí toca la base de datos):
      EntradaMercaderiaLinea real, la fuente de dato que saldo_disponible
      necesita (ver su docstring: nunca PurchaseOrderLine.quantity_sap).
 
-No cubre carga de archivos con hash (ya cubierto en la parte 1, salvo el
-hash en sí, que tampoco se implementó todavía) ni ningún endpoint
-(Sub-fase 3.2/3.3, todavía no existen).
+  3. Carga segura de archivos (services_archivos.py, Sub-fase 3.2) + los
+     2 endpoints HTTP reales que la consumen (views.py).
+
+  4. Sub-fase 3.3 (esta sesión): InvoicingService.procesar_validacion_
+     documentos (dispara automáticamente validar_firma_xml/extraer_
+     datos_factura/extraer_estado_cdr en cuanto los 3 archivos de una
+     Factura están completos) + enviar_a_revision (candado que bloquea
+     el avance a EN_REVISION_COMPRAS por firma inválida, CDR rechazado,
+     o importe del XML que no coincide con la suma de FacturaLinea).
 """
 import hashlib
 import os
@@ -746,6 +752,234 @@ class NotificarFacturaObservadaTests(InvoicingTestBase):
 
         self.assertFalse(resultado.enviado)
         self.assertEqual(resultado.error, 'Graph caído.')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sub-fase 3.3 — InvoicingService.procesar_validacion_documentos +
+# enviar_a_revision. OneDriveClient mockeado para AMBAS direcciones
+# (subida vía cargar_archivo_factura, descarga vía descargar_archivo_
+# factura que la orquestación usa para re-obtener el XML/CDR reales).
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ProcesarValidacionDocumentosTests(InvoicingTestBase):
+
+    def _mock_onedrive(self, mock_cls, xml_bytes: bytes, cdr_bytes: bytes):
+        mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/x'
+
+        def _descargar(sede, ruc, identificador, nombre_archivo):
+            if nombre_archivo.startswith('xml.'):
+                return xml_bytes
+            if nombre_archivo.startswith('cdr.'):
+                return cdr_bytes
+            raise AssertionError(f"Descarga inesperada de '{nombre_archivo}' en el test.")
+
+        mock_cls.return_value.descargar_documento_factura.side_effect = _descargar
+
+    def _cargar_los_3_archivos(self, factura, xml_bytes: bytes, cdr_bytes: bytes):
+        """
+        El PDF y el CDR se suben primero, y el XML AL FINAL — a propósito,
+        para confirmar que el trigger de procesar_validacion_documentos
+        no asume ningún orden fijo entre los 3 archivos (solo que los 3
+        terminen presentes).
+        """
+        sa.cargar_archivo_factura(
+            factura, 'pdf',
+            SimpleUploadedFile('f.pdf', _leer_fixture('pdf_valido_minimo.pdf'), content_type='application/pdf'),
+            self.proveedor,
+        )
+        sa.cargar_archivo_factura(
+            factura, 'cdr',
+            SimpleUploadedFile('c.xml', cdr_bytes, content_type='application/xml'),
+            self.proveedor,
+        )
+        sa.cargar_archivo_factura(
+            factura, 'xml',
+            SimpleUploadedFile('f.xml', xml_bytes, content_type='application/xml'),
+            self.proveedor,
+        )
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_firma_valida_y_cdr_aceptado_puebla_los_datos_y_permite_enviar_a_revision(self, mock_cls):
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        factura = self._crear_factura()
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertTrue(factura.firma_valida)
+        self.assertEqual(factura.estado_cdr, 'ACEPTADO')
+        self.assertEqual(factura.serie_comprobante, 'F001')
+        self.assertEqual(factura.numero_comprobante, '123')
+        self.assertEqual(factura.doc_cur, 'PEN')
+        self.assertEqual(factura.importe_total_xml, Decimal('1180.50'))
+        self.assertEqual(factura.moneda_xml, 'PEN')
+        # Sin FacturaLinea todavía (Sub-fase 3.4, sin construir) -> nada
+        # que comparar, no se marca el flag.
+        self.assertFalse(factura.importe_no_coincide)
+        self.assertIn('Importe: sin líneas cargadas todavía', factura.mensaje_validacion_documentos)
+
+        InvoicingService.enviar_a_revision(factura)  # no debe lanzar
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_trigger_no_depende_del_orden_en_que_se_completan_los_3_archivos(self, mock_cls):
+        """
+        _cargar_los_3_archivos ya sube pdf/cdr/xml en ese orden (el XML
+        al final) — este test además confirma explícitamente que subir
+        solo 1 o 2 de los 3 archivos NO dispara la población (factura.
+        firma_valida sigue en None).
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        factura = self._crear_factura()
+        sa.cargar_archivo_factura(
+            factura, 'pdf',
+            SimpleUploadedFile('f.pdf', _leer_fixture('pdf_valido_minimo.pdf'), content_type='application/pdf'),
+            self.proveedor,
+        )
+        factura.refresh_from_db()
+        self.assertIsNone(factura.firma_valida)  # todavía no se completaron los 3
+
+        sa.cargar_archivo_factura(
+            factura, 'cdr',
+            SimpleUploadedFile('c.xml', cdr_bytes, content_type='application/xml'),
+            self.proveedor,
+        )
+        factura.refresh_from_db()
+        self.assertIsNone(factura.firma_valida)  # todavía falta el xml
+
+        sa.cargar_archivo_factura(
+            factura, 'xml',
+            SimpleUploadedFile('f.xml', xml_bytes, content_type='application/xml'),
+            self.proveedor,
+        )
+        factura.refresh_from_db()
+        self.assertTrue(factura.firma_valida)  # ahora sí, los 3 están completos
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_firma_invalida_real_bloquea_el_envio_a_revision(self, mock_cls):
+        """
+        Caso de firma inválida REAL (no simulado con "sin firma" o un
+        booleano mockeado): factura_sintetica_alterada.xml es el mismo
+        comprobante firmado con PayableAmount modificado DESPUÉS de
+        firmar — xmlsec ejecuta la verificación criptográfica real
+        contra el certificado embebido y falla de verdad, el mismo
+        mecanismo que detectaría a un proveedor intentando inflar un
+        monto ya firmado (mismo fixture ya usado en la Sub-fase 3.0 a
+        nivel de services_validacion; aquí se ejercita a través de todo
+        el pipeline: carga -> descarga -> validación -> bloqueo).
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_alterada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        factura = self._crear_factura()
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertFalse(factura.firma_valida)
+        self.assertIn('INVÁLIDA', factura.mensaje_validacion_documentos)
+
+        with self.assertRaises(ValidationError) as cm:
+            InvoicingService.enviar_a_revision(factura)
+        self.assertIn('firma digital', str(cm.exception))
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'BORRADOR')  # no avanzó
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_cdr_rechazado_bloquea_el_envio_a_revision(self, mock_cls):
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_rechazado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        factura = self._crear_factura()
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertTrue(factura.firma_valida)  # la firma sí es válida — el bloqueo es solo por el CDR
+        self.assertEqual(factura.estado_cdr, 'RECHAZADO')
+
+        with self.assertRaises(ValidationError) as cm:
+            InvoicingService.enviar_a_revision(factura)
+        self.assertIn('RECHAZADO', str(cm.exception))
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'BORRADOR')
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_importe_no_coincide_marca_el_flag_y_bloquea_el_envio_a_revision(self, mock_cls):
+        """
+        Decisión de negocio confirmada explícitamente por el usuario:
+        importe_no_coincide SÍ bloquea el envío a revisión, no solo
+        marca el flag para que Compras lo vea después.
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')  # PayableAmount = 1180.50 PEN
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura()
+        # 10 * 50 = 500.00 — muy lejos de los 1180.50 declarados en el XML.
+        self._crear_factura_linea(factura, po_line, cantidad=Decimal('10.0000'), precio=Decimal('50.0000'))
+
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertTrue(factura.firma_valida)
+        self.assertEqual(factura.estado_cdr, 'ACEPTADO')
+        self.assertTrue(factura.importe_no_coincide)
+        self.assertIn('NO COINCIDE', factura.mensaje_validacion_documentos)
+
+        with self.assertRaises(ValidationError) as cm:
+            InvoicingService.enviar_a_revision(factura)
+        self.assertIn('importe', str(cm.exception).lower())
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'BORRADOR')
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_importe_coincidente_dentro_de_tolerancia_no_marca_el_flag(self, mock_cls):
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')  # PayableAmount = 1180.50 PEN
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura()
+        # 10 * 118.05 = 1180.50 exacto.
+        self._crear_factura_linea(factura, po_line, cantidad=Decimal('10.0000'), precio=Decimal('118.05'))
+
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertFalse(factura.importe_no_coincide)
+
+        InvoicingService.enviar_a_revision(factura)  # no debe lanzar
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+    def test_enviar_a_revision_rechaza_si_estado_no_es_borrador_ni_observada(self):
+        factura = self._crear_factura(estado='EN_REVISION_COMPRAS')
+        with self.assertRaises(ValidationError):
+            InvoicingService.enviar_a_revision(factura)
+
+    def test_enviar_a_revision_sin_archivos_completados_bloquea(self):
+        """
+        firma_valida sigue en None (nunca se completaron los 3 archivos)
+        -> `is not True` lo trata igual que False, bloquea con el mismo
+        mensaje.
+        """
+        factura = self._crear_factura()
+        with self.assertRaises(ValidationError) as cm:
+            InvoicingService.enviar_a_revision(factura)
+        self.assertIn('firma digital', str(cm.exception))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -3,9 +3,18 @@
 Sub-fase 3.1: servicio de cálculo de saldo por línea de OC + los 2
 candados de negocio que el usuario pidió explícitamente que vivieran en
 el servicio, no solo en el formulario (mismo principio ya establecido en
-OperationsService/AppointmentService en todo el proyecto). Sin
-orquestación de creación/aprobación de Factura todavía — eso es Sub-fase
-3.2/3.3/3.4, que consumirá estas funciones sin duplicar su lógica.
+OperationsService/AppointmentService en todo el proyecto).
+
+Sub-fase 3.3 (esta sesión): consume services_validacion.py (Sub-fase 3.0)
+para poblar los datos reales de la Factura una vez que sus 3 archivos
+están completos, y agrega el candado de envío a revisión
+(enviar_a_revision) — bloquea el avance a EN_REVISION_COMPRAS si la firma
+XML es inválida, el CDR fue RECHAZADO, o el importe del XML no coincide
+con el total de las líneas ya cargadas (decisión de negocio confirmada
+explícitamente por el usuario: BLOQUEA, no solo marca el flag).
+
+Todavía sin orquestación de creación de Factura/"Copiar de OC(s)" ni el
+flujo real de revisión Compras — eso es Sub-fase 3.4/3.5.
 
 Todos los métodos asumen que ya corren dentro de un transaction.atomic()
 abierto por el llamador (mismo criterio que el resto de servicios de la
@@ -16,11 +25,19 @@ alrededor no bloquea nada.
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.db.models import F, Sum
 
 from apps.operations.models import EntradaMercaderiaLinea
 from apps.sap_sync.models import PurchaseOrder
 
+from . import services_validacion as sv
 from .models import Factura, FacturaLinea
+
+# Tolerancia de redondeo al comparar importe_total_xml (2 decimales
+# reales en cualquier comprobante peruano) contra la suma calculada de
+# FacturaLinea (4 decimales de precisión interna) — evita falsos
+# positivos por diferencias de centavos que no son un error de negocio.
+TOLERANCIA_IMPORTE = Decimal('0.02')
 
 
 class InvoicingService:
@@ -202,3 +219,174 @@ class InvoicingService:
             asunto='[Daryza VBS] Factura observada — corrección requerida',
             cuerpo_html=cuerpo_html,
         )
+
+    @staticmethod
+    def _partir_serie_numero(numero_completo: str):
+        """
+        DatosFactura.numero llega como un único string ('F001-123', ver
+        cbc:ID de la fixture real de la Sub-fase 3.0) — Factura.
+        serie_comprobante/numero_comprobante son 2 campos separados
+        (max_length 10/20). Se parte por el primer '-'; si no hay
+        ninguno, se guarda todo como numero_comprobante y serie vacía en
+        vez de fallar (un XML con un formato de numeración distinto al
+        esperado no debería romper la carga del archivo).
+        """
+        if not numero_completo:
+            return '', ''
+        if '-' in numero_completo:
+            serie, numero = numero_completo.split('-', 1)
+            return serie[:10], numero[:20]
+        return '', numero_completo[:20]
+
+    @staticmethod
+    def procesar_validacion_documentos(factura):
+        """
+        Sub-fase 3.3: dispara la validación de negocio sobre los 3
+        archivos de una Factura (xml_file/pdf_file/cdr_xml_file) una vez
+        que los 3 están presentes — llamado automáticamente desde
+        services_archivos.cargar_archivo_factura, sin importar cuál de
+        los 3 archivos fue el que completó el set.
+
+        Descarga el contenido real de XML y CDR desde OneDrive
+        (services_archivos.descargar_archivo_factura — reconstruye la
+        ruta determinística, no depende del webUrl de solo-lectura
+        guardado en el campo) y puebla:
+
+            firma_valida                 <- validar_firma_xml(xml)
+            serie_comprobante/
+            numero_comprobante/
+            doc_cur/
+            importe_total_xml/
+            moneda_xml                   <- extraer_datos_factura(xml)
+            estado_cdr                   <- extraer_estado_cdr(cdr)
+            importe_no_coincide          <- importe_total_xml vs. suma
+                                             de FacturaLinea.cantidad*
+                                             precio ya cargadas (solo si
+                                             la Factura ya tiene líneas;
+                                             si todavía no tiene ninguna
+                                             —normal en BORRADOR antes de
+                                             la Sub-fase 3.4— no hay nada
+                                             que comparar, se deja en
+                                             False sin marcar)
+            mensaje_validacion_documentos <- resumen legible de las 3
+                                             validaciones, para que la
+                                             razón de un bloqueo (o de
+                                             que todo esté OK) no quede
+                                             oculta en 3 campos sueltos
+
+        No-op silencioso si todavía falta alguno de los 3 archivos —
+        permite invocarla también de forma defensiva/idempotente desde
+        cualquier punto que quiera forzar un recálculo, no solo desde el
+        trigger automático de la 3ª carga.
+
+        No captura errores de descarga/parseo — un archivo que ya pasó
+        `services_archivos._validar_contenido_real` (XML bien formado /
+        PDF con estructura válida) no debería fallar aquí salvo por un
+        problema real de red/Graph al día siguiente de haberse subido;
+        se prefiere que ese caso se vea como un error explícito en el
+        request que completó la 3ª carga, en vez de guardar un estado
+        a medias sin que nadie se entere.
+        """
+        from . import services_archivos as sa
+
+        if not (factura.xml_file and factura.pdf_file and factura.cdr_xml_file):
+            return
+
+        xml_bytes = sa.descargar_archivo_factura(factura, 'xml')
+        cdr_bytes = sa.descargar_archivo_factura(factura, 'cdr')
+
+        resultado_firma = sv.validar_firma_xml(xml_bytes)
+        datos_factura = sv.extraer_datos_factura(xml_bytes)
+        estado_cdr = sv.extraer_estado_cdr(cdr_bytes)
+
+        serie, numero = InvoicingService._partir_serie_numero(datos_factura.numero)
+
+        mensajes = []
+        if resultado_firma.valido:
+            mensajes.append("Firma XML: válida.")
+        else:
+            mensajes.append(f"Firma XML: INVÁLIDA — {resultado_firma.error}")
+
+        mensajes.append(
+            f"CDR SUNAT: {estado_cdr.estado} (código {estado_cdr.response_code}) — {estado_cdr.descripcion}"
+        )
+
+        importe_no_coincide = False
+        if datos_factura.importe_total is not None:
+            total_lineas = FacturaLinea.objects.filter(factura=factura).aggregate(
+                total=Sum(F('cantidad') * F('precio'))
+            )['total']
+            if total_lineas is not None:
+                diferencia = abs(datos_factura.importe_total - total_lineas)
+                importe_no_coincide = diferencia > TOLERANCIA_IMPORTE
+                if importe_no_coincide:
+                    mensajes.append(
+                        f"Importe: NO COINCIDE — XML declara {datos_factura.importe_total} "
+                        f"{datos_factura.moneda}, suma de líneas = {total_lineas}."
+                    )
+                else:
+                    mensajes.append("Importe: coincide con la suma de líneas.")
+            else:
+                mensajes.append("Importe: sin líneas cargadas todavía, no se comparó.")
+        else:
+            mensajes.append("Importe: el XML no trae PayableAmount, no se comparó.")
+
+        factura.firma_valida = resultado_firma.valido
+        factura.serie_comprobante = serie
+        factura.numero_comprobante = numero
+        factura.doc_cur = datos_factura.moneda or factura.doc_cur
+        factura.importe_total_xml = datos_factura.importe_total
+        factura.moneda_xml = datos_factura.moneda
+        factura.estado_cdr = estado_cdr.estado
+        factura.importe_no_coincide = importe_no_coincide
+        factura.mensaje_validacion_documentos = '\n'.join(mensajes)
+        factura.save(update_fields=[
+            'firma_valida', 'serie_comprobante', 'numero_comprobante', 'doc_cur',
+            'importe_total_xml', 'moneda_xml', 'estado_cdr', 'importe_no_coincide',
+            'mensaje_validacion_documentos', 'updated_at',
+        ])
+        return factura
+
+    @staticmethod
+    def enviar_a_revision(factura):
+        """
+        Candado de servicio (pedido explícito, punto 2/3): una Factura no
+        puede avanzar a EN_REVISION_COMPRAS si firma_valida=False,
+        estado_cdr=RECHAZADO, o importe_no_coincide=True — con un mensaje
+        claro indicando cuál de las validaciones falló (pueden fallar
+        varias a la vez, se listan todas, no solo la primera).
+
+        Sin endpoint que la llame todavía (Sub-fase 3.4/3.5, no
+        construida en esta sesión) — mismo criterio ya establecido para
+        notificar_factura_observada: el servicio queda listo para que el
+        flujo real lo consuma sin duplicar esta lógica.
+        """
+        if factura.estado not in ('BORRADOR', 'OBSERVADA'):
+            raise ValidationError(
+                f"No se puede enviar a revisión una Factura en estado "
+                f"'{factura.get_estado_display()}'."
+            )
+
+        errores = []
+        if factura.firma_valida is not True:
+            errores.append(
+                "la firma digital del XML no es válida (o todavía no se completaron/"
+                "validaron los 3 archivos)."
+            )
+        if factura.estado_cdr == 'RECHAZADO':
+            errores.append(
+                f"el CDR de SUNAT indica RECHAZADO: {factura.mensaje_validacion_documentos or ''}"
+            )
+        if factura.importe_no_coincide:
+            errores.append(
+                "el importe del XML no coincide con el total calculado de las líneas de la Factura."
+            )
+
+        if errores:
+            raise ValidationError(
+                "No se puede enviar la Factura a revisión — " + " ".join(errores)
+            )
+
+        factura.estado = 'EN_REVISION_COMPRAS'
+        factura.save(update_fields=['estado', 'updated_at'])
+        return factura
