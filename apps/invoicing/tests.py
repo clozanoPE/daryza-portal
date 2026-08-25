@@ -862,6 +862,55 @@ class ProcesarValidacionDocumentosTests(InvoicingTestBase):
         self.assertTrue(factura.firma_valida)  # ahora sí, los 3 están completos
 
     @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_descarga_con_contenido_distinto_al_hash_guardado_aborta_sin_procesar(self, mock_cls):
+        """
+        Verificación de integridad pedida explícitamente antes de
+        producción: si lo que `descargar_documento_factura` trae de
+        vuelta no coincide con el hash guardado al cargar el archivo (ej.
+        la carpeta reconstruida en OneDrive ya no contiene el mismo
+        contenido que se validó y aceptó en su momento), la orquestación
+        debe abortar con un error claro — nunca procesar en silencio un
+        archivo distinto al que el proveedor cargó.
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        # El mock de descarga del XML devuelve un contenido DISTINTO al
+        # que realmente se subió (el CDR sí coincide) — simula el
+        # desajuste que la verificación de hash debe detectar.
+        xml_bytes_distinto = _leer_fixture('factura_sintetica_alterada.xml')
+        self._mock_onedrive(mock_cls, xml_bytes_distinto, cdr_bytes)
+
+        factura = self._crear_factura()
+        # Se suben los bytes REALES (xml_bytes) — el mock de descarga
+        # devolverá xml_bytes_distinto, provocando el desajuste de hash.
+        sa.cargar_archivo_factura(
+            factura, 'pdf',
+            SimpleUploadedFile('f.pdf', _leer_fixture('pdf_valido_minimo.pdf'), content_type='application/pdf'),
+            self.proveedor,
+        )
+        sa.cargar_archivo_factura(
+            factura, 'cdr',
+            SimpleUploadedFile('c.xml', cdr_bytes, content_type='application/xml'),
+            self.proveedor,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            sa.cargar_archivo_factura(
+                factura, 'xml',
+                SimpleUploadedFile('f.xml', xml_bytes, content_type='application/xml'),
+                self.proveedor,
+            )
+        self.assertIn('no coincide con el hash guardado', str(ctx.exception))
+
+        # El archivo SÍ quedó guardado (cargar_archivo_factura ya había
+        # terminado su propio guardado antes de disparar la orquestación
+        # que falló) — pero ningún dato de negocio derivado del contenido
+        # se pobló, ya que la orquestación abortó antes de tocarlos.
+        factura.refresh_from_db()
+        self.assertTrue(factura.xml_file)
+        self.assertIsNone(factura.firma_valida)
+        self.assertIsNone(factura.estado_cdr)
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
     def test_firma_invalida_real_bloquea_el_envio_a_revision(self, mock_cls):
         """
         Caso de firma inválida REAL (no simulado con "sin firma" o un

@@ -22,6 +22,7 @@ app: el atomic() lo abre el método de más alto nivel, no cada función de
 validación por separado) — select_for_update() sin una transacción activa
 alrededor no bloquea nada.
 """
+import hashlib
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -286,6 +287,23 @@ class InvoicingService:
         se prefiere que ese caso se vea como un error explícito en el
         request que completó la 3ª carga, en vez de guardar un estado
         a medias sin que nadie se entere.
+
+        Verificación de integridad (pedida explícitamente antes de
+        producción): `descargar_documento_factura` reconstruye la ruta
+        de OneDrive de forma determinística a partir de sede/ruc/pk —
+        nunca depende del nombre real del archivo subido (el nombre
+        siempre es `{tipo}.{extension}`, fijo, así que un "archivo
+        re-cargado con otro nombre" no puede ocurrir a través de este
+        servicio). El riesgo real y sí alcanzable es que la carpeta ya
+        no exista donde se espera (p. ej. si `factura.sede` o
+        `proveedor.ruc` cambiaran entre la carga y esta descarga) — eso
+        ya falla fuerte y explícito (`requests.raise_for_status()` →
+        `HTTPError`, propagado sin capturar, ver arriba), nunca trae un
+        archivo vacío/incorrecto en silencio. Como defensa adicional, se
+        compara el hash SHA-256 de lo descargado contra el hash que se
+        guardó al cargar el archivo (`Factura.hash_xml`/`hash_cdr`) —
+        cualquier desajuste (contenido distinto al que se validó y
+        aceptó en su momento) aborta antes de procesar nada.
         """
         from . import services_archivos as sa
 
@@ -294,6 +312,19 @@ class InvoicingService:
 
         xml_bytes = sa.descargar_archivo_factura(factura, 'xml')
         cdr_bytes = sa.descargar_archivo_factura(factura, 'cdr')
+
+        if hashlib.sha256(xml_bytes).hexdigest() != factura.hash_xml:
+            raise ValidationError(
+                "El contenido del XML descargado de OneDrive no coincide con el hash "
+                "guardado al cargarlo — posible archivo incorrecto o corrupto. Abortando "
+                "la validación de negocio sin modificar la Factura."
+            )
+        if hashlib.sha256(cdr_bytes).hexdigest() != factura.hash_cdr:
+            raise ValidationError(
+                "El contenido del CDR descargado de OneDrive no coincide con el hash "
+                "guardado al cargarlo — posible archivo incorrecto o corrupto. Abortando "
+                "la validación de negocio sin modificar la Factura."
+            )
 
         resultado_firma = sv.validar_firma_xml(xml_bytes)
         datos_factura = sv.extraer_datos_factura(xml_bytes)
