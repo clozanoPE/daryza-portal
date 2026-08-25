@@ -1,0 +1,172 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Copiar de OC | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-copy text-success me-2"></i>Copiar de Órdenes de Compra
+    </h1>
+    <p class="page-header__subtitle">
+      Revise y ajuste los datos antes de crear la Factura — nada se guarda todavía.
+      {% if sede %}<span class="fw-bold text-success">Sede: {{ sede.nombre }}</span>{% endif %}
+    </p>
+  </div>
+  <a href="{% url 'invoicing:nueva_factura_ocs' %}" class="btn btn-outline-success rounded-3">
+    <i class="bi bi-arrow-left me-1"></i>Volver
+  </a>
+</div>
+
+{% if error_sede %}
+<div class="alert alert-danger">
+  <i class="bi bi-x-octagon me-1"></i>{{ error_sede }}
+</div>
+{% else %}
+
+{% if omitidas_count %}
+<div class="alert alert-warning">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  {{ omitidas_count }} Orden{{ omitidas_count|pluralize }} de Compra seleccionada{{ omitidas_count|pluralize }}
+  ya no {{ omitidas_count|pluralize:"está,están" }} disponible{{ omitidas_count|pluralize }} y fue{{ omitidas_count|pluralize:",ron" }} omitida{{ omitidas_count|pluralize }}.
+</div>
+{% endif %}
+
+{% if not grupos %}
+<div class="dz-card p-5 text-center">
+  <i class="bi bi-inbox text-muted d-block mb-2 fs-1 opacity-25"></i>
+  <span class="text-muted small">Las OC seleccionadas ya no tienen ninguna línea con saldo disponible.</span>
+</div>
+{% else %}
+
+<form id="form-crear-factura">
+  {% for grupo in grupos %}
+  <input type="hidden" name="oc_ids" value="{{ grupo.purchase_order.id }}">
+  {% endfor %}
+
+  <div class="dz-card p-4 mb-4">
+    <h5 class="fw-bold mb-3"><i class="bi bi-card-heading text-success me-2"></i>Datos del Comprobante</h5>
+    <div class="row g-3">
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">Serie</label>
+        <input type="text" name="serie_comprobante" class="form-control form-control-sm rounded-3" placeholder="F001">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">Número</label>
+        <input type="text" name="numero_comprobante" class="form-control form-control-sm rounded-3" placeholder="123">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">Moneda</label>
+        <input type="text" name="doc_cur" class="form-control form-control-sm rounded-3" placeholder="PEN" maxlength="10">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">N° Documento Proveedor</label>
+        <input type="text" name="num_at_card" class="form-control form-control-sm rounded-3" placeholder="F001-85541">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">Fecha de Documento</label>
+        <input type="date" name="tax_date" class="form-control form-control-sm rounded-3">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">Fecha de Vencimiento</label>
+        <input type="date" name="doc_due_date" class="form-control form-control-sm rounded-3">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">Tipo de Operación</label>
+        <select name="tipo_operacion" class="form-select form-select-sm rounded-3">
+          {% for valor, label in tipos_operacion %}
+          <option value="{{ valor }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label text-xs fw-bold">Clasificación B/S</label>
+        <select name="clasificacion_bienes_servicios" class="form-select form-select-sm rounded-3">
+          <option value="">—</option>
+          {% for valor, label in clasificaciones %}
+          <option value="{{ valor }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  {% for grupo in grupos %}
+  <div class="dz-card p-4 mb-4">
+    <h5 class="fw-bold mb-3">
+      <i class="bi bi-cart-check text-success me-2"></i>OC {{ grupo.purchase_order.doc_num }}
+      <span class="text-muted text-xs fw-normal">— {{ grupo.purchase_order.card_name }}</span>
+    </h5>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead class="table-light">
+          <tr>
+            <th class="text-xxs">Ítem</th>
+            <th class="text-end text-xxs">Cant. OC</th>
+            <th class="text-end text-xxs">Saldo Disp.</th>
+            <th class="text-xxs" style="min-width:140px">Cantidad a Facturar</th>
+            <th class="text-xxs" style="min-width:120px">Precio Unit.</th>
+            <th class="text-center text-xxs">Retención</th>
+            <th class="text-center text-xxs">Detracción</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for linea in grupo.lineas %}
+          <tr>
+            <td>
+              <span class="fw-bold d-block text-xs">{{ linea.po_line.item_code }}</span>
+              <small class="text-muted text-xxs">{{ linea.po_line.description }}</small>
+            </td>
+            <td class="text-end text-xs">{{ linea.cantidad_oc }}</td>
+            <td class="text-end text-xs fw-bold text-success">{{ linea.saldo }}</td>
+            <td>
+              <input type="number" step="0.0001" min="0" max="{{ linea.saldo }}"
+                     name="cantidad_{{ linea.po_line.id }}" class="form-control form-control-sm rounded-3"
+                     value="{{ linea.saldo }}">
+            </td>
+            <td>
+              <input type="number" step="0.0001" min="0"
+                     name="precio_{{ linea.po_line.id }}" class="form-control form-control-sm rounded-3"
+                     placeholder="0.0000">
+            </td>
+            <td class="text-center">
+              <input type="checkbox" class="form-check-input chk-retencion"
+                     name="aplica_retencion_{{ linea.po_line.id }}"
+                     data-po-line="{{ linea.po_line.id }}" onchange="toggleDocRequerido(this, 'retencion')">
+              <div class="mt-1 d-none" id="doc-retencion-{{ linea.po_line.id }}">
+                <input type="file" name="archivo_retencion_{{ linea.po_line.id }}"
+                       class="form-control form-control-sm rounded-3" accept=".pdf">
+              </div>
+            </td>
+            <td class="text-center">
+              <input type="checkbox" class="form-check-input chk-detraccion"
+                     name="aplica_detraccion_{{ linea.po_line.id }}"
+                     data-po-line="{{ linea.po_line.id }}" onchange="toggleDocRequerido(this, 'detraccion')">
+              <div class="mt-1 d-none" id="doc-detraccion-{{ linea.po_line.id }}">
+                <input type="file" name="archivo_detraccion_{{ linea.po_line.id }}"
+                       class="form-control form-control-sm rounded-3" accept=".pdf">
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endfor %}
+
+  <button type="button" id="btn-crear-factura" class="btn btn-success rounded-3 fw-bold px-4 mb-4">
+    <i class="bi bi-check-circle me-2"></i>Crear Factura
+  </button>
+</form>
+
+{% endif %}
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/nueva_factura.js' %}?v=1.0"></script>
+{% endblock %}

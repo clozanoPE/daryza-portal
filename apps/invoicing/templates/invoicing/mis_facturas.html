@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Mis Facturas | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-receipt text-success me-2"></i>Mis Facturas
+    </h1>
+    <p class="page-header__subtitle">Facturas registradas contra sus Órdenes de Compra despachadas.</p>
+  </div>
+  <a href="{% url 'invoicing:nueva_factura_ocs' %}" class="btn btn-success rounded-3 fw-bold">
+    <i class="bi bi-plus-circle me-2"></i>Nueva Factura
+  </a>
+</div>
+
+<div class="dz-card overflow-hidden">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th class="text-xxs">Factura</th>
+          <th class="text-xxs">OC(s)</th>
+          <th class="text-xxs">Sede</th>
+          <th class="text-xxs">Estado</th>
+          <th class="text-xxs">SAP</th>
+          <th class="text-xxs">Creada</th>
+          <th class="text-xxs"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for factura in facturas %}
+        <tr>
+          <td class="text-xs fw-bold">
+            {% if factura.serie_comprobante %}{{ factura.serie_comprobante }}-{{ factura.numero_comprobante }}
+            {% else %}#{{ factura.pk }}{% endif %}
+          </td>
+          <td class="text-xxs">
+            {% for oc in factura.ordenes_compra.all %}
+            <span class="badge bg-light text-dark border text-xxs">OC {{ oc.purchase_order.doc_num }}</span>
+            {% endfor %}
+          </td>
+          <td class="text-xs">{{ factura.sede.nombre }}</td>
+          <td>
+            <span class="badge rounded-pill text-xxs fw-bold
+              {% if factura.estado == 'BORRADOR' %}bg-secondary
+              {% elif factura.estado == 'EN_REVISION_COMPRAS' %}bg-warning text-dark
+              {% elif factura.estado == 'OBSERVADA' %}bg-danger
+              {% elif factura.estado == 'APROBADA_COMPRAS' %}bg-success
+              {% else %}bg-dark{% endif %}">
+              {{ factura.get_estado_display }}
+            </span>
+          </td>
+          <td class="text-xxs">{{ factura.get_estado_sap_display }}</td>
+          <td class="text-xxs">{{ factura.created_at|date:"d/m/Y H:i" }}</td>
+          <td>
+            <a href="{% url 'invoicing:factura_detalle' factura.id %}" class="btn btn-outline-success btn-sm rounded-3 text-xxs">
+              <i class="bi bi-eye me-1"></i>Ver
+            </a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" class="text-center py-5">
+            <i class="bi bi-inbox text-muted d-block mb-2 fs-1 opacity-25"></i>
+            <span class="text-muted small">Todavía no ha registrado ninguna Factura.</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

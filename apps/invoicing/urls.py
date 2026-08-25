@@ -6,6 +6,29 @@ from . import views
 app_name = 'invoicing'
 
 urlpatterns = [
+    # ── "Copiar de OC(s)" (Sub-fase 3.4) ────────────────────────────────
+    path('nueva/', views.nueva_factura_ocs, name='nueva_factura_ocs'),
+    path('nueva/copiar/', views.copiar_oc_view, name='copiar_oc'),
+    path('nueva/crear/', views.crear_factura_ajax, name='crear_factura'),
+    path('mis-facturas/', views.mis_facturas, name='mis_facturas'),
+    path('factura/<int:factura_id>/', views.factura_detalle, name='factura_detalle'),
+    path(
+        'factura/<int:factura_id>/editar/',
+        views.editar_cabecera_factura_ajax,
+        name='editar_cabecera_factura',
+    ),
+    path(
+        'factura-linea/<int:linea_id>/editar/',
+        views.editar_linea_factura_ajax,
+        name='editar_linea_factura',
+    ),
+    path(
+        'factura/<int:factura_id>/enviar-a-revision/',
+        views.enviar_a_revision_ajax,
+        name='enviar_a_revision_factura',
+    ),
+
+    # ── Carga de archivos (Sub-fase 3.2) ────────────────────────────────
     path(
         'factura/<int:factura_id>/archivo/<str:tipo>/',
         views.subir_archivo_factura_ajax,

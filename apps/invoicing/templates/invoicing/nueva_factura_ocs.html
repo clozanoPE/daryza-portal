@@ -1,0 +1,87 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Nueva Factura | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-receipt-cutoff text-success me-2"></i>Nueva Factura
+    </h1>
+    <p class="page-header__subtitle">
+      Seleccione una o varias Órdenes de Compra ya despachadas para copiar sus datos.
+    </p>
+  </div>
+  <a href="{% url 'invoicing:mis_facturas' %}" class="btn btn-outline-success rounded-3">
+    <i class="bi bi-list-ul me-1"></i>Mis Facturas
+  </a>
+</div>
+
+{% if error_perfil %}
+<div class="alert alert-danger">
+  <i class="bi bi-x-octagon me-1"></i>{{ error_perfil }}
+</div>
+{% elif sin_perfil %}
+<div class="alert alert-warning">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  No encontramos un perfil de proveedor vinculado a su cuenta todavía — contacte a Compras.
+</div>
+{% endif %}
+
+{% if error_oc_no_disponible %}
+<div class="alert alert-warning">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  Las OC seleccionadas ya no están disponibles para facturar — puede que otra Factura las
+  haya tomado mientras tanto. Seleccione de nuevo.
+</div>
+{% endif %}
+
+<div class="dz-card p-4">
+  <form method="GET" action="{% url 'invoicing:copiar_oc' %}">
+    {% if ocs_elegibles %}
+    <p class="text-muted text-xs mb-3">
+      <i class="bi bi-info-circle me-1"></i>
+      Solo se muestran OC con Ticket finalizado y saldo pendiente de facturar. Todas las OC
+      seleccionadas deben ser de la misma sede.
+    </p>
+    <div class="border rounded-3 overflow-hidden mb-3" style="max-height:420px;overflow-y:auto">
+      {% for entry in ocs_elegibles %}
+      <label class="d-flex align-items-start gap-3 p-3 border-bottom" style="cursor:pointer">
+        <input type="checkbox" name="oc_ids" value="{{ entry.purchase_order.id }}"
+               class="form-check-input mt-0 flex-shrink-0">
+        <div class="flex-grow-1">
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+            <span class="fw-bold text-xs">OC {{ entry.purchase_order.doc_num }}</span>
+            {% if entry.purchase_order.u_mss_tdb == 'MP' %}
+            <span class="badge bg-info-subtle text-info border border-info-subtle text-xxs">
+              <i class="bi bi-flask me-1"></i>Materia Prima
+            </span>
+            {% else %}
+            <span class="badge bg-light text-secondary border text-xxs">Comercial</span>
+            {% endif %}
+            <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+              <i class="bi bi-geo-alt-fill me-1"></i>{{ entry.sede.nombre }}
+            </span>
+          </div>
+          <p class="text-muted text-xxs mb-0">{{ entry.purchase_order.card_name }}</p>
+        </div>
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn btn-success rounded-3 fw-bold px-4">
+      <i class="bi bi-copy me-2"></i>Copiar de OC(s) seleccionadas
+    </button>
+    {% elif not sin_perfil and not error_perfil %}
+    <div class="p-5 text-center">
+      <i class="bi bi-inbox text-muted d-block mb-2 fs-1 opacity-25"></i>
+      <span class="text-muted small">
+        No tiene Órdenes de Compra despachadas con saldo disponible para facturar.
+      </span>
+    </div>
+    {% endif %}
+  </form>
+</div>
+
+{% endblock %}

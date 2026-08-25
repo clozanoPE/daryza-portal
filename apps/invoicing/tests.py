@@ -19,14 +19,23 @@ archivo sí toca la base de datos):
   3. Carga segura de archivos (services_archivos.py, Sub-fase 3.2) + los
      2 endpoints HTTP reales que la consumen (views.py).
 
-  4. Sub-fase 3.3 (esta sesión): InvoicingService.procesar_validacion_
-     documentos (dispara automáticamente validar_firma_xml/extraer_
-     datos_factura/extraer_estado_cdr en cuanto los 3 archivos de una
-     Factura están completos) + enviar_a_revision (candado que bloquea
-     el avance a EN_REVISION_COMPRAS por firma inválida, CDR rechazado,
-     o importe del XML que no coincide con la suma de FacturaLinea).
+  4. Sub-fase 3.3: InvoicingService.procesar_validacion_documentos
+     (dispara automáticamente validar_firma_xml/extraer_datos_factura/
+     extraer_estado_cdr en cuanto los 3 archivos de una Factura están
+     completos) + enviar_a_revision (candado que bloquea el avance a
+     EN_REVISION_COMPRAS por firma inválida, CDR rechazado, o importe
+     del XML que no coincide con la suma de FacturaLinea).
+
+  5. Sub-fase 3.4 (esta sesión): services_borrador.py — el patrón
+     "Copiar de OC(s)" completo (listar_ocs_elegibles/lineas_para_copiar/
+     crear_factura_desde_ocs/editar_cabecera_factura/editar_linea_
+     factura), más un flujo HTTP de punta a punta y una regresión de
+     concurrencia real (TransactionTestCase, mismo patrón de las
+     sesiones 70/71) contra crear_factura_desde_ocs — no solo contra
+     validar_oc_disponible aislado, que ya se probó entonces.
 """
 import hashlib
+import json
 import os
 import threading
 import time
@@ -51,6 +60,7 @@ from apps.operations.tests import OperationsTestBase
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 from . import services_archivos as sa
+from . import services_borrador as sb
 from .models import Factura, FacturaLinea, FacturaOrdenCompra
 from .services import InvoicingService
 
@@ -1341,3 +1351,594 @@ class SubirArchivoFacturaEndpointTests(InvoicingTestBase):
         resp = self.client.post(f'/invoicing/factura/{factura.id}/archivo/xml/', data={})
 
         self.assertEqual(resp.status_code, 400)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sub-fase 3.4 (esta sesión) — "Copiar de OC(s)": services_borrador.py
+# ═══════════════════════════════════════════════════════════════════════════
+
+class NuevaFacturaTestBase(InvoicingTestBase):
+    """
+    Extiende InvoicingTestBase con un SupplierProfile cuyo sap_card_code
+    coincide con el card_code FIJO ('TESTCODE') que OperationsTestBase.
+    _crear_cita_confirmada usa para toda OC de prueba (apps/operations/
+    tests.py) — necesario para que services_borrador.listar_ocs_elegibles
+    (filtra por card_code == proveedor.sap_card_code) encuentre las OC
+    construidas por los helpers ya existentes (_finalizar_ticket, etc.).
+    InvoicingTestBase._supplier_profile() usa en cambio sap_card_code=
+    self.proveedor.username, que NO coincide con 'TESTCODE' — no se toca
+    ese helper (las clases ya existentes lo usan sin necesitar este match).
+    """
+
+    def _perfil_oc(self):
+        perfil, _ = SupplierProfile.objects.get_or_create(
+            sap_card_code='TESTCODE', defaults={'ruc': 'TESTCODE', 'user': self.proveedor},
+        )
+        return perfil
+
+    def _finalizar_segundo_ticket(self, cantidad_real):
+        """
+        Construye un SEGUNDO Ticket real hasta FINALIZADO, en un slot con
+        fecha distinta a la que usa OperationsTestBase._crear_cita_
+        confirmada ('2026-09-01 08:00', fija) — _finalizar_ticket no se
+        puede llamar 2 veces en el mismo test (colisionaría con ese mismo
+        slot, unique_together=('sede','date','start_time')). Mismos
+        pasos que _finalizar_ticket (apps.operations.tests), sin
+        reutilizarla — 'CDL' fijo (comercial, sin COA) para no complicar
+        el helper con el camino Materia Prima, no necesario aquí.
+        """
+        po = PurchaseOrder.objects.create(
+            doc_entry=900001, doc_num=900001, card_code='TESTCODE', card_name='TEST SAC 2',
+            e_mail='test2@test.com', status='PENDIENTE', u_mss_tdb='CDL',
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code='ITEM-TEST-2', description='Item de prueba 2',
+            quantity_sap=10, und_medida='KG', requiere_coa=False,
+        )
+        slot = AppointmentSlot.objects.create(
+            sede=Sede.objects.get(codigo='LURIN'),
+            date='2026-09-02', start_time='08:00', dock='TEST', max_capacity=5,
+        )
+        appointment = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+        )
+        ticket = AppointmentService.confirmar_cita(
+            appointment_id=appointment.id, usuario_almacen=self.u_compras,
+        )
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
+        ticket.refresh_from_db()
+
+        resultados = [
+            {'inspeccion_id': insp.id, 'estado': 'CONFORME', 'cantidad_modificada': str(cantidad_real)}
+            for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen, resultados=resultados,
+        )
+        ticket.refresh_from_db()
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        ticket.refresh_from_db()
+        return ticket
+
+    @staticmethod
+    def _cabecera_minima():
+        return {
+            'doc_cur': 'PEN', 'tax_date': None, 'doc_due_date': None,
+            'num_at_card': 'F001-1', 'serie_comprobante': 'F001',
+            'numero_comprobante': '1', 'tipo_operacion': '02',
+            'clasificacion_bienes_servicios': 1,
+        }
+
+
+class ListarOcsElegiblesTests(NuevaFacturaTestBase):
+
+    def test_oc_con_ticket_finalizado_y_saldo_aparece(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        perfil = self._perfil_oc()
+
+        elegibles = sb.listar_ocs_elegibles(perfil)
+
+        self.assertEqual([e['purchase_order'].id for e in elegibles], [po.id])
+        self.assertEqual(elegibles[0]['sede'].codigo, 'LURIN')
+
+    def test_oc_sin_ticket_finalizado_no_aparece(self):
+        self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
+        perfil = self._perfil_oc()
+
+        self.assertEqual(sb.listar_ocs_elegibles(perfil), [])
+
+    def test_oc_con_factura_activa_no_aparece(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        perfil = self._perfil_oc()
+
+        factura = self._crear_factura(estado='EN_REVISION_COMPRAS', proveedor=perfil)
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+
+        self.assertEqual(sb.listar_ocs_elegibles(perfil), [])
+
+    def test_oc_con_factura_cancelada_vuelve_a_aparecer(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        perfil = self._perfil_oc()
+
+        factura = self._crear_factura(estado='CANCELADO', proveedor=perfil)
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+
+        elegibles = sb.listar_ocs_elegibles(perfil)
+        self.assertEqual([e['purchase_order'].id for e in elegibles], [po.id])
+
+    def test_oc_de_otro_proveedor_no_aparece(self):
+        self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        otro_perfil = SupplierProfile.objects.create(sap_card_code='OTRO-PROVEEDOR', ruc='OTRO-PROVEEDOR')
+
+        self.assertEqual(sb.listar_ocs_elegibles(otro_perfil), [])
+
+
+class CrearFacturaDesdeOCsTests(NuevaFacturaTestBase):
+    """Punto 6 del pedido: creación con 1 OC, con varias OC, exceso de saldo, retención sin documento."""
+
+    def test_creacion_exitosa_con_una_oc(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[{
+                'po_line': po_line, 'cantidad': Decimal('6.0000'), 'precio': Decimal('2.5000'),
+                'aplica_retencion': False, 'aplica_detraccion': False,
+            }],
+            usuario=self.proveedor,
+        )
+
+        self.assertEqual(factura.estado, 'BORRADOR')
+        self.assertEqual(factura.proveedor_id, perfil.id)
+        self.assertEqual(factura.sede.codigo, 'LURIN')
+        self.assertEqual(factura.serie_comprobante, 'F001')
+        self.assertEqual(factura.ordenes_compra.count(), 1)
+        self.assertEqual(factura.ordenes_compra.first().purchase_order_id, po.id)
+
+        linea = factura.lineas.get()
+        self.assertEqual(linea.po_line_id, po_line.id)
+        self.assertEqual(linea.cantidad, Decimal('6.0000'))
+        self.assertEqual(linea.precio, Decimal('2.5000'))
+        self.assertEqual(linea.cantidad_oc, po_line.quantity_sap)
+        self.assertEqual(linea.precio_oc, Decimal('2.5000'))
+
+    def test_creacion_exitosa_con_varias_oc(self):
+        ticket1 = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        ticket2 = self._finalizar_segundo_ticket(cantidad_real=Decimal('4.0000'))
+        po1 = ticket1.appointment.purchase_orders.first()
+        po2 = ticket2.appointment.purchase_orders.first()
+        po_line1 = po1.lines.first()
+        po_line2 = po2.lines.first()
+        perfil = self._perfil_oc()
+
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po1.id, po2.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[
+                {'po_line': po_line1, 'cantidad': Decimal('10.0000'), 'precio': Decimal('1.0000'),
+                 'aplica_retencion': False, 'aplica_detraccion': False},
+                {'po_line': po_line2, 'cantidad': Decimal('4.0000'), 'precio': Decimal('3.0000'),
+                 'aplica_retencion': False, 'aplica_detraccion': False},
+            ],
+            usuario=self.proveedor,
+        )
+
+        self.assertEqual(factura.ordenes_compra.count(), 2)
+        self.assertEqual(factura.lineas.count(), 2)
+        self.assertEqual(
+            set(factura.ordenes_compra.values_list('purchase_order_id', flat=True)),
+            {po1.id, po2.id},
+        )
+
+    def test_exceder_saldo_rechaza_sin_crear_nada(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        with self.assertRaises(ValidationError):
+            sb.crear_factura_desde_ocs(
+                proveedor=perfil, purchase_order_ids=[po.id],
+                cabecera=self._cabecera_minima(),
+                lineas_payload=[{
+                    'po_line': po_line, 'cantidad': Decimal('11.0000'), 'precio': Decimal('1.0000'),
+                    'aplica_retencion': False, 'aplica_detraccion': False,
+                }],
+                usuario=self.proveedor,
+            )
+
+        self.assertEqual(Factura.objects.count(), 0)
+        self.assertEqual(FacturaOrdenCompra.objects.count(), 0)
+
+    def test_retencion_marcada_sin_documento_rechaza_y_no_deja_factura_parcial(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        with self.assertRaises(ValidationError):
+            sb.crear_factura_desde_ocs(
+                proveedor=perfil, purchase_order_ids=[po.id],
+                cabecera=self._cabecera_minima(),
+                lineas_payload=[{
+                    'po_line': po_line, 'cantidad': Decimal('5.0000'), 'precio': Decimal('1.0000'),
+                    'aplica_retencion': True, 'aplica_detraccion': False,
+                    'archivo_retencion': None,
+                }],
+                usuario=self.proveedor,
+            )
+
+        # "no crees una Factura parcial" (pedido explícito): la Factura
+        # se crea en la Fase 1 y se BORRA al fallar la Fase 2 (falta el
+        # documento) — no debe quedar ningún rastro.
+        self.assertEqual(Factura.objects.count(), 0)
+        self.assertEqual(FacturaOrdenCompra.objects.count(), 0)
+        self.assertEqual(FacturaLinea.objects.count(), 0)
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_retencion_con_documento_real_se_adjunta_correctamente(self, mock_cls):
+        mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/retencion.pdf'
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[{
+                'po_line': po_line, 'cantidad': Decimal('5.0000'), 'precio': Decimal('1.0000'),
+                'aplica_retencion': True, 'aplica_detraccion': False,
+                'archivo_retencion': SimpleUploadedFile(
+                    'r.pdf', _leer_fixture('pdf_valido_minimo.pdf'), content_type='application/pdf',
+                ),
+            }],
+            usuario=self.proveedor,
+        )
+
+        linea = factura.lineas.get()
+        self.assertEqual(linea.documento_retencion, 'https://onedrive.example.com/retencion.pdf')
+        self.assertTrue(linea.hash_documento_retencion)
+
+    def test_oc_de_otro_proveedor_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        otro_perfil = SupplierProfile.objects.create(sap_card_code='OTRO-2', ruc='OTRO-2')
+
+        with self.assertRaises(ValidationError):
+            sb.crear_factura_desde_ocs(
+                proveedor=otro_perfil, purchase_order_ids=[po.id],
+                cabecera=self._cabecera_minima(),
+                lineas_payload=[{
+                    'po_line': po_line, 'cantidad': Decimal('1.0000'), 'precio': Decimal('1.0000'),
+                    'aplica_retencion': False, 'aplica_detraccion': False,
+                }],
+                usuario=self.proveedor,
+            )
+        self.assertEqual(Factura.objects.count(), 0)
+
+    def test_oc_ya_facturada_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        factura_existente = self._crear_factura(estado='EN_REVISION_COMPRAS', proveedor=perfil)
+        FacturaOrdenCompra.objects.create(factura=factura_existente, purchase_order=po)
+
+        with self.assertRaises(ValidationError):
+            sb.crear_factura_desde_ocs(
+                proveedor=perfil, purchase_order_ids=[po.id],
+                cabecera=self._cabecera_minima(),
+                lineas_payload=[{
+                    'po_line': po_line, 'cantidad': Decimal('1.0000'), 'precio': Decimal('1.0000'),
+                    'aplica_retencion': False, 'aplica_detraccion': False,
+                }],
+                usuario=self.proveedor,
+            )
+        self.assertEqual(Factura.objects.count(), 1)  # solo la ya existente
+
+
+class EditarFacturaTests(NuevaFacturaTestBase):
+    """Punto 6 del pedido: edición bloqueada tras EN_REVISION_COMPRAS."""
+
+    def test_edicion_bloqueada_tras_en_revision_compras(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        perfil = self._perfil_oc()
+        factura = self._crear_factura(estado='EN_REVISION_COMPRAS', proveedor=perfil)
+        linea = self._crear_factura_linea(factura, po_line, cantidad=Decimal('1.0000'))
+
+        with self.assertRaises(ValidationError):
+            sb.editar_cabecera_factura(factura, self.proveedor, {'doc_cur': 'USD'})
+
+        with self.assertRaises(ValidationError):
+            sb.editar_linea_factura(linea, self.proveedor, cantidad=Decimal('2.0000'))
+
+        # Nada cambió.
+        factura.refresh_from_db()
+        linea.refresh_from_db()
+        self.assertIsNone(factura.doc_cur)
+        self.assertEqual(linea.cantidad, Decimal('1.0000'))
+
+    def test_edicion_permitida_en_borrador_recalcula_difiere_de_oc(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        perfil = self._perfil_oc()
+        factura = self._crear_factura(estado='BORRADOR', proveedor=perfil)
+        linea = self._crear_factura_linea(factura, po_line, cantidad=po_line.quantity_sap)
+        self.assertFalse(linea.difiere_de_oc)
+
+        sb.editar_linea_factura(linea, self.proveedor, cantidad=Decimal('1.0000'))
+        linea.refresh_from_db()
+        self.assertEqual(linea.cantidad, Decimal('1.0000'))
+        self.assertTrue(linea.difiere_de_oc)
+
+        sb.editar_cabecera_factura(factura, self.proveedor, {'doc_cur': 'USD'})
+        factura.refresh_from_db()
+        self.assertEqual(factura.doc_cur, 'USD')
+
+    def test_edicion_excede_saldo_rechaza(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        perfil = self._perfil_oc()
+        factura = self._crear_factura(estado='BORRADOR', proveedor=perfil)
+        linea = self._crear_factura_linea(factura, po_line, cantidad=Decimal('5.0000'))
+
+        with self.assertRaises(ValidationError):
+            sb.editar_linea_factura(linea, self.proveedor, cantidad=Decimal('11.0000'))
+
+
+class NuevaFacturaHTTPFlowTests(NuevaFacturaTestBase):
+    """
+    Flujo HTTP real de punta a punta: listado -> copia -> creación (AJAX)
+    -> detalle -> carga de los 3 archivos -> enviar a revisión. Confirma
+    que las 3 plantillas nuevas renderizan sin error Y que el flujo real
+    (no solo las funciones de servicio aisladas) funciona.
+    """
+
+    def test_flujo_completo_desde_listado_hasta_enviar_a_revision(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        self._perfil_oc()  # crea/vincula el SupplierProfile con card_code='TESTCODE'
+
+        self.client.force_login(self.proveedor)
+
+        # Paso 1: listado.
+        resp = self.client.get('/invoicing/nueva/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, f'OC {po.doc_num}')
+
+        # Paso 2: copiar — sin ningún guardado en BD todavía.
+        resp = self.client.get('/invoicing/nueva/copiar/', {'oc_ids': [po.id]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, f'OC {po.doc_num}')
+        self.assertEqual(Factura.objects.count(), 0)
+
+        # Paso 3: crear (AJAX, multipart). cantidad*precio = 1180.50, para
+        # que coincida EXACTAMENTE con el PayableAmount de la fixture
+        # 'factura_sintetica_firmada.xml' (1180.50 PEN, ya confirmado en
+        # ProcesarValidacionDocumentosTests) — de lo contrario
+        # InvoicingService.enviar_a_revision (paso 6) rechazaría por
+        # importe_no_coincide, que es exactamente lo esperado pero no lo
+        # que este test de flujo feliz quiere ejercitar.
+        po_line = po.lines.first()
+        resp = self.client.post('/invoicing/nueva/crear/', data={
+            'oc_ids': [po.id],
+            'serie_comprobante': 'F001', 'numero_comprobante': '999',
+            'doc_cur': 'PEN', 'tipo_operacion': '02',
+            f'cantidad_{po_line.id}': '10.0000', f'precio_{po_line.id}': '118.0500',
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['status'], 'success')
+        factura_id = data['factura_id']
+
+        factura = Factura.objects.get(id=factura_id)
+        self.assertEqual(factura.estado, 'BORRADOR')
+
+        # La OC ya no vuelve a aparecer en el listado (candado de unicidad).
+        resp = self.client.get('/invoicing/nueva/')
+        self.assertNotContains(resp, f'OC {po.doc_num}')
+
+        # Paso 4: detalle.
+        resp = self.client.get(f'/invoicing/factura/{factura_id}/')
+        self.assertEqual(resp.status_code, 200)
+
+        # Paso 5: los 3 archivos (mismo mock ya usado por ProcesarValidacionDocumentosTests).
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        pdf_bytes = _leer_fixture('pdf_valido_minimo.pdf')
+
+        with patch('apps.invoicing.services_archivos.OneDriveClient') as mock_cls:
+            mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/x'
+
+            def _descargar(sede, ruc, identificador, nombre_archivo):
+                if nombre_archivo.startswith('xml.'):
+                    return xml_bytes
+                if nombre_archivo.startswith('cdr.'):
+                    return cdr_bytes
+                raise AssertionError(f"Descarga inesperada de '{nombre_archivo}'.")
+            mock_cls.return_value.descargar_documento_factura.side_effect = _descargar
+
+            for tipo, contenido, nombre, content_type in (
+                ('pdf', pdf_bytes, 'f.pdf', 'application/pdf'),
+                ('cdr', cdr_bytes, 'c.xml', 'application/xml'),
+                ('xml', xml_bytes, 'f.xml', 'application/xml'),
+            ):
+                resp = self.client.post(
+                    f'/invoicing/factura/{factura_id}/archivo/{tipo}/',
+                    data={'archivo': SimpleUploadedFile(nombre, contenido, content_type=content_type)},
+                )
+                self.assertEqual(resp.json()['status'], 'success', resp.json())
+
+        factura.refresh_from_db()
+        self.assertTrue(factura.firma_valida)
+
+        # Paso 6: enviar a revisión.
+        resp = self.client.post(
+            f'/invoicing/factura/{factura_id}/enviar-a-revision/',
+            data='{}', content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['status'], 'success')
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+        # Edición ahora bloqueada — mismo candado, expuesto vía HTTP.
+        resp = self.client.post(
+            f'/invoicing/factura/{factura_id}/editar/',
+            data=json.dumps({'doc_cur': 'USD'}), content_type='application/json',
+        )
+        self.assertEqual(resp.json()['status'], 'error')
+
+
+class CrearFacturaDesdeOCsConcurrenciaTests(TransactionTestCase):
+    """
+    Punto 6 del pedido — "mismo patrón TransactionTestCase de las
+    sesiones 70/71, reutilízalo" — ahora contra el FLUJO COMPLETO real
+    (services_borrador.crear_factura_desde_ocs), no solo validar_oc_
+    disponible aislado (ya verificado y corregido en la sesión 70). Si la
+    orquestación nueva reabriera la misma ventana de carrera (por
+    ejemplo, si el lock de PurchaseOrder se liberara antes de comitear la
+    Factura), este test lo detectaría.
+
+    El retraso se inyecta parcheando InvoicingService.validar_oc_
+    disponible UNA SOLA VEZ, envolviendo el arranque de AMBOS hilos (no
+    un patch por hilo — parchear un atributo de clase compartido desde 2
+    hilos sería en sí mismo una condición de carrera del TEST, no de la
+    producción) con un side_effect que primero llama a la implementación
+    REAL (adquiere el lock real de PurchaseOrder) y RECIÉN DESPUÉS duerme
+    el retraso que le toca a ese hilo (identificado por threading.
+    current_thread().name) — el sleep ocurre con el lock ya retenido y la
+    transacción de _crear_factura_y_lineas todavía abierta, reproduciendo
+    la misma ventana que el bug original de la sesión 70 explotaba.
+
+    TransactionTestCase (no TestCase): cada hilo necesita su propia
+    conexión/transacción real — TestCase envuelve el test entero en una
+    única transacción compartida, lo que impediría el bloqueo real entre
+    hilos (mismo motivo ya documentado en las sesiones 70/71).
+    """
+
+    def setUp(self):
+        Sede.objects.get_or_create(codigo='LURIN', defaults={'nombre': 'Planta Lurín'})
+        g_compras, _ = Group.objects.get_or_create(name='COMPRAS')
+
+        self.proveedor_user = User.objects.create_user('carrera_factura_proveedor', password='x')
+        self.supplier_profile = SupplierProfile.objects.create(
+            sap_card_code='CARRERA-FACTURA', ruc='CARRERA-FACTURA', user=self.proveedor_user,
+        )
+        u_compras = User.objects.create_user('carrera_factura_compras', password='x')
+        u_compras.groups.add(g_compras)
+        u_vigilancia = User.objects.create_user('carrera_factura_vigilancia', password='x')
+        u_almacen = User.objects.create_user('carrera_factura_almacen', password='x')
+
+        doc_num = 666555444
+        po = PurchaseOrder.objects.create(
+            doc_entry=doc_num, doc_num=doc_num, card_code='CARRERA-FACTURA',
+            card_name='CARRERA FACTURA SAC', e_mail='carrera@test.com',
+            status='PENDIENTE', u_mss_tdb='CDL',
+        )
+        self.po_line = PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code='ITEM-CARRERA-FACTURA',
+            description='Item carrera factura', quantity_sap=20, und_medida='KG',
+        )
+        self.po = po
+
+        slot = AppointmentSlot.objects.create(
+            sede=Sede.objects.get(codigo='LURIN'),
+            date='2026-09-17', start_time='09:30', dock='TEST', max_capacity=5,
+        )
+        appointment = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor_user, slot_id=slot.id, oc_ids=[po.id],
+        )
+        ticket = AppointmentService.confirmar_cita(
+            appointment_id=appointment.id, usuario_almacen=u_compras,
+        )
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=u_vigilancia,
+        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=u_almacen)
+        ticket.refresh_from_db()
+
+        resultados_insp = [
+            {'inspeccion_id': insp.id, 'estado': 'CONFORME', 'cantidad_modificada': '20.0000'}
+            for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=u_almacen, resultados=resultados_insp,
+        )
+        ticket.refresh_from_db()
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=u_vigilancia)
+
+    @staticmethod
+    def _cabecera_minima():
+        return {
+            'doc_cur': 'PEN', 'tax_date': None, 'doc_due_date': None,
+            'num_at_card': 'F001-1', 'serie_comprobante': 'F001',
+            'numero_comprobante': '1', 'tipo_operacion': '02',
+            'clasificacion_bienes_servicios': 1,
+        }
+
+    def test_dos_intentos_concurrentes_de_crear_factura_desde_la_misma_oc_no_duplican_ni_pasan_ambos(self):
+        resultados = {}
+        retrasos = {'t1': 0.5, 't2': 0.0}
+        real_validar = InvoicingService.validar_oc_disponible
+
+        def _validar_con_retraso(purchase_order, excluir_factura=None):
+            real_validar(purchase_order, excluir_factura=excluir_factura)
+            time.sleep(retrasos.get(threading.current_thread().name, 0))
+
+        def intentar(nombre):
+            try:
+                po = PurchaseOrder.objects.get(pk=self.po.pk)
+                po_line = PurchaseOrderLine.objects.get(pk=self.po_line.pk)
+                sb.crear_factura_desde_ocs(
+                    proveedor=self.supplier_profile,
+                    purchase_order_ids=[po.id],
+                    cabecera=self._cabecera_minima(),
+                    lineas_payload=[{
+                        'po_line': po_line, 'cantidad': Decimal('5.0000'),
+                        'precio': Decimal('1.0000'), 'aplica_retencion': False,
+                        'aplica_detraccion': False,
+                    }],
+                    usuario=self.proveedor_user,
+                )
+                resultados[nombre] = 'OK'
+            except ValidationError:
+                resultados[nombre] = 'RECHAZADO'
+            finally:
+                connections.close_all()
+
+        # t1 arranca primero y retiene la transacción abierta 0.5s antes
+        # de comitear — misma ventana exacta que el bug real de
+        # validar_oc_disponible explotaba (sesión 70); aquí se espera que
+        # crear_factura_desde_ocs, que la reutiliza, esté libre del bug.
+        with patch.object(InvoicingService, 'validar_oc_disponible', side_effect=_validar_con_retraso):
+            t1 = threading.Thread(target=intentar, args=('t1',), name='t1')
+            t2 = threading.Thread(target=intentar, args=('t2',), name='t2')
+            t1.start()
+            time.sleep(0.05)
+            t2.start()
+            t1.join()
+            t2.join()
+
+        # Exactamente uno de los 2 debe pasar y el otro debe ser
+        # rechazado — nunca ambos "OK" (duplicaría la Factura sobre la
+        # misma OC) ni ambos "RECHAZADO" (bloquearía a un llamador
+        # legítimo sin ningún motivo real).
+        self.assertEqual(sorted(resultados.values()), ['OK', 'RECHAZADO'])
+        self.assertEqual(
+            Factura.objects.filter(ordenes_compra__purchase_order=self.po).count(), 1,
+        )

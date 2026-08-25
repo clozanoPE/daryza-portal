@@ -99,14 +99,20 @@ CONFIG_FACTURA_LINEA = {
 }
 
 
-def _validar_permiso_carga(factura, usuario):
+def validar_permiso_edicion(factura, usuario):
     """
-    Candado de servicio (punto 4, pedido explícito): dueño + estado. Se
-    llama SIEMPRE al inicio de cargar_archivo_factura/
+    Candado de servicio (Sub-fase 3.2, punto 4 pedido explícito entonces):
+    dueño + estado. Se llama SIEMPRE al inicio de cargar_archivo_factura/
     cargar_archivo_factura_linea, sin importar si el llamador (la vista)
     ya filtró por dueño en su queryset — defensa en profundidad, y la
     única fuente de verdad real para cualquier consumidor futuro del
     servicio que no pase por esa vista.
+
+    Renombrado de `_validar_permiso_carga` (Sub-fase 3.4, "Copiar de
+    OC(s)"): mismo candado, ahora reutilizado también por
+    services_borrador.py para la edición de cabecera/línea de una Factura
+    ya creada — el nombre "carga" ya no describía todos sus usos. Sin
+    cambio de lógica, solo de nombre/visibilidad (pública, no privada).
     """
     if not factura.proveedor.user_id or factura.proveedor.user_id != usuario.pk:
         raise ValidationError("Solo el proveedor dueño de esta Factura puede cargar archivos.")
@@ -153,7 +159,7 @@ def cargar_archivo_factura(factura, tipo: str, archivo, usuario):
     correspondientes. Lanza ValidationError en cualquier rechazo, sin
     tocar la BD ni subir nada a OneDrive si la validación falla.
     """
-    _validar_permiso_carga(factura, usuario)
+    validar_permiso_edicion(factura, usuario)
 
     config = CONFIG_FACTURA.get(tipo)
     if config is None:
@@ -225,7 +231,7 @@ def cargar_archivo_factura_linea(factura_linea, tipo: str, archivo, usuario):
     aplica.
     """
     factura = factura_linea.factura
-    _validar_permiso_carga(factura, usuario)
+    validar_permiso_edicion(factura, usuario)
 
     config = CONFIG_FACTURA_LINEA.get(tipo)
     if config is None:

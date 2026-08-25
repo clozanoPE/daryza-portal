@@ -1,0 +1,248 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Factura {{ factura.pk }} | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-receipt text-success me-2"></i>
+      Factura {% if factura.serie_comprobante %}{{ factura.serie_comprobante }}-{{ factura.numero_comprobante }}{% else %}#{{ factura.pk }}{% endif %}
+    </h1>
+    <p class="page-header__subtitle">
+      <span class="badge rounded-pill text-xs fw-bold
+        {% if factura.estado == 'BORRADOR' %}bg-secondary
+        {% elif factura.estado == 'EN_REVISION_COMPRAS' %}bg-warning text-dark
+        {% elif factura.estado == 'OBSERVADA' %}bg-danger
+        {% elif factura.estado == 'APROBADA_COMPRAS' %}bg-success
+        {% else %}bg-dark{% endif %}">
+        {{ factura.get_estado_display }}
+      </span>
+      <span class="text-muted ms-2">{{ factura.sede.nombre }}</span>
+    </p>
+  </div>
+  <a href="{% url 'invoicing:mis_facturas' %}" class="btn btn-outline-success rounded-3">
+    <i class="bi bi-arrow-left me-1"></i>Mis Facturas
+  </a>
+</div>
+
+{% if not puede_editar %}
+<div class="alert alert-info">
+  <i class="bi bi-lock-fill me-1"></i>
+  Esta Factura está en estado "{{ factura.get_estado_display }}" — ya no se puede editar ni cargar/reemplazar archivos.
+</div>
+{% endif %}
+
+{% if factura.observaciones.all %}
+<div class="dz-card p-3 mb-4">
+  <h6 class="fw-bold text-xs mb-2"><i class="bi bi-chat-left-text text-danger me-1"></i>Observaciones de Compras</h6>
+  {% for obs in factura.observaciones.all %}
+  <div class="p-2 rounded-3 bg-danger-subtle text-danger text-xxs mb-1">
+    <strong>Ronda {{ obs.ronda }}</strong> ({{ obs.fecha|date:"d/m/Y H:i" }}): {{ obs.texto }}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="row g-4">
+
+  <div class="col-12 col-lg-6">
+
+    {# ── Cabecera ─────────────────────────────────────────────────────── #}
+    <div class="dz-card p-4 mb-4">
+      <h5 class="fw-bold mb-3"><i class="bi bi-card-heading text-success me-2"></i>Datos del Comprobante</h5>
+      <form id="form-cabecera" class="row g-3">
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">Serie</label>
+          <input type="text" name="serie_comprobante" class="form-control form-control-sm rounded-3"
+                 value="{{ factura.serie_comprobante|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
+        </div>
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">Número</label>
+          <input type="text" name="numero_comprobante" class="form-control form-control-sm rounded-3"
+                 value="{{ factura.numero_comprobante|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
+        </div>
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">Moneda</label>
+          <input type="text" name="doc_cur" class="form-control form-control-sm rounded-3" maxlength="10"
+                 value="{{ factura.doc_cur|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
+        </div>
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">N° Doc. Proveedor</label>
+          <input type="text" name="num_at_card" class="form-control form-control-sm rounded-3"
+                 value="{{ factura.num_at_card|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
+        </div>
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">Fecha de Documento</label>
+          <input type="date" name="tax_date" class="form-control form-control-sm rounded-3"
+                 value="{{ factura.tax_date|date:'Y-m-d' }}" {% if not puede_editar %}disabled{% endif %}>
+        </div>
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">Fecha de Vencimiento</label>
+          <input type="date" name="doc_due_date" class="form-control form-control-sm rounded-3"
+                 value="{{ factura.doc_due_date|date:'Y-m-d' }}" {% if not puede_editar %}disabled{% endif %}>
+        </div>
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">Tipo de Operación</label>
+          <select name="tipo_operacion" class="form-select form-select-sm rounded-3" {% if not puede_editar %}disabled{% endif %}>
+            {% for valor, label in tipos_operacion %}
+            <option value="{{ valor }}" {% if factura.tipo_operacion == valor %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-6">
+          <label class="form-label text-xs fw-bold">Clasificación B/S</label>
+          <select name="clasificacion_bienes_servicios" class="form-select form-select-sm rounded-3" {% if not puede_editar %}disabled{% endif %}>
+            <option value="">—</option>
+            {% for valor, label in clasificaciones %}
+            <option value="{{ valor }}" {% if factura.clasificacion_bienes_servicios == valor %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% if puede_editar %}
+        <div class="col-12">
+          <button type="button" onclick="guardarCabecera({{ factura.id }})" class="btn btn-success btn-sm rounded-3">
+            <i class="bi bi-save me-1"></i>Guardar Cabecera
+          </button>
+        </div>
+        {% endif %}
+      </form>
+    </div>
+
+    {# ── Archivos de la Factura (XML/PDF/CDR) ────────────────────────────── #}
+    <div class="dz-card p-4">
+      <h5 class="fw-bold mb-3"><i class="bi bi-file-earmark-arrow-up text-success me-2"></i>Documentos</h5>
+      {% for tipo, label, url in archivos %}
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <div class="flex-grow-1">
+          <label class="form-label text-xs fw-bold d-block mb-1">{{ label }}</label>
+          {% if url %}
+          <span class="badge bg-success-subtle text-success border border-success-subtle text-xxs">
+            <i class="bi bi-check-circle me-1"></i>Cargado
+          </span>
+          <a href="{{ url }}" target="_blank" class="text-xxs ms-2">Ver</a>
+          {% else %}
+          <span class="badge bg-warning-subtle text-warning border border-warning-subtle text-xxs">Pendiente</span>
+          {% endif %}
+        </div>
+        {% if puede_editar %}
+        <input type="file" id="file-{{ tipo }}" class="form-control form-control-sm rounded-3" style="max-width:180px"
+               accept="{% if tipo == 'pdf' %}.pdf{% else %}.xml{% endif %}">
+        <button class="btn btn-outline-success btn-sm rounded-3" onclick="subirArchivoFactura('{{ tipo }}', {{ factura.id }})">
+          <i class="bi bi-upload"></i>
+        </button>
+        {% endif %}
+      </div>
+      {% endfor %}
+
+      {% if factura.mensaje_validacion_documentos %}
+      <div class="p-3 rounded-3 bg-light border text-xxs mt-2" style="white-space:pre-line">
+        <strong>Resultado de la validación:</strong><br>{{ factura.mensaje_validacion_documentos }}
+      </div>
+      {% endif %}
+
+      {% if puede_editar %}
+      <button class="btn btn-success w-100 rounded-3 fw-bold mt-3" onclick="enviarARevision({{ factura.id }})"
+              {% if not factura.xml_file or not factura.pdf_file or not factura.cdr_xml_file %}disabled{% endif %}>
+        <i class="bi bi-send me-2"></i>Enviar a Revisión
+      </button>
+      {% if not factura.xml_file or not factura.pdf_file or not factura.cdr_xml_file %}
+      <p class="text-muted text-xxs mt-1 mb-0 text-center">Cargue los 3 documentos para poder enviar a revisión.</p>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Líneas ──────────────────────────────────────────────────────────── #}
+  <div class="col-12 col-lg-6">
+    <div class="dz-card p-4">
+      <h5 class="fw-bold mb-3"><i class="bi bi-list-check text-success me-2"></i>Líneas</h5>
+      {% for linea in factura.lineas.all %}
+      <div class="border rounded-3 p-3 mb-3">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <span class="fw-bold text-xs d-block">{{ linea.po_line.item_code }}</span>
+            <small class="text-muted text-xxs">OC {{ linea.po_line.purchase_order.doc_num }} · {{ linea.po_line.description }}</small>
+          </div>
+          {% if linea.difiere_de_oc %}
+          <span class="badge bg-warning-subtle text-warning border border-warning-subtle text-xxs">Difiere de OC</span>
+          {% endif %}
+        </div>
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label text-xxs fw-bold">Cantidad (OC: {{ linea.cantidad_oc }})</label>
+            <input type="number" step="0.0001" class="form-control form-control-sm rounded-3 inp-cantidad"
+                   data-linea="{{ linea.id }}" value="{{ linea.cantidad }}" {% if not puede_editar %}disabled{% endif %}>
+          </div>
+          <div class="col-6">
+            <label class="form-label text-xxs fw-bold">Precio</label>
+            <input type="number" step="0.0001" class="form-control form-control-sm rounded-3 inp-precio"
+                   data-linea="{{ linea.id }}" value="{{ linea.precio }}" {% if not puede_editar %}disabled{% endif %}>
+          </div>
+        </div>
+        {% if puede_editar %}
+        <button class="btn btn-outline-success btn-sm rounded-3 mt-2 w-100" onclick="guardarLinea({{ linea.id }})">
+          <i class="bi bi-save me-1"></i>Guardar Línea
+        </button>
+        {% endif %}
+
+        <div class="row g-2 mt-1">
+          <div class="col-6">
+            <div class="form-check">
+              <input type="checkbox" class="form-check-input chk-retencion-linea" id="chk-ret-{{ linea.id }}"
+                     data-linea="{{ linea.id }}" {% if linea.aplica_retencion %}checked{% endif %}
+                     {% if not puede_editar %}disabled{% endif %} onchange="toggleFlagLinea(this, 'retencion')">
+              <label class="form-check-label text-xxs" for="chk-ret-{{ linea.id }}">Aplica Retención</label>
+            </div>
+            {% if linea.aplica_retencion %}
+            <div class="mt-1">
+              {% if linea.documento_retencion %}
+              <span class="badge bg-success-subtle text-success text-xxs"><i class="bi bi-check-circle me-1"></i>Cargado</span>
+              {% endif %}
+              {% if puede_editar %}
+              <input type="file" class="form-control form-control-sm rounded-3 mt-1" id="file-retencion-{{ linea.id }}" accept=".pdf">
+              <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'retencion')">
+                <i class="bi bi-upload me-1"></i>Subir
+              </button>
+              {% endif %}
+            </div>
+            {% endif %}
+          </div>
+          <div class="col-6">
+            <div class="form-check">
+              <input type="checkbox" class="form-check-input chk-detraccion-linea" id="chk-det-{{ linea.id }}"
+                     data-linea="{{ linea.id }}" {% if linea.aplica_detraccion %}checked{% endif %}
+                     {% if not puede_editar %}disabled{% endif %} onchange="toggleFlagLinea(this, 'detraccion')">
+              <label class="form-check-label text-xxs" for="chk-det-{{ linea.id }}">Aplica Detracción</label>
+            </div>
+            {% if linea.aplica_detraccion %}
+            <div class="mt-1">
+              {% if linea.documento_detraccion %}
+              <span class="badge bg-success-subtle text-success text-xxs"><i class="bi bi-check-circle me-1"></i>Cargado</span>
+              {% endif %}
+              {% if puede_editar %}
+              <input type="file" class="form-control form-control-sm rounded-3 mt-1" id="file-detraccion-{{ linea.id }}" accept=".pdf">
+              <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'detraccion')">
+                <i class="bi bi-upload me-1"></i>Subir
+              </button>
+              {% endif %}
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% empty %}
+      <p class="text-muted text-xs text-center py-4">Sin líneas.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.0"></script>
+{% endblock %}
