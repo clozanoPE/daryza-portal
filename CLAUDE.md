@@ -2140,3 +2140,17 @@ Implementa el patrón "Copiar de OC(s)" (tipo SAP B1) de punta a punta: 3 pantal
 **Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios (sin cambios de modelo — toda la Sub-fase 3.4 es servicio+vista+template). `manage.py test apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`: **166/166 OK** (149 anteriores + 17 nuevos). Barrido de `{#` multilínea (regla permanente, sesión 26) sobre las 4 plantillas tocadas/nuevas: **0 instancias**.
 
 **Fuera de alcance de esta sesión (confirmado explícitamente por el pedido):** vista de Compras para revisar/aprobar/observar (Sub-fase 3.5); endpoints del daemon para `Factura` (Sub-fase 3.6, análogo a `api/entrada_mercaderia_api.py`); ningún cálculo/campo de impuestos; test dedicado para el caso "OC de sedes distintas rechaza" (el candado existe y está documentado, pero no se agregó un test específico — prioridad puesta en los 6 escenarios explícitamente pedidos); deploy a producción (no pedido esta vez, a diferencia de la sesión 78).
+
+### 2026-08-25 (sesión 80) — Deploy a producción de la Sub-fase 3.4
+
+Confirmado el diseño de la sesión 79 por el usuario, se desplegó el commit `c2fff69` ("Sub-fase 3.4: pantalla completa 'Copiar de OC(s)' para armar Facturas") — las 3 pantallas nuevas del proveedor, `services_borrador.py`, y el link de sidebar "Mis Facturas".
+
+**Validación realizada, los 4 puntos pedidos:**
+1. `git push origin main` — sin conflictos.
+2. Deploy verificado en Railway (`railway status --json`, con polling hasta salir de `BUILDING`/`DEPLOYING`): **`SUCCESS`**, commit confirmado exacto (`c2fff6913564d5a8e98e0eac76a0775afd79e6b9`).
+3. Logs de build: `pip install` completo sin errores (dependencias desde caché, incluidas `xmlsec`/`lxml`/`pypdf`). Logs de deploy: `No migrations to apply` (correcto — la Sub-fase 3.4 no tocó ningún modelo), `168 static files copied` (166→168, exactamente los 2 JS nuevos: `nueva_factura.js`/`factura_detalle.js`), gunicorn arrancó y quedó escuchando sin ningún traceback — un error de import en `apps/invoicing/views.py`/`services_borrador.py` habría hecho fallar el boot del worker, y no ocurrió. Confirmado además con requests reales: `/invoicing/nueva/` y `/invoicing/mis-facturas/` responden `302` (redirect a login sin sesión, esperado — no `500`).
+4. `manage.py check --deploy` corrido **en producción real** (vía `railway ssh`, no local — para reflejar las variables de entorno reales, no las de desarrollo): **1 solo warning**, `security.W004` (HSTS no configurado) — mismo warning ya conocido de sesiones anteriores, no bloqueante. Sin ningún error nuevo.
+
+**Sub-fase 3.4 en producción, funcionando.** Sin cambios de código en esta sesión — solo deploy y verificación.
+
+**Fuera de alcance de esta sesión (no pedido):** Sub-fase 3.5 (revisión Compras) y 3.6 (endpoints del daemon), siguen sin construir.
