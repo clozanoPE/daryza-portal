@@ -2154,3 +2154,34 @@ Confirmado el diseño de la sesión 79 por el usuario, se desplegó el commit `c
 **Sub-fase 3.4 en producción, funcionando.** Sin cambios de código en esta sesión — solo deploy y verificación.
 
 **Fuera de alcance de esta sesión (no pedido):** Sub-fase 3.5 (revisión Compras) y 3.6 (endpoints del daemon), siguen sin construir.
+
+---
+
+## 📍 Punto de retomada (pausa pedida por el usuario, 2026-08-25)
+
+Estado exacto al pausar — leer esto primero al retomar, antes de releer el historial completo.
+
+**Repo y producción, sincronizados:**
+- `main` local = `origin/main` = producción, los 3 en el commit **`a0edd2b`** ("Documenta el deploy a produccion de la Sub-fase 3.4", solo `CLAUDE.md` — el código real de la Sub-fase 3.4 es el commit `c2fff69`, redesplegado automáticamente sin cambios funcionales al pushear `a0edd2b`).
+- Deploy verificado `SUCCESS` en Railway (`vivacious-stillness` / `web` / `production`), sin ningún error de import ni migración pendiente.
+- `https://nexo.daryza.pe` sirviendo esta versión ahora mismo.
+- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **166/166 OK** a la fecha del último commit de código (`c2fff69`) — no hay ningún cambio de código sin testear ni sin comitear.
+
+**Módulo de Facturación (`apps.invoicing`) — dónde va cada Sub-fase:**
+
+| Sub-fase | Contenido | Estado |
+|---|---|---|
+| 3.0 | Validación aislada: firma XAdES, extracción UBL, estado CDR (`services_validacion.py`) | ✅ Listo (sesión 59) |
+| 3.1 / 3.1b | Modelo `Factura`+relacionados, candados de negocio (`saldo_disponible`/`validar_oc_disponible`/`validar_retencion_detraccion`) | ✅ Listo (sesión 69), bug de concurrencia real encontrado y corregido (sesión 70), `saldo_disponible` confirmado sin el mismo bug (sesión 71) |
+| 3.2 | Carga segura de archivos (XML/PDF/CDR/retención/detracción) a OneDrive, con hash | ✅ Listo (sesiones 75-76) |
+| 3.3 | Validación automática de negocio al completar los 3 archivos (`procesar_validacion_documentos`) + `enviar_a_revision` | ✅ Listo (sesión 77), verificación de hash agregada antes de producción (sesión 78) |
+| **3.4** | **Pantalla completa del proveedor: "Copiar de OC(s)" → crear Factura → cargar archivos → enviar a revisión** | ✅ **Listo y en producción** (sesiones 79-80) |
+| **3.5** | **Vista de Compras: revisar/aprobar/observar una Factura enviada** (`FacturaObservacion`, cambiar `estado` a `APROBADA_COMPRAS`/`OBSERVADA`, disparar `InvoicingService.notificar_factura_observada` — ya construido, sin ningún endpoint que lo llame) | ❌ **Sin construir — siguiente paso natural** |
+| **3.6** | **Endpoints del daemon SAP para `Factura`** (análogo a `api/entrada_mercaderia_api.py`, sesión 57/58: listar pendientes + confirmar borrador/definitivo/error en SAP) | ❌ **Sin construir** |
+
+**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural, cuando se retome, es la Sub-fase 3.5 (vista de Compras) — no requiere ningún dato externo (a diferencia de la 3.4, no depende de archivos/fixtures que el usuario deba proveer).
+
+**Deuda/observaciones abiertas, sin urgencia:**
+- No hay test dedicado para "OC de sedes distintas rechaza" en la creación de Factura (el candado existe en `services_borrador.py`, documentado, solo falta el test — sesión 79).
+- `security.W004` (HSTS) sigue sin configurar en producción — warning conocido, no bloqueante, nunca se pidió resolverlo.
+- El token real de OneDrive/Graph y las credenciales de producción (`ONEDRIVE_*`, `GRAPH_SENDER_EMAIL`) — confirmar que siguen vigentes si pasó mucho tiempo antes de retomar pruebas reales de carga de archivos/correo en producción.
