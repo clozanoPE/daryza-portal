@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Facturas de Proveedores | Daryza VBS{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-header__title">
+      <i class="bi bi-receipt-cutoff text-success me-2"></i>Facturas de Proveedores
+    </h1>
+    <p class="page-header__subtitle">
+      Revisión y aprobación de Facturas enviadas por proveedores
+    </p>
+  </div>
+  <a href="{% url 'operations:panel_compras' %}" class="btn btn-light btn-sm rounded-3 border">
+    <i class="bi bi-arrow-left me-1"></i>Volver a Panel Compras
+  </a>
+</div>
+
+<div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-3">
+  <form method="get" class="d-flex align-items-end flex-wrap gap-2">
+    <div>
+      <label class="form-label text-xxs fw-bold text-muted text-uppercase mb-1 d-block">Estado</label>
+      <select name="estado" class="form-select form-select-sm rounded-3 bg-white">
+        {% for codigo, etiqueta in estados_filtro %}
+        <option value="{{ codigo }}" {% if estado_filtro == codigo %}selected{% endif %}>{{ etiqueta }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% include "partials/campo_filtro_periodo.html" %}
+    <button type="submit" class="btn btn-success btn-sm rounded-3 shadow-sm">
+      <i class="bi bi-funnel me-1"></i>Filtrar
+    </button>
+  </form>
+</div>
+
+<div class="dz-card p-0 overflow-hidden">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th class="text-xxs fw-bold text-muted">Factura</th>
+          <th class="text-xxs fw-bold text-muted">Proveedor</th>
+          <th class="text-xxs fw-bold text-muted">Sede</th>
+          <th class="text-xxs fw-bold text-muted">OC(s)</th>
+          <th class="text-xxs fw-bold text-muted">Fecha</th>
+          <th class="text-xxs fw-bold text-muted text-end">Importe</th>
+          <th class="text-xxs fw-bold text-muted text-center">Estado</th>
+          <th class="text-xxs fw-bold text-muted text-center">CDR</th>
+          <th class="text-xxs fw-bold text-muted text-center">Firma</th>
+          <th class="text-xxs fw-bold text-muted text-center"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for factura in facturas %}
+        <tr>
+          <td class="text-xs fw-bold">
+            {% if factura.serie_comprobante %}{{ factura.serie_comprobante }}-{{ factura.numero_comprobante }}
+            {% else %}#{{ factura.pk }}{% endif %}
+          </td>
+          <td class="text-xs">
+            <strong>{{ factura.proveedor.razon_social|default:factura.proveedor.sap_card_code }}</strong>
+          </td>
+          <td class="text-xs text-muted">{{ factura.sede.nombre }}</td>
+          <td class="text-xxs">
+            {% for oc in factura.ordenes_compra.all %}
+            <span class="badge bg-light text-dark border text-xxs">OC {{ oc.purchase_order.doc_num }}</span>
+            {% endfor %}
+          </td>
+          <td class="text-xs text-muted">{{ factura.created_at|date:"d/m/Y" }}</td>
+          <td class="text-xs text-end">
+            {% if factura.importe_total_xml %}
+              {{ factura.moneda_xml }} {{ factura.importe_total_xml|stringformat:".2f" }}
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            <span class="badge rounded-pill text-xxs fw-bold
+              {% if factura.estado == 'EN_REVISION_COMPRAS' %}bg-warning text-dark
+              {% elif factura.estado == 'OBSERVADA' %}bg-danger
+              {% elif factura.estado == 'APROBADA_COMPRAS' %}bg-success
+              {% else %}bg-dark{% endif %}">
+              {{ factura.get_estado_display }}
+            </span>
+          </td>
+          <td class="text-center">
+            {% if factura.estado_cdr == 'ACEPTADO' %}
+            <i class="bi bi-check-circle-fill text-success" data-bs-toggle="tooltip" title="CDR Aceptado"></i>
+            {% elif factura.estado_cdr == 'OBSERVADO' %}
+            <i class="bi bi-exclamation-triangle-fill text-warning" data-bs-toggle="tooltip" title="CDR Observado"></i>
+            {% elif factura.estado_cdr == 'RECHAZADO' %}
+            <i class="bi bi-x-circle-fill text-danger" data-bs-toggle="tooltip" title="CDR Rechazado"></i>
+            {% else %}
+            <i class="bi bi-dash-circle text-muted" data-bs-toggle="tooltip" title="Sin CDR validado"></i>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            {% if factura.firma_valida == True %}
+            <i class="bi bi-shield-fill-check text-success" data-bs-toggle="tooltip" title="Firma válida"></i>
+            {% elif factura.firma_valida == False %}
+            <i class="bi bi-shield-fill-exclamation text-danger" data-bs-toggle="tooltip" title="Firma INVÁLIDA"></i>
+            {% else %}
+            <i class="bi bi-shield text-muted" data-bs-toggle="tooltip" title="Sin validar"></i>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            <a href="{% url 'invoicing:factura_detalle_compras' factura.id %}" class="btn btn-sm btn-outline-success rounded-3">
+              <i class="bi bi-eye me-1"></i>Ver
+            </a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="10" class="text-center text-muted py-5">
+            <i class="bi bi-inbox fs-1 d-block mb-2 opacity-25"></i>
+            <span class="small">No hay Facturas que coincidan con el filtro.</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

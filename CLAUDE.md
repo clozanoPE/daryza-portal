@@ -2155,17 +2155,43 @@ Confirmado el diseño de la sesión 79 por el usuario, se desplegó el commit `c
 
 **Fuera de alcance de esta sesión (no pedido):** Sub-fase 3.5 (revisión Compras) y 3.6 (endpoints del daemon), siguen sin construir.
 
+### 2026-08-26 (sesión 81) — Sub-fase 3.5: el lado de Compras — listado, detalle reutilizado, aprobar/observar
+
+Implementa el flujo real de revisión de Compras sobre una Factura ya enviada (Sub-fase 3.4). **Sin deploy a producción esta sesión** — solo commit local, según lo pedido explícitamente (commit separado + `CLAUDE.md`, sin instrucción de push).
+
+**1. Listado (`panel_facturas_compras.html` + `views.py::panel_facturas_compras`, `GET /invoicing/compras/`):** `EN_REVISION_COMPRAS` por defecto, filtro `estado` (con las 4 opciones: EN_REVISION_COMPRAS/OBSERVADA/APROBADA_COMPRAS/CANCELADO) + `apps.base.filters.resolver_periodo` (mes actual por defecto, mismo patrón ya usado en el Panel de Consulta de OC y los Historiales) — sobre `Factura.created_at`, el único campo de fecha que **toda** Factura tiene sin ambigüedad (a diferencia de "fecha de cita", una Factura puede vincular varias OC con Tickets/Appointments distintos). Columnas exactas pedidas: proveedor (`razon_social`), sede, OC(s), fecha, importe (`importe_total_xml`, el declarado en el XML real — no un recálculo de líneas), estado, CDR y firma **como ícono** (verde/rojo/gris, nunca solo texto) — `table-responsive` desde el diseño, no agregado después (lección explícita de la sesión 52/53). Punto de entrada: banner nuevo "Facturas de Proveedores" en `panel_compras.html` (mismo patrón ya usado para "Consulta de OC", sesión 52 — ni esa ni esta están en el sidebar global).
+
+**2. Detalle — MISMA plantilla reutilizada, sin duplicar layout (pedido explícito):** `factura_detalle_compras` (nueva vista, sin filtro de dueño) renderiza `invoicing/factura_detalle.html` — la misma que ya usa el proveedor — con `puede_editar=False` siempre y `es_compras=True`. Como todos los inputs/botones de edición y carga del template ya estaban gateados por `puede_editar`, pasar `False` los deja de solo lectura automáticamente, sin ningún segundo camino de renderizado. Agregado (visible para ambos roles, no solo Compras — útil para cualquiera):
+- Badges de resultado de validación (firma/CDR/importe) con ícono, junto al texto ya existente de `mensaje_validacion_documentos`.
+- Detalle de `difiere_de_oc` por línea: qué cambió exactamente (`Cantidad OC: X → Facturado: Y`, solo el campo que realmente difiere, no ambos si solo uno cambió).
+- Historial de `FacturaObservacion` con autor visible (antes solo ronda+fecha+texto).
+- Back-button/título ahora usan `volver_url`/`volver_label` de contexto (Mis Facturas para el proveedor, Facturas Pendientes para Compras) en vez de un link fijo.
+
+**3. Acciones (`InvoicingService.aprobar_factura`/`observar_factura`, `apps/invoicing/services.py`):**
+- `_validar_permiso_compras` (candado de rol en el **servicio**, reutiliza `apps.base.decorators.en_grupo('COMPRAS')` — el mismo predicado que ya arma `compras_required`, no una segunda implementación).
+- `aprobar_factura`: `factura.refresh_from_db()` primero (nunca confía en el objeto que le pasó el llamador), exige `EN_REVISION_COMPRAS`, y **re-evalúa** firma/CDR/importe con `_errores_validacion_documentos` — el mismo cuerpo de reglas extraído de `enviar_a_revision` a un helper compartido, no una copia — antes de marcar `APROBADA_COMPRAS` + `estado_sap='L'`. Verificado con test dedicado que rechaza aunque el estado ya sea `EN_REVISION_COMPRAS` (punto 3 del pedido, "no confíes en que el estado anterior ya lo garantizó").
+- `observar_factura`: exige texto no vacío (mismo criterio que el motivo de rechazo de citas, sesión 20 — aquí libre, no un choice cerrado), crea una `FacturaObservacion` con `ronda = max(rondas existentes) + 1` (nunca sobreescribe una anterior — así "la próxima observación, si la hay" queda numerada bien sin necesitar ningún contador aparte en `Factura`), cambia a `OBSERVADA`, y dispara `notificar_factura_observada` (ya construido desde la sesión 73) **fuera** de la transacción de escritura (llamada de red real a Graph). El fallo de correo no bloquea — igual criterio que el resto del proyecto — y queda en un atributo transitorio `factura._email_observacion_error` (no persistido) que la vista expone como `email_error` en la respuesta JSON si aplica, mismo patrón ya usado por `Ticket.email_notificacion_error` (sesión 73).
+
+**4. Lado del proveedor — ciclo cerrado, verificado en carne propia:** el candado de `ESTADOS_CARGA_PERMITIDA = {'BORRADOR', 'OBSERVADA'}` (`services_archivos.py`, sin cambios) ya permitía reeditar/recargar en `OBSERVADA` — confirmado con un test HTTP real que edita la cabecera mientras la Factura está `OBSERVADA` y verifica `status=success`, no solo por lectura de código ("verifícalo, no lo des por hecho"). `mis_facturas.html` ahora muestra la observación más reciente (`factura.observaciones.last`) inline bajo la fila, cuando `estado == 'OBSERVADA'`. Reenviar desde `OBSERVADA` no necesitó ningún cambio en `enviar_a_revision` — como la ronda se calcula por `max()+1` en cada llamada a `observar_factura`, una segunda observación después de un reenvío ya queda numerada como ronda 2 sin lógica adicional.
+
+**Bug real encontrado y corregido durante la validación (no pedido, descubierto al smoke-testear el importe nuevo del listado):** con `LANGUAGE_CODE='es-pe'`, Django renderiza cualquier `Decimal` sin filtro con **coma** como separador decimal (`123.45` → `"123,45"`) — mismo patrón de bug ya documentado y corregido en este proyecto (sesión 41, campo CANT. REAL de Calidad). Encontrado en `importe_total_xml` del listado nuevo, y confirmado que también afectaba (desde la Sub-fase 3.4, sesión 79, sin relación con esta sesión) los `value="{{ linea.cantidad }}"`/`value="{{ linea.precio }}"` de `factura_detalle.html` — `<input type="number">` con una coma es un valor **inválido**, el campo quedaría vacío/roto en el navegador. Corregido con `|stringformat:".2f"` (importe, 2 decimales reales de un comprobante) / `|stringformat:".4f"` (cantidad/precio, mismo criterio de precisión ya usado en el resto del proyecto) en los 5 puntos afectados — verificado con un smoke test real contra Postgres (`transaction.atomic()` revertido, sin residuos) que confirma la ausencia de comas en el HTML renderizado, no solo por lectura de código.
+
+**Tests nuevos** (`apps/invoicing/tests.py`, 14 — `AprobarObservarFacturaTests` 12 + `AprobarObservarFacturaHTTPTests` 2), cubriendo los 5 escenarios pedidos explícitamente: aprobar con firma inválida rechaza pese a `EN_REVISION_COMPRAS`; observar sin texto rechaza; historial de 2 rondas se conserva íntegro (textos y números exactos verificados, no solo el conteo); cuenta sin grupo COMPRAS rechazada tanto a nivel de servicio como de vista (`302`, redirect); y el ciclo HTTP completo de punta a punta (crear → cargar 3 archivos → enviar → **observar** → el proveedor ve la observación en "Mis Facturas" y reedita/reenvía → **aprobar**, con `estado_sap='L'` y la ronda de observaciones intacta al final).
+
+**Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios (sin cambios de modelo — toda la Sub-fase 3.5 es servicio+vista+template). `manage.py test apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`: **180/180 OK** (166 anteriores + 14 nuevos). Barrido de `{#` multilínea (regla permanente, sesión 26) sobre todo el proyecto: **0 instancias**.
+
+**Fuera de alcance de esta sesión (confirmado explícitamente por el pedido):** endpoints del daemon SAP para `Factura` (Sub-fase 3.6); columna de facturación en el Panel de Consulta de OC (Sub-fase 3.7, `apps/base/oc_status.py` sigue sin tocar); deploy a producción (sin instrucción de push esta vez, a diferencia de la sesión 78/80 — el commit queda listo en `main` local, pendiente de que el usuario pida el push).
+
 ---
 
-## 📍 Punto de retomada (pausa pedida por el usuario, 2026-08-25)
+## 📍 Punto de retomada (actualizado, sesión 81 — 2026-08-26)
 
 Estado exacto al pausar — leer esto primero al retomar, antes de releer el historial completo.
 
-**Repo y producción, sincronizados:**
-- `main` local = `origin/main` = producción, los 3 en el commit **`a0edd2b`** ("Documenta el deploy a produccion de la Sub-fase 3.4", solo `CLAUDE.md` — el código real de la Sub-fase 3.4 es el commit `c2fff69`, redesplegado automáticamente sin cambios funcionales al pushear `a0edd2b`).
-- Deploy verificado `SUCCESS` en Railway (`vivacious-stillness` / `web` / `production`), sin ningún error de import ni migración pendiente.
-- `https://nexo.daryza.pe` sirviendo esta versión ahora mismo.
-- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **166/166 OK** a la fecha del último commit de código (`c2fff69`) — no hay ningún cambio de código sin testear ni sin comitear.
+**Repo:**
+- `main` local tiene el commit de la Sub-fase 3.5 (sesión 81) **por encima** del último estado ya desplegado (`43b12d1`, sesión "Agrega punto de retomada...", = producción actual).
+- **`origin/main` y producción (Railway `vivacious-stillness`/`web`/`production`, `https://nexo.daryza.pe`) siguen en `43b12d1`** — la Sub-fase 3.5 (esta sesión) **todavía no está pusheada ni desplegada**. Sin instrucción de push esta vez; pedirlo explícitamente para que se suba.
+- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **180/180 OK** en el commit local de la sesión 81 — no hay ningún cambio de código sin testear ni sin comitear.
 
 **Módulo de Facturación (`apps.invoicing`) — dónde va cada Sub-fase:**
 
@@ -2175,13 +2201,15 @@ Estado exacto al pausar — leer esto primero al retomar, antes de releer el his
 | 3.1 / 3.1b | Modelo `Factura`+relacionados, candados de negocio (`saldo_disponible`/`validar_oc_disponible`/`validar_retencion_detraccion`) | ✅ Listo (sesión 69), bug de concurrencia real encontrado y corregido (sesión 70), `saldo_disponible` confirmado sin el mismo bug (sesión 71) |
 | 3.2 | Carga segura de archivos (XML/PDF/CDR/retención/detracción) a OneDrive, con hash | ✅ Listo (sesiones 75-76) |
 | 3.3 | Validación automática de negocio al completar los 3 archivos (`procesar_validacion_documentos`) + `enviar_a_revision` | ✅ Listo (sesión 77), verificación de hash agregada antes de producción (sesión 78) |
-| **3.4** | **Pantalla completa del proveedor: "Copiar de OC(s)" → crear Factura → cargar archivos → enviar a revisión** | ✅ **Listo y en producción** (sesiones 79-80) |
-| **3.5** | **Vista de Compras: revisar/aprobar/observar una Factura enviada** (`FacturaObservacion`, cambiar `estado` a `APROBADA_COMPRAS`/`OBSERVADA`, disparar `InvoicingService.notificar_factura_observada` — ya construido, sin ningún endpoint que lo llame) | ❌ **Sin construir — siguiente paso natural** |
-| **3.6** | **Endpoints del daemon SAP para `Factura`** (análogo a `api/entrada_mercaderia_api.py`, sesión 57/58: listar pendientes + confirmar borrador/definitivo/error en SAP) | ❌ **Sin construir** |
+| 3.4 | Pantalla completa del proveedor: "Copiar de OC(s)" → crear Factura → cargar archivos → enviar a revisión | ✅ Listo y en producción (sesiones 79-80) |
+| **3.5** | **Vista de Compras: listado (con filtro de estado/período) + detalle reutilizado (solo lectura) + Aprobar/Observar, con notificación real al proveedor** | ✅ **Lista en `main` local — pendiente de push/deploy** (sesión 81) |
+| **3.6** | **Endpoints del daemon SAP para `Factura`** (análogo a `api/entrada_mercaderia_api.py`, sesión 57/58: listar pendientes + confirmar borrador/definitivo/error en SAP) | ❌ **Sin construir — siguiente paso natural** |
+| **3.7** | **Columna de facturación real en el Panel de Consulta de OC** (`apps/base/oc_status.py`, hoy texto fijo "Próximamente") | ❌ **Sin construir** |
 
-**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural, cuando se retome, es la Sub-fase 3.5 (vista de Compras) — no requiere ningún dato externo (a diferencia de la 3.4, no depende de archivos/fixtures que el usuario deba proveer).
+**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural es: (a) pedir el push/deploy de la sesión 81 si se quiere probar en producción, y/o (b) la Sub-fase 3.6 (endpoints del daemon) — no requiere ningún dato externo del usuario, mismo criterio que la 3.5.
 
 **Deuda/observaciones abiertas, sin urgencia:**
 - No hay test dedicado para "OC de sedes distintas rechaza" en la creación de Factura (el candado existe en `services_borrador.py`, documentado, solo falta el test — sesión 79).
 - `security.W004` (HSTS) sigue sin configurar en producción — warning conocido, no bloqueante, nunca se pidió resolverlo.
 - El token real de OneDrive/Graph y las credenciales de producción (`ONEDRIVE_*`, `GRAPH_SENDER_EMAIL`) — confirmar que siguen vigentes si pasó mucho tiempo antes de retomar pruebas reales de carga de archivos/correo en producción.
+- El bug de coma decimal (`LANGUAGE_CODE='es-pe'` + `Decimal` sin `|stringformat`) ya se corrigió 2 veces en puntos distintos del proyecto (sesión 41, sesión 81) — si aparece un tercer campo `Decimal` nuevo en cualquier template futuro (`value="..."` de un input numérico o texto plano), aplicar `|stringformat:".Nf"` desde el primer commit, no esperar a que se reporte.

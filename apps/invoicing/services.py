@@ -5,16 +5,35 @@ candados de negocio que el usuario pidió explícitamente que vivieran en
 el servicio, no solo en el formulario (mismo principio ya establecido en
 OperationsService/AppointmentService en todo el proyecto).
 
-Sub-fase 3.3 (esta sesión): consume services_validacion.py (Sub-fase 3.0)
-para poblar los datos reales de la Factura una vez que sus 3 archivos
-están completos, y agrega el candado de envío a revisión
-(enviar_a_revision) — bloquea el avance a EN_REVISION_COMPRAS si la firma
-XML es inválida, el CDR fue RECHAZADO, o el importe del XML no coincide
-con el total de las líneas ya cargadas (decisión de negocio confirmada
-explícitamente por el usuario: BLOQUEA, no solo marca el flag).
+Sub-fase 3.3: consume services_validacion.py (Sub-fase 3.0) para poblar
+los datos reales de la Factura una vez que sus 3 archivos están
+completos, y agrega el candado de envío a revisión (enviar_a_revision) —
+bloquea el avance a EN_REVISION_COMPRAS si la firma XML es inválida, el
+CDR fue RECHAZADO, o el importe del XML no coincide con el total de las
+líneas ya cargadas (decisión de negocio confirmada explícitamente por el
+usuario: BLOQUEA, no solo marca el flag).
 
-Todavía sin orquestación de creación de Factura/"Copiar de OC(s)" ni el
-flujo real de revisión Compras — eso es Sub-fase 3.4/3.5.
+Sub-fase 3.5 (esta sesión): el lado de Compras — aprobar_factura /
+observar_factura. Ambas reutilizan _errores_validacion_documentos (el
+mismo cuerpo de reglas que ya usaba enviar_a_revision, extraído a un
+helper compartido) — pedido explícito de "defensa en profundidad, no
+confíes en que el estado anterior ya lo garantizó": aprobar_factura
+vuelve a evaluar firma_valida/estado_cdr/importe_no_coincide contra el
+estado REAL de la Factura (refresh_from_db() al entrar), no contra lo que
+enviar_a_revision ya validó en su momento — nada impide, en teoría, que
+esos campos cambien entre el envío a revisión y la aprobación (un
+recálculo forzado, un dato corregido a mano). Candado de rol
+(_validar_permiso_compras, reutiliza apps.base.decorators.en_grupo, la
+misma función que ya usan los decoradores de vista) vive en el servicio,
+no solo en la vista — igual criterio ya establecido en todo el proyecto
+para OperationsService (ver CLAUDE.md, sesión 5: grupo_requerido_por_etapa).
+
+observar_factura incrementa la ronda de FacturaObservacion tomando el
+máximo ya existente + 1 en cada llamada — así "la próxima observación, si
+la hay" queda numerada correctamente sin necesitar ningún contador
+separado en Factura: si la Factura se observa, se corrige, se reenvía
+(sin crear ninguna fila nueva) y se observa de nuevo, el máximo ya
+reflejará la ronda anterior.
 
 Todos los métodos asumen que ya corren dentro de un transaction.atomic()
 abierto por el llamador (mismo criterio que el resto de servicios de la
@@ -26,8 +45,10 @@ import hashlib
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db.models import F, Sum
+from django.db import transaction
+from django.db.models import F, Max, Sum
 
+from apps.base.decorators import en_grupo
 from apps.operations.models import EntradaMercaderiaLinea
 from apps.sap_sync.models import PurchaseOrder
 
@@ -379,25 +400,14 @@ class InvoicingService:
         return factura
 
     @staticmethod
-    def enviar_a_revision(factura):
+    def _errores_validacion_documentos(factura) -> list:
         """
-        Candado de servicio (pedido explícito, punto 2/3): una Factura no
-        puede avanzar a EN_REVISION_COMPRAS si firma_valida=False,
-        estado_cdr=RECHAZADO, o importe_no_coincide=True — con un mensaje
-        claro indicando cuál de las validaciones falló (pueden fallar
-        varias a la vez, se listan todas, no solo la primera).
-
-        Sin endpoint que la llame todavía (Sub-fase 3.4/3.5, no
-        construida en esta sesión) — mismo criterio ya establecido para
-        notificar_factura_observada: el servicio queda listo para que el
-        flujo real lo consuma sin duplicar esta lógica.
+        Cuerpo de reglas compartido por enviar_a_revision (el proveedor no
+        puede avanzar a EN_REVISION_COMPRAS) y aprobar_factura (Compras no
+        puede aprobar) — extraído a un único lugar para que ambos candados
+        evalúen exactamente la misma regla de negocio, nunca 2 copias que
+        puedan desalinearse.
         """
-        if factura.estado not in ('BORRADOR', 'OBSERVADA'):
-            raise ValidationError(
-                f"No se puede enviar a revisión una Factura en estado "
-                f"'{factura.get_estado_display()}'."
-            )
-
         errores = []
         if factura.firma_valida is not True:
             errores.append(
@@ -412,7 +422,24 @@ class InvoicingService:
             errores.append(
                 "el importe del XML no coincide con el total calculado de las líneas de la Factura."
             )
+        return errores
 
+    @staticmethod
+    def enviar_a_revision(factura):
+        """
+        Candado de servicio (pedido explícito, punto 2/3): una Factura no
+        puede avanzar a EN_REVISION_COMPRAS si firma_valida=False,
+        estado_cdr=RECHAZADO, o importe_no_coincide=True — con un mensaje
+        claro indicando cuál de las validaciones falló (pueden fallar
+        varias a la vez, se listan todas, no solo la primera).
+        """
+        if factura.estado not in ('BORRADOR', 'OBSERVADA'):
+            raise ValidationError(
+                f"No se puede enviar a revisión una Factura en estado "
+                f"'{factura.get_estado_display()}'."
+            )
+
+        errores = InvoicingService._errores_validacion_documentos(factura)
         if errores:
             raise ValidationError(
                 "No se puede enviar la Factura a revisión — " + " ".join(errores)
@@ -420,4 +447,118 @@ class InvoicingService:
 
         factura.estado = 'EN_REVISION_COMPRAS'
         factura.save(update_fields=['estado', 'updated_at'])
+        return factura
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Sub-fase 3.5 — lado de Compras: aprobar / observar
+    # ═══════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _validar_permiso_compras(usuario):
+        """
+        Candado de rol en el servicio (pedido explícito, punto 3: "no solo
+        en la vista"). Reutiliza en_grupo (apps/base/decorators.py) — el
+        mismo predicado que ya arma compras_required — en vez de
+        reimplementar la comprobación de grupo/superusuario en un segundo
+        lugar.
+        """
+        if not en_grupo('COMPRAS')(usuario):
+            raise ValidationError(
+                "Solo una cuenta del grupo COMPRAS (o superusuario) puede ejecutar esta acción."
+            )
+
+    @staticmethod
+    def aprobar_factura(factura, usuario):
+        """
+        Aprueba una Factura EN_REVISION_COMPRAS: pasa a APROBADA_COMPRAS y
+        marca estado_sap='L' (queda lista para que el demonio SAP la tome
+        en la Sub-fase 3.6, mismo patrón ya usado por EntradaMercaderia
+        desde la sesión 57).
+
+        DEFENSA EN PROFUNDIDAD (pedido explícito, punto 3): antes de
+        evaluar nada, refresh_from_db() — nunca confía en que el objeto
+        `factura` que recibió el llamador siga reflejando el estado real
+        en BD (podría venir de una consulta anterior en la misma request,
+        o de un test que mutó campos en memoria sin guardar). Las 3
+        validaciones de _errores_validacion_documentos (firma/CDR/
+        importe) son las MISMAS que ya bloquean enviar_a_revision — no se
+        confía en que ese paso anterior ya las haya garantizado; se
+        vuelven a evaluar aquí, contra el estado ya refrescado.
+        """
+        InvoicingService._validar_permiso_compras(usuario)
+
+        factura.refresh_from_db()
+        if factura.estado != 'EN_REVISION_COMPRAS':
+            raise ValidationError(
+                f"No se puede aprobar una Factura en estado '{factura.get_estado_display()}' "
+                "— solo mientras está 'En Revisión (Compras)'."
+            )
+
+        errores = InvoicingService._errores_validacion_documentos(factura)
+        if errores:
+            raise ValidationError(
+                "No se puede aprobar la Factura — " + " ".join(errores)
+            )
+
+        factura.estado = 'APROBADA_COMPRAS'
+        factura.estado_sap = 'L'
+        factura.save(update_fields=['estado', 'estado_sap', 'updated_at'])
+        return factura
+
+    @staticmethod
+    @transaction.atomic
+    def _crear_observacion_y_marcar(factura, usuario, texto):
+        """Parte transaccional (2 escrituras: FacturaObservacion + Factura) de observar_factura."""
+        from .models import FacturaObservacion
+
+        ultima_ronda = factura.observaciones.aggregate(m=Max('ronda'))['m'] or 0
+        FacturaObservacion.objects.create(
+            factura=factura, autor=usuario, texto=texto, ronda=ultima_ronda + 1,
+        )
+
+        factura.estado = 'OBSERVADA'
+        factura.save(update_fields=['estado', 'updated_at'])
+        return factura
+
+    @staticmethod
+    def observar_factura(factura, usuario, texto_observacion: str):
+        """
+        Observa una Factura EN_REVISION_COMPRAS: exige un texto no vacío
+        (mismo candado ya aplicado al motivo de rechazo de citas, sesión
+        20 — aquí es texto libre, no un choice cerrado, pero la misma
+        idea de "obligatorio, nunca en silencio"), crea una
+        FacturaObservacion NUEVA (nunca sobreescribe una ronda anterior —
+        ver docstring del módulo sobre cómo se numera la ronda), cambia
+        el estado a OBSERVADA, y dispara la notificación por correo real
+        (notificar_factura_observada, sesión anterior) — FUERA de la
+        transacción de escritura (llamada de red real a Graph, mismo
+        criterio ya aplicado en toda la app: no retener ninguna
+        transacción abierta durante una llamada externa).
+
+        El resultado del correo NUNCA bloquea la operación (mismo
+        criterio que notificar_factura_observada/enviar_correo) — si
+        falla, se deja registrado en un atributo transitorio
+        `factura._email_observacion_error` (no persistido, no es un
+        campo del modelo) para que el llamador (la vista) decida si lo
+        expone en la respuesta — mismo patrón ya usado por
+        Ticket.email_notificacion_error (apps.appointments.services,
+        sesión 73).
+        """
+        InvoicingService._validar_permiso_compras(usuario)
+
+        factura.refresh_from_db()
+        if factura.estado != 'EN_REVISION_COMPRAS':
+            raise ValidationError(
+                f"No se puede observar una Factura en estado '{factura.get_estado_display()}' "
+                "— solo mientras está 'En Revisión (Compras)'."
+            )
+
+        texto = (texto_observacion or '').strip()
+        if not texto:
+            raise ValidationError("Debe ingresar un texto de observación.")
+
+        factura = InvoicingService._crear_observacion_y_marcar(factura, usuario, texto)
+
+        resultado_correo = InvoicingService.notificar_factura_observada(factura, texto)
+        factura._email_observacion_error = None if resultado_correo.enviado else resultado_correo.error
         return factura

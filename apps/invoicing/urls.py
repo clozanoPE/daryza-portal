@@ -28,6 +28,24 @@ urlpatterns = [
         name='enviar_a_revision_factura',
     ),
 
+    # ── Lado de Compras (Sub-fase 3.5) ──────────────────────────────────
+    path('compras/', views.panel_facturas_compras, name='panel_facturas_compras'),
+    path(
+        'compras/factura/<int:factura_id>/',
+        views.factura_detalle_compras,
+        name='factura_detalle_compras',
+    ),
+    path(
+        'compras/factura/<int:factura_id>/aprobar/',
+        views.aprobar_factura_ajax,
+        name='aprobar_factura',
+    ),
+    path(
+        'compras/factura/<int:factura_id>/observar/',
+        views.observar_factura_ajax,
+        name='observar_factura',
+    ),
+
     # ── Carga de archivos (Sub-fase 3.2) ────────────────────────────────
     path(
         'factura/<int:factura_id>/archivo/<str:tipo>/',

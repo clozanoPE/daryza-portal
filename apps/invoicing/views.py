@@ -6,8 +6,8 @@ Vistas de apps.invoicing.
    en esta sesión) — subir_archivo_factura_ajax/subir_archivo_factura_
    linea_ajax, 2 endpoints genéricos parametrizados por `tipo`.
 
-2. Sub-fase 3.4 (esta sesión): pantalla completa donde el proveedor arma
-   una Factura nueva, patrón "Copiar de OC(s)" —
+2. Sub-fase 3.4: pantalla completa donde el proveedor arma una Factura
+   nueva, patrón "Copiar de OC(s)" —
      nueva_factura_ocs   GET  /invoicing/nueva/            Paso 1: listado
      copiar_oc_view      GET  /invoicing/nueva/copiar/     Paso 2: copia
      crear_factura_ajax  POST /invoicing/nueva/crear/      Paso 3: crear
@@ -17,15 +17,35 @@ Vistas de apps.invoicing.
      editar_linea_factura_ajax     POST .../editar/
      enviar_a_revision_ajax        POST .../enviar-a-revision/
 
-   Toda la orquestación de negocio vive en services_borrador.py — estas
-   vistas solo traducen request<->servicio, mismo principio "fat
-   services, thin views" ya establecido en todo el proyecto.
+3. Sub-fase 3.5 (esta sesión): el lado de Compras —
+     panel_facturas_compras    GET  /invoicing/compras/                listado
+     factura_detalle_compras   GET  /invoicing/compras/factura/<id>/   detalle
+     aprobar_factura_ajax      POST .../aprobar/
+     observar_factura_ajax     POST .../observar/
 
-Ambas vistas de archivo (punto 1) y las de edición (punto 2) filtran el
+   factura_detalle_compras reutiliza LA MISMA plantilla que factura_
+   detalle (proveedor) — nunca se duplicó el layout (pedido explícito) —
+   pasando `es_compras=True` y `puede_editar=False` siempre (Compras no
+   edita contenido, solo aprueba/observa; los campos ya quedan de solo
+   lectura reutilizando el mismo `puede_editar` que ya gatea inputs/
+   botones de carga en el template, sin necesitar un segundo camino de
+   renderizado).
+
+   Toda la orquestación de negocio vive en services_borrador.py/
+   services.py — estas vistas solo traducen request<->servicio, mismo
+   principio "fat services, thin views" ya establecido en todo el proyecto.
+
+Ambas vistas de archivo/edición del proveedor (puntos 1-2) filtran el
 objeto por dueño en el propio queryset (`proveedor__user=request.user`,
 404 si no coincide) ADEMÁS del candado que ya vive en el servicio
 (services_archivos.validar_permiso_edicion) — defensa en profundidad,
 mismo patrón ya usado en subir_coa_linea_ajax (apps/appointments/views.py).
+Las 4 vistas de Compras (punto 3) están protegidas por @compras_required
+(redirect a login si el rol no corresponde — mismo patrón ya usado por
+panel_compras/ajax_confirmar_cita_compras, no el patrón "403 explícito"
+reservado para endpoints compartidos entre varios roles internos) Y el
+candado de InvoicingService._validar_permiso_compras dentro del servicio
+— defensa en profundidad, pedido explícito.
 """
 import json
 from decimal import Decimal, InvalidOperation
@@ -37,7 +57,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 
-from apps.base.decorators import proveedor_required
+from apps.base.decorators import compras_required, proveedor_required
+from apps.base.filters import resolver_periodo
 from apps.base.supplier_sync import resolver_perfil_de_usuario
 from apps.sap_sync.models import PurchaseOrderLine
 
@@ -306,7 +327,9 @@ def crear_factura_ajax(request):
 def mis_facturas(request):
     facturas = Factura.objects.filter(
         proveedor__user=request.user,
-    ).select_related('sede').prefetch_related('ordenes_compra__purchase_order').order_by('-created_at')
+    ).select_related('sede').prefetch_related(
+        'ordenes_compra__purchase_order', 'observaciones',
+    ).order_by('-created_at')
     return render(request, 'invoicing/mis_facturas.html', {'facturas': facturas})
 
 
@@ -331,6 +354,8 @@ def factura_detalle(request, factura_id: int):
     return render(request, 'invoicing/factura_detalle.html', {
         'factura': factura,
         'puede_editar': puede_editar,
+        'es_compras': False,
+        'puede_actuar_compras': False,
         'archivos': [
             ('xml', 'XML de la Factura', factura.xml_file),
             ('pdf', 'PDF de la Factura', factura.pdf_file),
@@ -338,6 +363,8 @@ def factura_detalle(request, factura_id: int):
         ],
         'tipos_operacion': Factura.TIPO_OPERACION_CHOICES,
         'clasificaciones': Factura.CLASIFICACION_BIENES_SERVICIOS_CHOICES,
+        'volver_url': reverse('invoicing:mis_facturas'),
+        'volver_label': 'Mis Facturas',
     })
 
 
@@ -416,3 +443,139 @@ def enviar_a_revision_ajax(request, factura_id: int):
     except ValidationError as e:
         return _json_err(_mensaje_de(e))
     return _json_ok(msg='Factura enviada a revisión correctamente.')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. Sub-fase 3.5 — lado de Compras
+# ═══════════════════════════════════════════════════════════════════════════
+
+ESTADOS_FILTRO_COMPRAS = [
+    ('EN_REVISION_COMPRAS', 'En Revisión (Compras)'),
+    ('OBSERVADA', 'Observada'),
+    ('APROBADA_COMPRAS', 'Aprobada (Compras)'),
+    ('CANCELADO', 'Cancelado'),
+]
+
+
+@compras_required
+@require_GET
+def panel_facturas_compras(request):
+    """
+    Listado de Facturas para Compras (punto 1 del pedido): EN_REVISION_
+    COMPRAS por defecto, con opción de ver OBSERVADA/APROBADA_COMPRAS/
+    CANCELADO vía el parámetro `estado`. Filtro de período (mes actual
+    por defecto) sobre `created_at` — mismo patrón ya usado por
+    apps.base.filters.resolver_periodo en el Panel de Consulta de OC y
+    los Historiales de citas; Factura no tiene una única "fecha de cita"
+    propia (puede vincular varias OC, cada una con su Ticket/Appointment
+    distinto), así que created_at (cuándo se creó/envió la Factura misma)
+    es el único campo de fecha que TODA Factura tiene sin ambigüedad.
+    """
+    anio, mes, periodo = resolver_periodo(request)
+
+    estado_filtro = request.GET.get('estado') or 'EN_REVISION_COMPRAS'
+    if estado_filtro not in dict(ESTADOS_FILTRO_COMPRAS):
+        estado_filtro = 'EN_REVISION_COMPRAS'
+
+    facturas = Factura.objects.filter(
+        estado=estado_filtro, created_at__year=anio, created_at__month=mes,
+    ).select_related('proveedor', 'sede').prefetch_related(
+        'ordenes_compra__purchase_order',
+    ).order_by('-created_at')
+
+    return render(request, 'invoicing/panel_facturas_compras.html', {
+        'facturas': facturas,
+        'periodo': periodo,
+        'estado_filtro': estado_filtro,
+        'estados_filtro': ESTADOS_FILTRO_COMPRAS,
+    })
+
+
+@compras_required
+@require_GET
+def factura_detalle_compras(request, factura_id: int):
+    """
+    Detalle de Factura para Compras — MISMA plantilla que factura_detalle
+    (proveedor), ver docstring del módulo. Sin filtro de dueño (Compras
+    revisa Facturas de cualquier proveedor) — a diferencia de
+    factura_detalle, que sí filtra por `proveedor__user=request.user`.
+    """
+    factura = get_object_or_404(
+        Factura.objects.select_related('proveedor', 'sede').prefetch_related(
+            Prefetch(
+                'lineas',
+                queryset=FacturaLinea.objects.select_related(
+                    'po_line', 'po_line__purchase_order',
+                ).order_by('po_line__purchase_order_id', 'po_line__line_num'),
+            ),
+            'ordenes_compra__purchase_order',
+            'observaciones',
+        ),
+        id=factura_id,
+    )
+
+    return render(request, 'invoicing/factura_detalle.html', {
+        'factura': factura,
+        'puede_editar': False,
+        'es_compras': True,
+        'puede_actuar_compras': factura.estado == 'EN_REVISION_COMPRAS',
+        'archivos': [
+            ('xml', 'XML de la Factura', factura.xml_file),
+            ('pdf', 'PDF de la Factura', factura.pdf_file),
+            ('cdr', 'CDR de SUNAT', factura.cdr_xml_file),
+        ],
+        'tipos_operacion': Factura.TIPO_OPERACION_CHOICES,
+        'clasificaciones': Factura.CLASIFICACION_BIENES_SERVICIOS_CHOICES,
+        'volver_url': reverse('invoicing:panel_facturas_compras'),
+        'volver_label': 'Facturas Pendientes',
+    })
+
+
+@compras_required
+@require_POST
+def aprobar_factura_ajax(request, factura_id: int):
+    """
+    POST /invoicing/compras/factura/<factura_id>/aprobar/ — punto 3 del
+    pedido. Sin filtro de dueño (a propósito, ver factura_detalle_compras).
+    InvoicingService.aprobar_factura re-valida firma/CDR/importe por su
+    cuenta (defensa en profundidad) y el propio candado de rol — no se
+    confía en que @compras_required ya lo haya garantizado.
+    """
+    factura = get_object_or_404(Factura, id=factura_id)
+    try:
+        InvoicingService.aprobar_factura(factura, request.user)
+    except ValidationError as e:
+        return _json_err(_mensaje_de(e))
+    return _json_ok(msg='Factura aprobada correctamente. Queda lista para sincronizar con SAP.')
+
+
+@compras_required
+@require_POST
+def observar_factura_ajax(request, factura_id: int):
+    """
+    POST /invoicing/compras/factura/<factura_id>/observar/ — punto 3 del
+    pedido. Exige 'texto' en el body JSON (candado real vive en
+    InvoicingService.observar_factura, no aquí — esto es solo parseo).
+    Si el correo de notificación al proveedor falla, se incluye
+    'email_error' en la respuesta (sin bloquear la operación — la
+    Factura ya quedó OBSERVADA) para que el chat/toast de Compras lo deje
+    visible, mismo criterio ya usado con Ticket.email_notificacion_error
+    (apps.appointments.views, sesión 73).
+    """
+    factura = get_object_or_404(Factura, id=factura_id)
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _json_err('JSON inválido.')
+
+    try:
+        InvoicingService.observar_factura(factura, request.user, data.get('texto', ''))
+    except ValidationError as e:
+        return _json_err(_mensaje_de(e))
+
+    resultado = {'msg': 'Factura observada correctamente.'}
+    email_error = getattr(factura, '_email_observacion_error', None)
+    if email_error:
+        resultado['email_error'] = email_error
+    return _json_ok(**resultado)

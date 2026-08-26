@@ -21,14 +21,17 @@
         {{ factura.get_estado_display }}
       </span>
       <span class="text-muted ms-2">{{ factura.sede.nombre }}</span>
+      {% if es_compras %}
+      <span class="badge bg-dark text-xxs ms-2"><i class="bi bi-eye me-1"></i>Vista de Compras — solo lectura</span>
+      {% endif %}
     </p>
   </div>
-  <a href="{% url 'invoicing:mis_facturas' %}" class="btn btn-outline-success rounded-3">
-    <i class="bi bi-arrow-left me-1"></i>Mis Facturas
+  <a href="{{ volver_url }}" class="btn btn-outline-success rounded-3">
+    <i class="bi bi-arrow-left me-1"></i>{{ volver_label }}
   </a>
 </div>
 
-{% if not puede_editar %}
+{% if not puede_editar and not es_compras %}
 <div class="alert alert-info">
   <i class="bi bi-lock-fill me-1"></i>
   Esta Factura está en estado "{{ factura.get_estado_display }}" — ya no se puede editar ni cargar/reemplazar archivos.
@@ -37,12 +40,48 @@
 
 {% if factura.observaciones.all %}
 <div class="dz-card p-3 mb-4">
-  <h6 class="fw-bold text-xs mb-2"><i class="bi bi-chat-left-text text-danger me-1"></i>Observaciones de Compras</h6>
+  <h6 class="fw-bold text-xs mb-2"><i class="bi bi-chat-left-text text-danger me-1"></i>Historial de Observaciones de Compras</h6>
   {% for obs in factura.observaciones.all %}
   <div class="p-2 rounded-3 bg-danger-subtle text-danger text-xxs mb-1">
-    <strong>Ronda {{ obs.ronda }}</strong> ({{ obs.fecha|date:"d/m/Y H:i" }}): {{ obs.texto }}
+    <strong>Ronda {{ obs.ronda }}</strong> — {{ obs.autor.get_full_name|default:obs.autor.username }}
+    ({{ obs.fecha|date:"d/m/Y H:i" }}): {{ obs.texto }}
   </div>
   {% endfor %}
+</div>
+{% endif %}
+
+{% if es_compras and puede_actuar_compras %}
+<div class="dz-card p-3 mb-4 d-flex justify-content-end gap-2 flex-wrap">
+  <button class="btn btn-outline-danger rounded-3" data-bs-toggle="modal" data-bs-target="#modalObservarFactura">
+    <i class="bi bi-chat-left-text me-1"></i>Observar
+  </button>
+  <button class="btn btn-success rounded-3 fw-bold px-4" onclick="aprobarFactura({{ factura.id }})">
+    <i class="bi bi-check-circle me-1"></i>Aprobar
+  </button>
+</div>
+
+<div class="modal fade" id="modalObservarFactura" tabindex="-1" aria-labelledby="modalObservarFacturaTitle">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content rounded-dz border-0 shadow-dz">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold" id="modalObservarFacturaTitle">Observar Factura</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label text-xxs fw-bold mb-1">
+          Motivo de la observación <span class="text-danger">*</span>
+        </label>
+        <textarea id="txtObservacionFactura" class="form-control rounded-3 text-xs" rows="4"
+                  placeholder="Explique qué debe corregir el proveedor…"></textarea>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button class="btn btn-light btn-sm rounded-3" data-bs-dismiss="modal">Cancelar</button>
+        <button class="btn btn-danger btn-sm rounded-3 px-3" onclick="confirmarObservarFactura({{ factura.id }})">
+          <i class="bi bi-chat-left-text me-1"></i>Observar
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 {% endif %}
 
@@ -137,6 +176,32 @@
       </div>
       {% endfor %}
 
+      {% if factura.xml_file and factura.pdf_file and factura.cdr_xml_file %}
+      <div class="d-flex flex-wrap gap-2 mt-2">
+        <span class="badge text-xxs
+          {% if factura.firma_valida == True %}bg-success-subtle text-success border border-success-subtle
+          {% elif factura.firma_valida == False %}bg-danger-subtle text-danger border border-danger-subtle
+          {% else %}bg-light text-muted border{% endif %}">
+          <i class="bi {% if factura.firma_valida == True %}bi-shield-fill-check{% elif factura.firma_valida == False %}bi-shield-fill-exclamation{% else %}bi-shield{% endif %} me-1"></i>
+          Firma {% if factura.firma_valida == True %}Válida{% elif factura.firma_valida == False %}INVÁLIDA{% else %}sin validar{% endif %}
+        </span>
+        <span class="badge text-xxs
+          {% if factura.estado_cdr == 'ACEPTADO' %}bg-success-subtle text-success border border-success-subtle
+          {% elif factura.estado_cdr == 'OBSERVADO' %}bg-warning-subtle text-warning border border-warning-subtle
+          {% elif factura.estado_cdr == 'RECHAZADO' %}bg-danger-subtle text-danger border border-danger-subtle
+          {% else %}bg-light text-muted border{% endif %}">
+          <i class="bi {% if factura.estado_cdr == 'ACEPTADO' %}bi-check-circle-fill{% elif factura.estado_cdr == 'RECHAZADO' %}bi-x-circle-fill{% else %}bi-dash-circle{% endif %} me-1"></i>
+          CDR {{ factura.get_estado_cdr_display|default:"sin validar" }}
+        </span>
+        <span class="badge text-xxs
+          {% if factura.importe_no_coincide %}bg-danger-subtle text-danger border border-danger-subtle
+          {% else %}bg-success-subtle text-success border border-success-subtle{% endif %}">
+          <i class="bi {% if factura.importe_no_coincide %}bi-exclamation-triangle-fill{% else %}bi-check-circle-fill{% endif %} me-1"></i>
+          Importe {% if factura.importe_no_coincide %}NO coincide{% else %}coincide{% endif %}
+        </span>
+      </div>
+      {% endif %}
+
       {% if factura.mensaje_validacion_documentos %}
       <div class="p-3 rounded-3 bg-light border text-xxs mt-2" style="white-space:pre-line">
         <strong>Resultado de la validación:</strong><br>{{ factura.mensaje_validacion_documentos }}
@@ -170,16 +235,29 @@
           <span class="badge bg-warning-subtle text-warning border border-warning-subtle text-xxs">Difiere de OC</span>
           {% endif %}
         </div>
+        {% if linea.difiere_de_oc %}
+        <div class="p-2 rounded-3 bg-warning-subtle text-warning text-xxs mb-2">
+          <i class="bi bi-info-circle me-1"></i>
+          {% if linea.cantidad != linea.cantidad_oc %}
+          Cantidad OC: <strong>{{ linea.cantidad_oc|stringformat:".4f" }}</strong> →
+          Facturado: <strong>{{ linea.cantidad|stringformat:".4f" }}</strong>.
+          {% endif %}
+          {% if linea.precio != linea.precio_oc %}
+          Precio OC: <strong>{{ linea.precio_oc|stringformat:".4f" }}</strong> →
+          Facturado: <strong>{{ linea.precio|stringformat:".4f" }}</strong>.
+          {% endif %}
+        </div>
+        {% endif %}
         <div class="row g-2">
           <div class="col-6">
-            <label class="form-label text-xxs fw-bold">Cantidad (OC: {{ linea.cantidad_oc }})</label>
+            <label class="form-label text-xxs fw-bold">Cantidad (OC: {{ linea.cantidad_oc|stringformat:".4f" }})</label>
             <input type="number" step="0.0001" class="form-control form-control-sm rounded-3 inp-cantidad"
-                   data-linea="{{ linea.id }}" value="{{ linea.cantidad }}" {% if not puede_editar %}disabled{% endif %}>
+                   data-linea="{{ linea.id }}" value="{{ linea.cantidad|stringformat:'.4f' }}" {% if not puede_editar %}disabled{% endif %}>
           </div>
           <div class="col-6">
             <label class="form-label text-xxs fw-bold">Precio</label>
             <input type="number" step="0.0001" class="form-control form-control-sm rounded-3 inp-precio"
-                   data-linea="{{ linea.id }}" value="{{ linea.precio }}" {% if not puede_editar %}disabled{% endif %}>
+                   data-linea="{{ linea.id }}" value="{{ linea.precio|stringformat:'.4f' }}" {% if not puede_editar %}disabled{% endif %}>
           </div>
         </div>
         {% if puede_editar %}
@@ -244,5 +322,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.0"></script>
+<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.1"></script>
 {% endblock %}

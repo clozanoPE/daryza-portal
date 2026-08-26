@@ -1942,3 +1942,303 @@ class CrearFacturaDesdeOCsConcurrenciaTests(TransactionTestCase):
         self.assertEqual(
             Factura.objects.filter(ordenes_compra__purchase_order=self.po).count(), 1,
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sub-fase 3.5 (esta sesión) — el lado de Compras: aprobar_factura /
+# observar_factura. 2 niveles: pruebas directas contra InvoicingService
+# (permiso, defensa en profundidad, historial de rondas) y un flujo HTTP
+# real de punta a punta (observar -> proveedor corrige -> reenviar ->
+# aprobar), reutilizando el mismo patrón de mock de OneDrive que
+# NuevaFacturaHTTPFlowTests.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AprobarObservarFacturaTests(InvoicingTestBase):
+
+    def _factura_en_revision(self, **extra):
+        defaults = dict(
+            proveedor=self._supplier_profile(), sede=self._sede(),
+            estado='EN_REVISION_COMPRAS', firma_valida=True, estado_cdr='ACEPTADO',
+            importe_no_coincide=False,
+        )
+        defaults.update(extra)
+        return Factura.objects.create(**defaults)
+
+    # ── aprobar_factura ──────────────────────────────────────────────────
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_aprobar_con_firma_invalida_rechaza_pese_a_estar_en_revision(self, mock_enviar):
+        """
+        Punto 5 del pedido, caso explícito: aunque la Factura ya esté
+        EN_REVISION_COMPRAS (lo que en teoría implica que ya pasó por
+        enviar_a_revision), aprobar_factura vuelve a evaluar firma_valida
+        por su cuenta (defensa en profundidad) y rechaza igual.
+        """
+        factura = self._factura_en_revision(firma_valida=False)
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.aprobar_factura(factura, self.u_compras)
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+        self.assertEqual(factura.estado_sap, '')
+        mock_enviar.assert_not_called()
+
+    def test_aprobar_con_cdr_rechazado_rechaza(self):
+        factura = self._factura_en_revision(estado_cdr='RECHAZADO')
+        with self.assertRaises(ValidationError):
+            InvoicingService.aprobar_factura(factura, self.u_compras)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+    def test_aprobar_con_importe_no_coincide_rechaza(self):
+        factura = self._factura_en_revision(importe_no_coincide=True)
+        with self.assertRaises(ValidationError):
+            InvoicingService.aprobar_factura(factura, self.u_compras)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+    def test_aprobar_exitoso_marca_aprobada_y_estado_sap_L(self):
+        factura = self._factura_en_revision()
+        InvoicingService.aprobar_factura(factura, self.u_compras)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'APROBADA_COMPRAS')
+        self.assertEqual(factura.estado_sap, 'L')
+
+    def test_aprobar_fuera_de_en_revision_rechaza(self):
+        factura = self._factura_en_revision(estado='BORRADOR', firma_valida=None, estado_cdr=None)
+        with self.assertRaises(ValidationError):
+            InvoicingService.aprobar_factura(factura, self.u_compras)
+
+    def test_aprobar_cuenta_sin_grupo_compras_rechaza(self):
+        """Punto 5 del pedido: cuenta sin grupo COMPRAS intentando aprobar."""
+        factura = self._factura_en_revision()
+        with self.assertRaises(ValidationError):
+            InvoicingService.aprobar_factura(factura, self.u_almacen)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+    def test_aprobar_superusuario_sin_grupo_compras_funciona(self):
+        superusuario = User.objects.create_superuser('super_aprobar_test', password='x')
+        factura = self._factura_en_revision()
+        InvoicingService.aprobar_factura(factura, superusuario)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'APROBADA_COMPRAS')
+
+    # ── observar_factura ─────────────────────────────────────────────────
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_observar_sin_texto_rechaza(self, mock_enviar):
+        """Punto 5 del pedido: observar sin texto (rechaza)."""
+        factura = self._factura_en_revision()
+        with self.assertRaises(ValidationError):
+            InvoicingService.observar_factura(factura, self.u_compras, '   ')
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+        self.assertEqual(factura.observaciones.count(), 0)
+        mock_enviar.assert_not_called()
+
+    def test_observar_cuenta_sin_grupo_compras_rechaza(self):
+        factura = self._factura_en_revision()
+        with self.assertRaises(ValidationError):
+            InvoicingService.observar_factura(factura, self.u_almacen, 'Falta el RUC.')
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+        self.assertEqual(factura.observaciones.count(), 0)
+
+    def test_observar_fuera_de_en_revision_rechaza(self):
+        factura = self._factura_en_revision(estado='OBSERVADA')
+        with self.assertRaises(ValidationError):
+            InvoicingService.observar_factura(factura, self.u_compras, 'Otra observación.')
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_observar_no_bloquea_si_falla_el_correo(self, mock_enviar):
+        mock_enviar.return_value = ResultadoEnvioCorreo(enviado=False, error='Graph caído.')
+        factura = self._factura_en_revision()
+
+        InvoicingService.observar_factura(factura, self.u_compras, 'Corregir RUC.')
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'OBSERVADA')
+        self.assertEqual(factura._email_observacion_error, 'Graph caído.')
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_historial_de_2_rondas_de_observacion_se_conserva_integro(self, mock_enviar):
+        """Punto 5 del pedido: historial de 2+ rondas se conserva íntegro."""
+        mock_enviar.return_value = ResultadoEnvioCorreo(enviado=True)
+        factura = self._factura_en_revision()
+
+        InvoicingService.observar_factura(factura, self.u_compras, 'Ronda 1: falta el RUC.')
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'OBSERVADA')
+
+        # El proveedor corrige y reenvía SIN que Compras haya tocado nada
+        # de la ronda anterior — enviar_a_revision no crea ninguna
+        # FacturaObservacion, solo cambia el estado.
+        InvoicingService.enviar_a_revision(factura)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+        InvoicingService.observar_factura(factura, self.u_compras, 'Ronda 2: falta el monto en letras.')
+        factura.refresh_from_db()
+
+        observaciones = list(factura.observaciones.all())
+        self.assertEqual(len(observaciones), 2)
+        self.assertEqual(observaciones[0].ronda, 1)
+        self.assertEqual(observaciones[0].texto, 'Ronda 1: falta el RUC.')
+        self.assertEqual(observaciones[1].ronda, 2)
+        self.assertEqual(observaciones[1].texto, 'Ronda 2: falta el monto en letras.')
+        self.assertEqual(mock_enviar.call_count, 2)
+
+
+class AprobarObservarFacturaHTTPTests(NuevaFacturaTestBase):
+    """
+    Flujo HTTP real de punta a punta, continuando exactamente donde
+    termina NuevaFacturaHTTPFlowTests (que se detiene en "enviar a
+    revisión"): Compras observa -> el proveedor ve la observación en
+    "Mis Facturas" y puede reeditar/reenviar (verifica en carne propia el
+    candado ya construido en la Sub-fase 3.2/3.4, punto 4 del pedido,
+    "no lo des por hecho") -> Compras aprueba.
+    """
+
+    def _subir_los_3_archivos(self, factura_id, xml_bytes, cdr_bytes, pdf_bytes):
+        with patch('apps.invoicing.services_archivos.OneDriveClient') as mock_cls:
+            mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/x'
+
+            def _descargar(sede, ruc, identificador, nombre_archivo):
+                if nombre_archivo.startswith('xml.'):
+                    return xml_bytes
+                if nombre_archivo.startswith('cdr.'):
+                    return cdr_bytes
+                raise AssertionError(f"Descarga inesperada de '{nombre_archivo}'.")
+            mock_cls.return_value.descargar_documento_factura.side_effect = _descargar
+
+            for tipo, contenido, nombre, content_type in (
+                ('pdf', pdf_bytes, 'f.pdf', 'application/pdf'),
+                ('cdr', cdr_bytes, 'c.xml', 'application/xml'),
+                ('xml', xml_bytes, 'f.xml', 'application/xml'),
+            ):
+                resp = self.client.post(
+                    f'/invoicing/factura/{factura_id}/archivo/{tipo}/',
+                    data={'archivo': SimpleUploadedFile(nombre, contenido, content_type=content_type)},
+                )
+                self.assertEqual(resp.json()['status'], 'success', resp.json())
+
+    @patch('apps.base.services_correo.enviar_correo')
+    def test_ciclo_completo_observar_corregir_reenviar_aprobar(self, mock_enviar):
+        """Punto 5 del pedido: ciclo completo observar -> proveedor corrige -> reenviar -> aprobar."""
+        mock_enviar.return_value = ResultadoEnvioCorreo(enviado=True)
+
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        self._perfil_oc()
+
+        # El proveedor arma y envía la Factura (mismos datos ya probados
+        # en NuevaFacturaHTTPFlowTests: cantidad*precio = 1180.50,
+        # coincide con el PayableAmount de la fixture firmada).
+        self.client.force_login(self.proveedor)
+        resp = self.client.post('/invoicing/nueva/crear/', data={
+            'oc_ids': [po.id],
+            'serie_comprobante': 'F001', 'numero_comprobante': '999',
+            'doc_cur': 'PEN', 'tipo_operacion': '02',
+            f'cantidad_{po_line.id}': '10.0000', f'precio_{po_line.id}': '118.0500',
+        })
+        factura_id = resp.json()['factura_id']
+
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        pdf_bytes = _leer_fixture('pdf_valido_minimo.pdf')
+        self._subir_los_3_archivos(factura_id, xml_bytes, cdr_bytes, pdf_bytes)
+
+        resp = self.client.post(
+            f'/invoicing/factura/{factura_id}/enviar-a-revision/',
+            data='{}', content_type='application/json',
+        )
+        self.assertEqual(resp.json()['status'], 'success')
+
+        # ── Compras observa ──────────────────────────────────────────
+        self.client.force_login(self.u_compras)
+
+        resp = self.client.get(f'/invoicing/compras/factura/{factura_id}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Aprobar')
+        self.assertContains(resp, 'Observar')
+        # Solo lectura para Compras — no se renderiza el botón de guardar
+        # cabecera ni el botón de subir archivos (mismo `puede_editar`
+        # que ya gatea esos elementos para el proveedor).
+        self.assertNotContains(resp, 'guardarCabecera(')
+        self.assertNotContains(resp, 'subirArchivoFactura(')
+
+        resp = self.client.post(
+            f'/invoicing/compras/factura/{factura_id}/observar/',
+            data=json.dumps({'texto': 'Falta el número de RUC del proveedor en el PDF.'}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['status'], 'success')
+
+        factura = Factura.objects.get(id=factura_id)
+        self.assertEqual(factura.estado, 'OBSERVADA')
+        self.assertEqual(factura.observaciones.count(), 1)
+
+        # Aprobar/Observar ya no deben ofrecerse mientras está OBSERVADA
+        # (puede_actuar_compras exige EN_REVISION_COMPRAS).
+        resp = self.client.get(f'/invoicing/compras/factura/{factura_id}/')
+        self.assertNotContains(resp, 'aprobarFactura(')
+
+        # ── El proveedor ve la observación y puede corregir/reenviar ──
+        self.client.force_login(self.proveedor)
+
+        resp = self.client.get('/invoicing/mis-facturas/')
+        self.assertContains(resp, 'Falta el número de RUC')
+
+        # Verifica en carne propia (no solo por lectura de código, punto
+        # 4 del pedido) que el candado de la Sub-fase 3.2/3.4 sí permite
+        # reeditar mientras la Factura está OBSERVADA.
+        resp = self.client.post(
+            f'/invoicing/factura/{factura_id}/editar/',
+            data=json.dumps({'doc_cur': 'PEN', 'num_at_card': 'F001-999-CORREGIDO'}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.json()['status'], 'success')
+        factura.refresh_from_db()
+        self.assertEqual(factura.num_at_card, 'F001-999-CORREGIDO')
+
+        resp = self.client.post(
+            f'/invoicing/factura/{factura_id}/enviar-a-revision/',
+            data='{}', content_type='application/json',
+        )
+        self.assertEqual(resp.json()['status'], 'success')
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+        # ── Compras aprueba ──────────────────────────────────────────
+        self.client.force_login(self.u_compras)
+        resp = self.client.post(f'/invoicing/compras/factura/{factura_id}/aprobar/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['status'], 'success')
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'APROBADA_COMPRAS')
+        self.assertEqual(factura.estado_sap, 'L')
+
+        # La ronda de observaciones sigue íntegra (1 sola, no se perdió
+        # ni se duplicó a lo largo de todo el ciclo).
+        self.assertEqual(factura.observaciones.count(), 1)
+        self.assertEqual(factura.observaciones.first().ronda, 1)
+
+    def test_cuenta_sin_grupo_compras_bloqueada_por_la_vista(self):
+        """
+        Complemento HTTP de test_aprobar_cuenta_sin_grupo_compras_rechaza:
+        @compras_required redirige (mismo patrón ya usado por panel_
+        compras/ajax_confirmar_cita_compras) antes de llegar al servicio.
+        """
+        factura = self._crear_factura(estado='EN_REVISION_COMPRAS', proveedor=self._perfil_oc())
+        self.client.force_login(self.u_almacen)
+
+        resp = self.client.post(f'/invoicing/compras/factura/{factura.id}/aprobar/')
+        self.assertEqual(resp.status_code, 302)
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')

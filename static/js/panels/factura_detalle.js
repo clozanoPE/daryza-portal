@@ -1,7 +1,7 @@
 /**
  * Daryza VBS — factura_detalle.js
  *
- * JS del detalle de una Factura (Sub-fase 3.4/3.2):
+ * JS del detalle de una Factura (Sub-fase 3.4/3.2/3.5):
  *   - Guardar cabecera (AJAX JSON)
  *   - Subir archivos de Factura (XML/PDF/CDR) — endpoint ya existente
  *     de la Sub-fase 3.2
@@ -12,6 +12,11 @@
  *     la FacturaLinea ya existe (a diferencia de la Pantalla de Copia,
  *     antes de crear la Factura)
  *   - Enviar a Revisión
+ *   - Aprobar / Observar (Sub-fase 3.5, solo Compras — los botones y el
+ *     modal correspondiente solo se renderizan en el template cuando
+ *     es_compras y puede_actuar_compras son verdaderos, pero estas
+ *     funciones no necesitan saberlo: si no hay nada que llamarlas,
+ *     nunca se invocan)
  *
  * Depende de: modules/api.js, modules/ui.js
  */
@@ -119,6 +124,57 @@ async function enviarARevision(facturaId) {
     if (data.status !== 'success') throw new Error(data.msg);
     showToast(data.msg || 'Factura enviada a revisión.', 'success');
     setTimeout(() => window.location.reload(), 900);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+/**
+ * Sub-fase 3.5 — Compras aprueba la Factura. InvoicingService.
+ * aprobar_factura ya re-valida firma/CDR/importe por su cuenta (defensa
+ * en profundidad) — si rechaza, el mensaje real del servicio se muestra
+ * tal cual, sin adornarlo.
+ */
+async function aprobarFactura(facturaId) {
+  const { showToast, confirmDialog } = DzUI;
+  const ok = await confirmDialog(
+    '¿Aprobar esta Factura?',
+    'Quedará lista para sincronizarse con SAP.',
+    'question',
+  );
+  if (!ok) return;
+
+  try {
+    const data = await DzApi.postJSON(`/invoicing/compras/factura/${facturaId}/aprobar/`, {});
+    if (data.status !== 'success') throw new Error(data.msg);
+    showToast(data.msg || 'Factura aprobada.', 'success');
+    setTimeout(() => window.location.reload(), 900);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+/**
+ * Sub-fase 3.5 — Compras observa la Factura. El texto no vacío es
+ * obligatorio (mismo criterio que el motivo de rechazo de citas) — se
+ * valida aquí como conveniencia de UX, pero el candado real vive en
+ * InvoicingService.observar_factura (defensa en profundidad).
+ */
+async function confirmarObservarFactura(facturaId) {
+  const { showToast } = DzUI;
+  const textarea = document.getElementById('txtObservacionFactura');
+  const texto = textarea ? textarea.value.trim() : '';
+  if (!texto) { showToast('Debe ingresar un texto de observación.', 'warning'); return; }
+
+  try {
+    const data = await DzApi.postJSON(`/invoicing/compras/factura/${facturaId}/observar/`, { texto });
+    if (data.status !== 'success') throw new Error(data.msg);
+    let msg = data.msg || 'Factura observada.';
+    if (data.email_error) msg += ' (Aviso: no se pudo notificar por correo al proveedor.)';
+    showToast(msg, 'success');
+    const modalEl = document.getElementById('modalObservarFactura');
+    if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+    setTimeout(() => window.location.reload(), 1200);
   } catch (err) {
     showToast(err.message, 'error');
   }
