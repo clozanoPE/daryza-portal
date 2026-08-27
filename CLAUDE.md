@@ -2221,7 +2221,18 @@ Implementa los 6 endpoints del daemon VB.NET para que cree el Preliminar de una 
 
 **Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios. `manage.py test apps.invoicing`: **129/129 OK** (99 anteriores + 30 nuevos). `manage.py test apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`: **210/210 OK**. Rutas de los 6 endpoints verificadas exactas contra el router real (`router.urls`), coinciden literalmente con las pedidas.
 
-**Fuera de alcance de esta sesión (confirmado explícitamente por el pedido, o señalado como no pedido):** ningún flujo de negocio real para cancelar una Factura (botón/servicio) — los endpoints de cancelación existen y funcionan, pero nada en el Portal lleva hoy una Factura a `estado='CANCELADO'`; `reportar-error` solo se construyó para la etapa de Preliminar (mismo texto literal del punto 2 del pedido), no para definitivo/cancelación; deploy a producción (sin instrucción de push esta vez).
+**Fuera de alcance de esta sesión (confirmado explícitamente por el pedido, o señalado como no pedido):** ningún flujo de negocio real para cancelar una Factura (botón/servicio) — los endpoints de cancelación existen y funcionan, pero nada en el Portal lleva hoy una Factura a `estado='CANCELADO'`; `reportar-error` solo se construyó para la etapa de Preliminar (mismo texto literal del punto 2 del pedido), no para definitivo/cancelación.
+
+**Continuación de la misma sesión — push/deploy a producción + verificación en vivo del interruptor:**
+- **`git push origin main`** (`c563667`) — deploy verificado `SUCCESS` en Railway, commit exacto confirmado. Logs de build/deploy: la migración `invoicing.0005_factura_error_mensaje_sap_and_more` se aplicó sin error, `168 static files copied`, gunicorn arrancó su worker sin ningún traceback. Confirmado además con `railway ssh -- python manage.py check` (ejercita la carga de `ROOT_URLCONF`, que importa `api/urls.py` → `api/factura_api.py` → `apps/invoicing/serializers.py`): limpio, sin `ImportError`.
+- **`FACTURA_DRAFT_SAP_HABILITADO` sin la variable definida en Railway → resuelve a `False` sin romper el arranque** (punto 3 del pedido): confirmado con `railway ssh -- python manage.py diffsettings`, que imprime `FACTURA_DRAFT_SAP_HABILITADO = False` directamente desde el `settings` real cargado en el proceso de producción — no inferido, leído.
+- **Verificación en vivo del interruptor (punto 4, el más importante) — 2 piezas de evidencia, reportadas con precisión, no mezcladas:**
+  1. `curl` real contra los 3 endpoints de "pendientes" en `https://nexo.daryza.pe`, con el token real del daemon (`daemon_sap`, recuperado sin rotarlo vía `manage.py drf_create_token daemon_sap` sin `-r` — confirmado en el código fuente de DRF que sin ese flag es `get_or_create`, nunca destructivo): los 3 devuelven `200` con body `[]`.
+  2. **Honestidad sobre qué prueba esto y qué no**: producción no tiene **ninguna** `Factura` real todavía (`railway ssh -- python manage.py dumpdata invoicing.Factura` → `[]`) — así que una lista vacía era el resultado esperado incluso si el interruptor estuviera encendido, y por sí sola esta prueba no discrimina. La confirmación real y definitiva es la pieza anterior (`diffsettings` mostrando `False` en el proceso real) combinada con la cobertura de tests local de la sesión 82 (`InterruptorFacturaDraftSapTests`, que sí probó con datos reales calificados que el flag en `False` vacía las listas y bloquea las confirmaciones, y que en `True` las revela) — el curl en vivo confirma que los endpoints están desplegados y responden `200` (no `500`/`404` por un error de despliegue), consistente con ese comportamiento esperado, pero no es una prueba independiente del interruptor por falta de datos reales en este momento.
+- **Nota de herramienta (sin impacto en el resultado)**: `railway ssh -- python -c "..."` y `railway ssh -- python manage.py shell` (interactivo, vía stdin) no funcionan de forma confiable en este entorno — `railway ssh` no preserva el quoting de argumentos con paréntesis/comillas al reconstruir el comando remoto (falla con `sh: Syntax error: "(" unexpected`), y el shell interactivo se queda colgado esperando un TTY que la sesión no provee al pipearle stdin. Se evitó por completo usando solo comandos de gestión de Django ya existentes y no interactivos (`check`, `diffsettings`, `dumpdata`, `drf_create_token`, `showmigrations`, `makemigrations --check`) — sin necesitar ningún script Python ad-hoc.
+- `manage.py check --deploy` final en producción: **1 solo warning**, `security.W004` (HSTS, ya conocido, no bloqueante) — sin ningún error nuevo. `makemigrations --check --dry-run`: `No changes detected`. `showmigrations invoicing`: las 5 migraciones (`0001`-`0005`) aplicadas. Smoke test: `/login/` → `200`.
+
+**Sub-fase 3.6 en producción, funcionando — con el interruptor confirmado apagado.**
 
 ---
 
@@ -2229,11 +2240,12 @@ Implementa los 6 endpoints del daemon VB.NET para que cree el Preliminar de una 
 
 Estado exacto al pausar — leer esto primero al retomar, antes de releer el historial completo.
 
-**Repo:**
-- `main` local tiene el commit de la Sub-fase 3.6 (sesión 82) **por encima** del último estado ya desplegado (`98991b7`, = producción actual).
-- **`origin/main` y producción (Railway `vivacious-stillness`/`web`/`production`, `https://nexo.daryza.pe`) siguen en `98991b7`** — la Sub-fase 3.6 (esta sesión) **todavía no está pusheada ni desplegada**. Sin instrucción de push esta vez; pedirlo explícitamente para que se suba.
-- `FACTURA_DRAFT_SAP_HABILITADO` no está configurada en Railway (confirmado sesión 66/67) — aunque se despliegue el código, el interruptor sigue apagado por defecto hasta que se decida activarlo explícitamente ahí.
-- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **210/210 OK** en el commit local de la sesión 82 — no hay ningún cambio de código sin testear ni sin comitear.
+**Repo y producción, sincronizados:**
+- `main` local = `origin/main` = producción, los 3 en el commit **`c563667`** ("Sub-fase 3.6: endpoints del demonio SAP para el Preliminar de Factura").
+- Deploy verificado `SUCCESS` en Railway (`vivacious-stillness`/`web`/`production`), sin ningún error de import ni migración pendiente (confirmado con `railway ssh` contra el proceso real, no solo el log de boot).
+- `https://nexo.daryza.pe` sirviendo esta versión ahora mismo.
+- `FACTURA_DRAFT_SAP_HABILITADO` **confirmado apagado en producción** (`diffsettings` → `False`; los 3 endpoints de "pendientes" responden `200`/`[]` con el token real del daemon — aunque, honestamente, producción tampoco tiene ninguna `Factura` real todavía para que esa segunda prueba discrimine por sí sola, ver detalle arriba). Activar `FACTURA_DRAFT_SAP_HABILITADO=True` en las Variables de Railway es una decisión explícita pendiente, para cuando el daemon real esté listo.
+- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **210/210 OK** a la fecha del último commit de código (`c563667`) — no hay ningún cambio de código sin testear ni sin comitear.
 
 **Módulo de Facturación (`apps.invoicing`) — dónde va cada Sub-fase:**
 
@@ -2245,10 +2257,10 @@ Estado exacto al pausar — leer esto primero al retomar, antes de releer el his
 | 3.3 | Validación automática de negocio al completar los 3 archivos (`procesar_validacion_documentos`) + `enviar_a_revision` | ✅ Listo (sesión 77), verificación de hash agregada antes de producción (sesión 78) |
 | 3.4 | Pantalla completa del proveedor: "Copiar de OC(s)" → crear Factura → cargar archivos → enviar a revisión | ✅ Listo y en producción (sesiones 79-80) |
 | 3.5 | Vista de Compras: listado + detalle reutilizado (solo lectura) + Aprobar/Observar, con notificación real al proveedor | ✅ Listo y en producción (sesión 81) |
-| **3.6** | **Endpoints del daemon SAP para `Factura`** (Preliminar/reconciliación/cancelación) + interruptor `FACTURA_DRAFT_SAP_HABILITADO` | ✅ **Listo en `main` local — pendiente de push/deploy** (sesión 82) |
+| 3.6 | Endpoints del daemon SAP para `Factura` (Preliminar/reconciliación/cancelación) + interruptor `FACTURA_DRAFT_SAP_HABILITADO` | ✅ Listo y en producción, interruptor confirmado apagado (sesión 82) |
 | **3.7** | **Columna de facturación real en el Panel de Consulta de OC** (`apps/base/oc_status.py`, hoy texto fijo "Próximamente") | ❌ **Sin construir — siguiente paso natural** |
 
-**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural es: (a) pedir el push/deploy de la sesión 82 (y, cuando el daemon real esté listo, activar `FACTURA_DRAFT_SAP_HABILITADO=True` en Railway), y/o (b) la Sub-fase 3.7 (columna de facturación en el Panel de Consulta de OC) — tampoco requiere ningún dato externo del usuario.
+**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural es la Sub-fase 3.7 (columna de facturación en el Panel de Consulta de OC) — tampoco requiere ningún dato externo del usuario. Por separado, cuando el daemon VB.NET real esté listo para probarse contra Facturas reales: activar `FACTURA_DRAFT_SAP_HABILITADO=True` en Railway es una decisión explícita del usuario, no algo para asumir.
 
 **Deuda/observaciones abiertas, sin urgencia:**
 - No hay test dedicado para "OC de sedes distintas rechaza" en la creación de Factura (el candado existe en `services_borrador.py`, documentado, solo falta el test — sesión 79).
