@@ -14,12 +14,18 @@ que corre `manage.py test`.
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.contrib.auth.models import Group
+from django.contrib.auth.models import Group, User
 from django.core.management import call_command
+from django.db import IntegrityError
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.base import graph_auth, services_correo
 from apps.base.models import SupplierProfile
+from apps.base.supplier_onboarding import (
+    ESTADO_ACTUALIZADO_SIN_ALTA,
+    ESTADO_CREADO,
+    onboard_proveedor,
+)
 
 
 class ObtenerTokenGraphTests(SimpleTestCase):
@@ -175,3 +181,119 @@ class CrearGruposInicialesTests(TestCase):
 
         grupo_previo.refresh_from_db()
         self.assertEqual(Group.objects.filter(name='PROVEEDORES').count(), 1)
+
+
+class OnboardProveedorTests(TestCase):
+    """
+    Sub-etapa 2.2 (sesión 87): los 3 escenarios pedidos explícitamente,
+    sobre `onboard_proveedor` — el servicio de alta de UN proveedor,
+    diseñado para ser una unidad transaccional independiente (ver
+    docstring de `supplier_onboarding.py`). `services_correo.enviar_correo`
+    se mockea en los 3 (no se hace ninguna llamada real a Graph) — la
+    prueba end-to-end real contra Graph ya se hizo en la sesión 73 para
+    el mecanismo de correo en sí; acá solo importa CUÁNDO se llama.
+    """
+
+    def setUp(self):
+        self.parche_correo = patch(
+            'apps.base.supplier_onboarding.services_correo.enviar_correo'
+        )
+        self.mock_enviar_correo = self.parche_correo.start()
+        self.addCleanup(self.parche_correo.stop)
+        self.mock_enviar_correo.return_value = services_correo.ResultadoEnvioCorreo(enviado=True)
+
+    def test_alta_nueva_crea_user_grupo_y_perfil_correctamente(self):
+        # LicTradNum real: 11 dígitos, 100% numérico — si set_password()
+        # pasara por un formulario validador (AUTH_PASSWORD_VALIDATORS
+        # default de Django, sin sobreescribir en este proyecto), esta
+        # contraseña sería rechazada por NumericPasswordValidator. Que
+        # el alta funcione sin fallar ya demuestra el punto 4 confirmado.
+        resultado = onboard_proveedor(
+            card_code='P20266614803',
+            card_name='PROVEEDOR EJEMPLO S.A.C.',
+            card_fname='PROVEEDOR EJEMPLO SOCIEDAD ANONIMA CERRADA',
+            e_mail='contacto@proveedor-ejemplo.com',
+            lic_trad_num='20266614803',
+        )
+
+        self.assertEqual(resultado.estado, ESTADO_CREADO)
+        self.assertTrue(resultado.email_enviado)
+        self.assertIsNone(resultado.email_error)
+
+        user = User.objects.get(username='P20266614803')
+        self.assertEqual(user.email, 'contacto@proveedor-ejemplo.com')
+        self.assertTrue(user.check_password('20266614803'))
+        self.assertTrue(user.groups.filter(name='PROVEEDORES').exists())
+
+        perfil = SupplierProfile.objects.get(sap_card_code='P20266614803')
+        self.assertEqual(perfil.user_id, user.id)
+        self.assertEqual(perfil.razon_social, 'PROVEEDOR EJEMPLO S.A.C.')
+        self.assertEqual(perfil.razon_social_legal, 'PROVEEDOR EJEMPLO SOCIEDAD ANONIMA CERRADA')
+        self.assertEqual(perfil.ruc, '20266614803')
+        self.assertTrue(perfil.debe_cambiar_password)
+
+        self.mock_enviar_correo.assert_called_once()
+        destinatario_llamado = self.mock_enviar_correo.call_args[0][0]
+        self.assertEqual(destinatario_llamado, 'contacto@proveedor-ejemplo.com')
+
+    def test_resync_de_proveedor_ya_vinculado_no_toca_password_ni_reenvia_correo(self):
+        grupo, _ = Group.objects.get_or_create(name='PROVEEDORES')
+        user = User.objects.create_user(username='P20100055237', email='viejo@proveedor.com')
+        user.set_password('contraseña-elegida-por-el-proveedor')
+        user.save()
+        user.groups.add(grupo)
+
+        perfil = SupplierProfile.objects.create(
+            sap_card_code='P20100055237',
+            razon_social='NOMBRE VIEJO',
+            correo_electronico='viejo@proveedor.com',
+            user=user,
+            debe_cambiar_password=False,  # ya se activó formalmente antes
+        )
+
+        resultado = onboard_proveedor(
+            card_code='P20100055237',
+            card_name='NOMBRE ACTUALIZADO DESDE SAP',
+            card_fname='RAZON SOCIAL LEGAL ACTUALIZADA',
+            e_mail='nuevo@proveedor.com',
+            lic_trad_num='20100055237',
+        )
+
+        self.assertEqual(resultado.estado, ESTADO_ACTUALIZADO_SIN_ALTA)
+        self.assertFalse(resultado.email_enviado)
+        self.mock_enviar_correo.assert_not_called()
+
+        # Los datos maestros de SAP sí se refrescan...
+        perfil.refresh_from_db()
+        self.assertEqual(perfil.razon_social, 'NOMBRE ACTUALIZADO DESDE SAP')
+        self.assertEqual(perfil.razon_social_legal, 'RAZON SOCIAL LEGAL ACTUALIZADA')
+        self.assertEqual(perfil.correo_electronico, 'nuevo@proveedor.com')
+
+        # ...pero la cuenta ya vinculada queda completamente intacta.
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('contraseña-elegida-por-el-proveedor'))
+        self.assertFalse(user.check_password('20100055237'))
+        self.assertFalse(perfil.debe_cambiar_password)
+        self.assertEqual(perfil.user_id, user.id)
+
+    def test_fallo_dentro_del_atomic_no_dispara_correo(self):
+        # Username ya ocupado por un User real, SIN ningún SupplierProfile
+        # que lo referencie todavía (caso de borde real: una cuenta creada
+        # a mano con ese username, sin pasar nunca por este flujo) — al
+        # intentar el alta, User.objects.create_user() colisiona con la
+        # constraint de unicidad de username, DENTRO del atomic().
+        User.objects.create_user(username='P99999999999', email='otro@dominio.com')
+
+        with self.assertRaises(IntegrityError):
+            onboard_proveedor(
+                card_code='P99999999999',
+                card_name='PROVEEDOR CON COLISION',
+                card_fname='PROVEEDOR CON COLISION SAC',
+                e_mail='proveedor-colision@dominio.com',
+                lic_trad_num='99999999999',
+            )
+
+        # El SupplierProfile que se había empezado a crear en el mismo
+        # atomic() también se revirtió — no queda ningún residuo.
+        self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P99999999999').exists())
+        self.mock_enviar_correo.assert_not_called()
