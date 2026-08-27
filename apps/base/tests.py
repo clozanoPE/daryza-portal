@@ -14,9 +14,12 @@ que corre `manage.py test`.
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.test import SimpleTestCase, override_settings
+from django.contrib.auth.models import Group
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.base import graph_auth, services_correo
+from apps.base.models import SupplierProfile
 
 
 class ObtenerTokenGraphTests(SimpleTestCase):
@@ -108,3 +111,67 @@ class EnviarCorreoTests(SimpleTestCase):
 
         self.assertFalse(resultado.enviado)
         self.assertIn('red', resultado.error.lower())
+
+
+class SupplierProfileCamposNuevosTests(TestCase):
+    """
+    Sub-etapa 2.1 (Proveedores, sesión 86): campos nuevos sobre
+    SupplierProfile — sin ningún consumidor todavía (lo llenan/leen las
+    sub-etapas siguientes), solo se verifica que el modelo/migración
+    quedaron bien: defaults seguros, sin romper la creación de un perfil
+    ya existente sin especificarlos.
+    """
+
+    def test_defaults_no_afectan_a_un_perfil_creado_sin_especificarlos(self):
+        perfil = SupplierProfile.objects.create(sap_card_code='P00000000001')
+
+        self.assertEqual(perfil.razon_social_legal, '')
+        self.assertFalse(perfil.debe_cambiar_password)
+
+    def test_se_pueden_asignar_ambos_campos_nuevos(self):
+        perfil = SupplierProfile.objects.create(
+            sap_card_code='P00000000002',
+            razon_social_legal='PROVEEDOR EJEMPLO SOCIEDAD ANONIMA CERRADA',
+            debe_cambiar_password=True,
+        )
+        perfil.refresh_from_db()
+
+        self.assertEqual(perfil.razon_social_legal, 'PROVEEDOR EJEMPLO SOCIEDAD ANONIMA CERRADA')
+        self.assertTrue(perfil.debe_cambiar_password)
+
+
+class CrearGruposInicialesTests(TestCase):
+    """
+    Sub-etapa 2.1: el comando ahora también garantiza PROVEEDORES (antes
+    solo cubría los 5 grupos operativos internos) — necesario para que el
+    alta automática de proveedores (Etapa 2.2/2.3) no dependa de que el
+    grupo ya exista por haberse creado a mano en algún momento.
+    """
+
+    GRUPOS_ESPERADOS = {'COMPRAS', 'ALMACEN', 'VIGILANCIA', 'CALIDAD', 'MATERIA_PRIMA', 'PROVEEDORES'}
+
+    def test_crea_los_6_grupos_en_una_bd_vacia(self):
+        self.assertEqual(Group.objects.count(), 0)
+
+        call_command('crear_grupos_iniciales')
+
+        nombres = set(Group.objects.values_list('name', flat=True))
+        self.assertEqual(nombres, self.GRUPOS_ESPERADOS)
+
+    def test_correrlo_dos_veces_no_duplica_ni_falla(self):
+        call_command('crear_grupos_iniciales')
+        call_command('crear_grupos_iniciales')
+
+        for nombre in self.GRUPOS_ESPERADOS:
+            self.assertEqual(
+                Group.objects.filter(name=nombre).count(), 1,
+                msg=f'{nombre} quedó duplicado tras correr el comando 2 veces',
+            )
+
+    def test_no_pisa_ni_rompe_un_grupo_proveedores_ya_existente(self):
+        grupo_previo = Group.objects.create(name='PROVEEDORES')
+
+        call_command('crear_grupos_iniciales')
+
+        grupo_previo.refresh_from_db()
+        self.assertEqual(Group.objects.filter(name='PROVEEDORES').count(), 1)

@@ -81,6 +81,25 @@ class SupplierProfile(TimeStampedModel):
     evidencia de ninguna transformación adicional necesaria — si SAP
     codifica el RUC real de otra forma, corregirlo es una tarea de una
     fase futura con panel de administración, no algo para asumir aquí.
+
+    Etapa 2 (Proveedores, sesión 86) — resuelve la duda de arriba con un
+    dato real: `card_code` (CardCode de SAP) y `LicTradNum` (RUC real,
+    confirmado por el usuario como campo del payload de `sync-proveedores`)
+    SÍ son campos distintos, aunque hoy coincidan por convención en las
+    cuentas reales existentes (`P` + RUC). `ruc` pasa a poblarse desde
+    `LicTradNum` en el sync de proveedores nuevo (`apps/base/
+    supplier_onboarding.py`, Etapa 2.2/2.3) — `sincronizar_supplier_
+    profile` (el upsert incrustado en `sync-oc`, más limitado, sin acceso
+    a `LicTradNum`) sigue poblándolo con `sap_card_code` como hasta ahora,
+    sin cambios en esta sub-etapa.
+
+    `razon_social_legal` (CardFName de SAP — nombre/razón social legal,
+    distinto de `razon_social`/CardName, que es el nombre comercial corto
+    ya usado) y `debe_cambiar_password` (barrera de "primer acceso con
+    credencial temporal" — ver `apps/base/middleware.py`, Etapa 2.4, y el
+    flujo de alta en `supplier_onboarding.py`, Etapa 2.2/2.3) se agregan
+    en esta sub-etapa (2.1), sin consumidor todavía — las etapas
+    siguientes son las que los llenan/leen.
     """
     ESTADO_ACTIVO = 'ACTIVO'
     ESTADO_INACTIVO = 'INACTIVO'
@@ -93,12 +112,26 @@ class SupplierProfile(TimeStampedModel):
 
     ruc = models.CharField(max_length=50, blank=True, default='')
     razon_social = models.CharField(max_length=255, blank=True, default='')
+    razon_social_legal = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="CardFName de SAP — razón social legal/fiscal completa, "
+                  "distinta de razon_social (CardName, nombre comercial corto).",
+    )
     correo_electronico = models.CharField(max_length=255, blank=True, default='')
     sap_card_code = models.CharField(
         max_length=50, unique=True,
         help_text="CardCode de SAP (mismo valor que PurchaseOrder.card_code).",
     )
     estado = models.CharField(max_length=15, choices=ESTADO_CHOICES, default=ESTADO_ACTIVO)
+    debe_cambiar_password = models.BooleanField(
+        default=False,
+        help_text="True solo mientras el proveedor sigue con la contraseña "
+                  "temporal (su LicTradNum) asignada al darlo de alta desde "
+                  "SAP (Etapa 2). Default False para no afectar cuentas "
+                  "creadas antes de este flujo (manuales, o vinculadas por "
+                  "resolver_perfil_de_usuario) — nunca deben quedar "
+                  "bloqueadas por un flag que no les corresponde.",
+    )
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
