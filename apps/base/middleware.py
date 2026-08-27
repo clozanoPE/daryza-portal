@@ -35,6 +35,18 @@ class ForzarCambioPasswordMiddleware:
         self._url_logout = reverse('logout')
         self._prefijo_static = '/' + settings.STATIC_URL.lstrip('/')
         self._prefijo_media = '/' + settings.MEDIA_URL.lstrip('/')
+        # Sesión 90 (Etapa 2.5): prefijo del flujo de recuperación de
+        # contraseña (solicitar_recuperacion en la raíz del prefijo,
+        # confirmar_recuperacion con uidb64/token debajo) — cubre ambas
+        # rutas con un solo prefijo, evita reversear confirmar_
+        # recuperacion (necesita argumentos dinámicos, no tiene sentido
+        # para una exclusión estática). Sin esto, un proveedor con
+        # debe_cambiar_password=True que además tenga una sesión activa
+        # (ej. otra pestaña del mismo navegador) y siga el link de
+        # recuperación desde ahí quedaría atrapado: el middleware lo
+        # mandaría de vuelta a cambiar_password_obligatorio antes de
+        # llegar siquiera a confirmar_recuperacion.
+        self._prefijo_recuperacion = reverse('solicitar_recuperacion')
 
     def __call__(self, request):
         if self._debe_interceptar(request):
@@ -72,5 +84,8 @@ class ForzarCambioPasswordMiddleware:
         # chequeo — interceptarlos rompería el propio render de
         # cambiar_password_obligatorio.html (CSS/JS/logo).
         if path.startswith(self._prefijo_static) or path.startswith(self._prefijo_media):
+            return True
+        # Flujo de recuperación (ver comentario en __init__).
+        if path.startswith(self._prefijo_recuperacion):
             return True
         return False

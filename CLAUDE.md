@@ -150,6 +150,46 @@ Las 2 rutas (`cambiar_password_obligatorio`/`logout`) se resuelven una sola vez 
 
 **Fuera de alcance de esta sub-etapa (para 2.5, según el plan):** el flujo de recuperación de contraseña (`default_token_generator`, las 2 vistas, el link real en `login.html`) — sin código todavía.
 
+### Sesión 90 — Etapa 2, sub-etapa 2.5 (última): flujo de recuperación de contraseña. Etapa 2 COMPLETA
+
+**`apps/base/site_utils.py`** (nuevo): `construir_url_absoluta(path)` — extraído de `AppointmentService._notificar_proveedor_qr` (sesión 74, antes vivía inline ahí, sin ningún test dedicado) porque esta sub-etapa necesitaba exactamente la misma lógica de preferencia de dominio (custom sobre el subdominio de Railway) para el link del correo de recuperación. `_notificar_proveedor_qr` refactorizado para usar el helper compartido — sin cambio de comportamiento, verificado con la suite ya existente de `apps/appointments/tests.py` (5/5 OK) más 2 tests nuevos dedicados al helper en sí (antes sin cobertura directa).
+
+**`apps/base/services_recuperacion.py`** (nuevo) — los 4 criterios de negocio confirmados, tal como en las sub-etapas anteriores:
+2. **`default_token_generator`** de Django (`PasswordResetTokenGenerator` estándar) — sin esquema propio. El token está atado al hash de contraseña + `last_login` del usuario (mecanismo interno de Django) — esto es lo que hace que un token usado quede inválido automáticamente al cambiar la contraseña, sin que el Portal tenga que llevar ningún registro de "tokens ya usados".
+3. **Reutiliza `services_correo.enviar_correo`** (sesión 73) — mismo motor que el correo de bienvenida de la Etapa 2.2, no un mecanismo paralelo.
+6. **`solicitar_recuperacion(username)` nunca revela** si el usuario existe — no lanza, no devuelve nada distinguible; es la vista la que siempre muestra el mismo mensaje.
+7. **Expiración**: comportamiento default de Django (`PASSWORD_RESET_TIMEOUT`, no sobreescrito en `core/settings.py` — 3 días).
+
+`resolver_usuario_desde_token(uidb64, token)` — decodifica el uid, valida el token, devuelve `None` para CUALQUIER motivo de rechazo (uid mal formado, usuario inexistente/inactivo, token inválido/vencido/reutilizado) sin distinguir el motivo — mismo criterio de "no revelar más información de la necesaria" (punto 7) aplicado también acá, no solo en el punto 6.
+
+**`apps/base/views.py`**: `solicitar_recuperacion` (sin `@login_required` — es exactamente el flujo para quien no puede loguearse) muestra siempre el mismo mensaje neutro sin importar el resultado interno. `confirmar_recuperacion` (tampoco `@login_required`) usa `SetPasswordForm` — mismo patrón exacto que `cambiar_password_obligatorio` (Etapa 2.4) — y comparte con esa sub-etapa el paso final: limpia `debe_cambiar_password` **solo si estaba en `True`** (un proveedor que ya estaba activado y usa recuperación por otro motivo no debe "reactivarse" el flag por error).
+
+**Punto 5 del pedido — `update_session_auth_hash`, confirmado y aplicado, con la justificación pedida explícitamente:** SÍ se llama, en el mismo punto que en la Etapa 2.4 (justo después de `form.save()`). En el camino **normal** de este flujo no hay ninguna sesión autenticada como el usuario objetivo (llega sin login, `request.user` es `AnonymousUser`) — pero la propia implementación de Django de `update_session_auth_hash` ya contempla esto: compara `request.user == user` primero, y si no coinciden (el caso normal acá) solo ejecuta `request.session.cycle_key()` (rota el ID de sesión) sin tocar nada más — no falla, no hace nada incorrecto. Llamarla igual tiene 2 beneficios reales, no solo "no hace daño": (a) el `cycle_key()` es una buena práctica de seguridad en cualquier acción sensible sobre una sesión, sin importar de quién sea; (b) cubre correctamente el caso de borde donde el proveedor SÍ tiene una sesión activa como ese mismo usuario en otra pestaña del mismo navegador (ej. abrió el link de recuperación estando ya logueado) — ahí sí preserva la sesión en vez de invalidarla. Se decidió no omitir la llamada.
+
+**Hallazgo adicional durante el diseño, corregido antes de escribir el código de negocio**: `ForzarCambioPasswordMiddleware` (Etapa 2.4) no tenía ninguna excepción para las 2 rutas nuevas — un proveedor con `debe_cambiar_password=True` que tuviera una sesión activa (el caso de borde del punto 5, arriba) y siguiera su propio link de recuperación desde ahí habría quedado atrapado: el middleware lo habría mandado de vuelta a `cambiar_password_obligatorio` antes de llegar a `confirmar_recuperacion`. Se agregó `reverse('solicitar_recuperacion')` como prefijo excluido (cubre ambas rutas nuevas, `solicitar_recuperacion` y `confirmar_recuperacion` con sus `uidb64`/`token` dinámicos, con un solo prefijo estático).
+
+**`templates/solicitar_recuperacion.html`/`confirmar_recuperacion.html`** (nuevos, mismo estilo visual que `login.html`) + **`templates/login.html`**: el `href="#"` ("Contacte a Sistemas", placeholder desde la sesión 9) reemplazado por el link real a `solicitar_recuperacion`. Barrido de `{#` multilínea (regla permanente, sesión 26) sobre los 3: **0 instancias**.
+
+**`core/urls.py`**: `path('cuenta/recuperar/', solicitar_recuperacion, name='solicitar_recuperacion')` + `path('cuenta/recuperar/<uidb64>/<token>/', confirmar_recuperacion, name='confirmar_recuperacion')`.
+
+**Tests nuevos** (`apps/base/tests.py`, 13 en total — 2 `ConstruirUrlAbsolutaTests` + 9 `RecuperacionPasswordTests`, más los 2 en `apps/appointments/tests.py` que ya cubrían el comportamiento de `_notificar_proveedor_qr` sin cambios):
+- Mensaje neutro (RUC real vs. inventado): comparación **byte a byte** del contenido de la respuesta, tal como pidió el usuario. **Bug real encontrado por el propio test antes de comitear**: la primera versión comparaba `response.content` directo y fallaba siempre — no por ninguna diferencia real de contenido, sino porque Django enmascara el valor del token CSRF por request (previene ataques BREACH), así que 2 renders del mismo template, sin ningún cambio real, ya producen un `value=""` distinto cada vez. Corregido comparando el contenido con el `csrfmiddlewaretoken` quitado por regex — la comparación real (mensaje neutro) sigue siendo tan estricta como se pidió, solo ignora el ruido esperado del CSRF.
+- Token válido cambia la contraseña y limpia el flag (si estaba en `True`) / no lo activa por error (si ya estaba en `False`) — 2 tests separados para no dejar ambigua esta distinción.
+- Membresía de `PROVEEDORES` intacta tras el cambio.
+- Token usado no se puede reutilizar (segundo intento con el mismo token, tras un primer uso exitoso, rechaza).
+- Token vencido rechaza (`@override_settings(PASSWORD_RESET_TIMEOUT=1)` + `time.sleep(2)` real — sin mockear los internos de Django, deja que el propio mecanismo de expiración falle de verdad).
+- Uid mal formado no lanza ninguna excepción (rechaza limpio).
+- Usuario inexistente no intenta enviar correo.
+- El middleware de la Etapa 2.4 no bloquea el flujo de recuperación (el hallazgo de arriba, confirmado con un test real: proveedor con el flag en `True` Y sesión activa, accede a `confirmar_recuperacion` sin ser rebotado).
+
+**Validación realizada:**
+- `manage.py check` limpio; `makemigrations --check --dry-run`: `No changes detected` (sin cambios de modelo).
+- `manage.py test apps.base`: **42/42 OK** (31 de la sesión 89 + 11 nuevos). `apps.appointments`: **5/5 OK** (sin regresión tras el refactor de `_notificar_proveedor_qr`).
+- Suite completa del proyecto (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **253/253 OK**.
+- Barrido de `{#` multilínea: **0 instancias** en los 3 templates tocados.
+
+**Con esta sub-etapa, la Etapa 2 (Proveedores) queda COMPLETA del lado Django** — modelo (2.1) → servicio de alta (2.2) → endpoint del daemon (2.3) → barrera de primer acceso (2.4) → recuperación (2.5). Falta únicamente el lado VB.NET (sub-etapas 2.7/2.8 del plan original: `GetPendingSuppliers`/`MarkSupplierAsMigrated` en `daemon_data`, orquestación en `daemon_logical`, enganche en `Service1.vb::WorkerThread`) y la prueba end-to-end real contra SAP (2.9).
+
 ## Reglas de esta sesión en adelante (sesión 26)
 
 - **Las notas de implementación NUNCA van como comentario dentro de un `.html` de template** — ni `{# ... #}`, ni `{% comment %}...{% endcomment %}`, ni ninguna otra forma. Ese contenido vive únicamente en `CLAUDE.md` (historial de sesiones) o en el resumen entregado en el chat. Motivo: el patrón `{# ... #}` escrito en varias líneas ya causó texto de implementación visible en pantalla **dos veces** (sesión 20, reincidencia en la sesión 25) — el tokenizer de Django (`django/template/base.py::tag_re = re.compile(r"({%.*?%}|{{.*?}}|{#.*?#})")`, sin la flag `re.DOTALL`) no reconoce un comentario `{# #}` cuyo contenido cruza un salto de línea: en vez de descartarlo, lo trata como texto literal y lo renderiza tal cual. La única forma segura de anotar código con contexto de sesión sin este riesgo es no ponerlo en el `.html` en absoluto.

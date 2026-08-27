@@ -305,26 +305,15 @@ class AppointmentService:
         por falta de email) — el llamador (confirmar_cita) decide dónde
         dejarlo visible; esta función nunca lanza.
         """
-        from django.conf import settings
-
         from apps.base.services_correo import enviar_correo
+        from apps.base.site_utils import construir_url_absoluta
 
         # URL absoluta: el link va en un correo real, no en una página ya
         # cargada en el navegador — una ruta relativa no resuelve a nada
-        # útil en un cliente de correo. Se construye desde ALLOWED_HOSTS
-        # (ya configurado, sin agregar ninguna variable de entorno nueva
-        # solo para esto) en vez de asumir un dominio fijo.
-        #
-        # Preferencia de dominio custom sobre el subdominio de Railway
-        # (sesión: en producción, ALLOWED_HOSTS trae
-        # "web-production-ac867.up.railway.app,nexo.daryza.pe", en ese
-        # orden — sin esta preferencia, ALLOWED_HOSTS[0] habría armado un
-        # link funcional pero con el dominio feo de Railway, no el
-        # branded, en el primer correo real a un proveedor).
-        hosts = settings.ALLOWED_HOSTS or ['localhost:8000']
-        dominio = next((h for h in hosts if 'railway.app' not in h), hosts[0])
-        esquema = 'http' if dominio.startswith('localhost') or dominio.startswith('127.') else 'https'
-        url_qr = f"{esquema}://{dominio}/appointments/ticket/{appointment.token_qr}/"
+        # útil en un cliente de correo. Helper compartido desde la sesión
+        # 90 (Etapa 2.5, recuperación de contraseña, necesita la misma
+        # lógica de preferencia de dominio) — antes vivía inline acá.
+        url_qr = construir_url_absoluta(f"/appointments/ticket/{appointment.token_qr}/")
 
         proveedor_email = appointment.user.email
         if not proveedor_email:

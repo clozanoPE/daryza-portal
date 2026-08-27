@@ -11,19 +11,25 @@ real recibido en clozano@daryza.com, ver CLAUDE.md); esta suite cubre
 los caminos de error sin depender de que Graph esté disponible cada vez
 que corre `manage.py test`.
 """
+import re
+import time
 from unittest.mock import MagicMock, patch
 
 import requests
 from django.contrib.auth.models import Group, User
+from django.contrib.auth.tokens import default_token_generator
 from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from apps.base import graph_auth, services_correo
 from apps.base.models import SupplierProfile
+from apps.base.site_utils import construir_url_absoluta
 from apps.base.supplier_onboarding import (
     ESTADO_ACTUALIZADO_SIN_ALTA,
     ESTADO_CREADO,
@@ -566,3 +572,184 @@ class ForzarCambioPasswordMiddlewareTests(TestCase):
         # es que el middleware nunca lo redirigió a cambiar_password_
         # obligatorio.
         self.assertNotEqual(response.status_code, 302)
+
+
+class ConstruirUrlAbsolutaTests(SimpleTestCase):
+    """
+    Sub-etapa 2.5 (sesión 90): helper extraído de
+    AppointmentService._notificar_proveedor_qr (sesión 74) — antes sin
+    ningún test dedicado (vivía inline). Se preserva el mismo
+    comportamiento ya validado manualmente en esa sesión.
+    """
+
+    @override_settings(ALLOWED_HOSTS=['web-production-ac867.up.railway.app', 'nexo.daryza.pe'])
+    def test_prefiere_el_dominio_custom_sobre_railway(self):
+        url = construir_url_absoluta('/cuenta/recuperar/abc/123/')
+        self.assertEqual(url, 'https://nexo.daryza.pe/cuenta/recuperar/abc/123/')
+
+    @override_settings(ALLOWED_HOSTS=['localhost', '127.0.0.1'])
+    def test_localhost_usa_http(self):
+        url = construir_url_absoluta('/x/')
+        self.assertEqual(url, 'http://localhost/x/')
+
+
+class RecuperacionPasswordTests(TestCase):
+    """
+    Sub-etapa 2.5 (sesión 90): los escenarios pedidos explícitamente
+    sobre `apps.base.services_recuperacion` + las 2 vistas nuevas.
+    `services_correo.enviar_correo` mockeado (sin llamadas reales a
+    Graph); la prueba end-to-end real ya se hizo en la sesión 73 para
+    el mecanismo de correo en sí.
+    """
+
+    def setUp(self):
+        self.parche_correo = patch('apps.base.services_recuperacion.services_correo.enviar_correo')
+        self.mock_enviar_correo = self.parche_correo.start()
+        self.addCleanup(self.parche_correo.stop)
+        self.mock_enviar_correo.return_value = services_correo.ResultadoEnvioCorreo(enviado=True)
+
+    def _crear_proveedor(self, card_code, debe_cambiar=False, email='proveedor@test.com'):
+        grupo, _ = Group.objects.get_or_create(name='PROVEEDORES')
+        user = User.objects.create_user(username=card_code, password='x', email=email)
+        user.groups.add(grupo)
+        perfil = SupplierProfile.objects.create(
+            sap_card_code=card_code, user=user, debe_cambiar_password=debe_cambiar,
+        )
+        return user, perfil
+
+    def _token_y_uid(self, user):
+        uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        return uidb64, token
+
+    @staticmethod
+    def _sin_csrf_token(content_bytes):
+        # Django enmascara el valor del CSRF token por request (previene
+        # ataques estilo BREACH) -- 2 renders del MISMO template, incluso
+        # sin ningún cambio real de contenido, producen un value=""
+        # distinto cada vez. Sin quitarlo, una comparación byte a byte
+        # fallaría siempre, sin que eso signifique ninguna diferencia de
+        # contenido real -- justo lo que este test necesita verificar.
+        return re.sub(rb'name="csrfmiddlewaretoken" value="[^"]*"', b'', content_bytes)
+
+    def test_mensaje_neutro_no_revela_existencia_del_usuario(self):
+        self._crear_proveedor('P80000000001')
+
+        resp_real = self.client.post(reverse('solicitar_recuperacion'), {'username': 'P80000000001'})
+        resp_inventado = self.client.post(reverse('solicitar_recuperacion'), {'username': 'USUARIO_QUE_JAMAS_EXISTIO'})
+
+        self.assertEqual(resp_real.status_code, resp_inventado.status_code)
+        self.assertEqual(
+            self._sin_csrf_token(resp_real.content),
+            self._sin_csrf_token(resp_inventado.content),
+        )
+
+        # Internamente SÍ hay una diferencia real (solo el usuario real
+        # dispara el envío) -- lo que nunca debe diferir es lo que la
+        # persona ve en pantalla, ya verificado arriba.
+        self.mock_enviar_correo.assert_called_once()
+
+    def test_token_valido_permite_cambiar_password_y_limpia_flag_si_aplicaba(self):
+        user, perfil = self._crear_proveedor('P80000000002', debe_cambiar=True)
+        uidb64, token = self._token_y_uid(user)
+        url = reverse('confirmar_recuperacion', args=[uidb64, token])
+
+        response = self.client.post(url, {
+            'new_password1': 'ClaveNuevaValidaDelProveedor2026',
+            'new_password2': 'ClaveNuevaValidaDelProveedor2026',
+        })
+
+        self.assertEqual(response.status_code, 302)
+
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('ClaveNuevaValidaDelProveedor2026'))
+
+        perfil.refresh_from_db()
+        self.assertFalse(perfil.debe_cambiar_password)
+
+    def test_token_valido_sin_flag_previo_no_lo_activa_por_error(self):
+        # Un proveedor que ya estaba activado (debe_cambiar_password=False)
+        # y usa recuperación por otro motivo (ej. olvidó su clave elegida)
+        # -- el flag debe seguir en False después, no "reactivarse".
+        user, perfil = self._crear_proveedor('P80000000003', debe_cambiar=False)
+        uidb64, token = self._token_y_uid(user)
+        url = reverse('confirmar_recuperacion', args=[uidb64, token])
+
+        self.client.post(url, {
+            'new_password1': 'OtraClaveValidaDelProveedor2026',
+            'new_password2': 'OtraClaveValidaDelProveedor2026',
+        })
+
+        perfil.refresh_from_db()
+        self.assertFalse(perfil.debe_cambiar_password)
+
+    def test_membresia_de_grupo_proveedores_queda_intacta(self):
+        user, _ = self._crear_proveedor('P80000000004', debe_cambiar=True)
+        uidb64, token = self._token_y_uid(user)
+        url = reverse('confirmar_recuperacion', args=[uidb64, token])
+
+        self.client.post(url, {
+            'new_password1': 'ClaveNuevaValidaDelProveedor2026',
+            'new_password2': 'ClaveNuevaValidaDelProveedor2026',
+        })
+
+        user.refresh_from_db()
+        self.assertTrue(user.groups.filter(name='PROVEEDORES').exists())
+
+    def test_token_usado_no_se_puede_reutilizar(self):
+        user, _ = self._crear_proveedor('P80000000005')
+        uidb64, token = self._token_y_uid(user)
+        url = reverse('confirmar_recuperacion', args=[uidb64, token])
+
+        # Primer uso: exitoso.
+        resp1 = self.client.post(url, {
+            'new_password1': 'PrimeraClaveValida2026',
+            'new_password2': 'PrimeraClaveValida2026',
+        })
+        self.assertEqual(resp1.status_code, 302)
+
+        # Segundo uso del MISMO token: la contraseña ya cambió, el hash
+        # contra el que el token se valida ya no coincide -- Django lo
+        # rechaza solo, sin ningún registro de "tokens usados" del lado
+        # del Portal.
+        resp2 = self.client.get(url)
+        self.assertContains(resp2, 'no es válido o ya venció')
+
+    @override_settings(PASSWORD_RESET_TIMEOUT=1)
+    def test_token_vencido_rechaza(self):
+        user, _ = self._crear_proveedor('P80000000006')
+        uidb64, token = self._token_y_uid(user)
+        url = reverse('confirmar_recuperacion', args=[uidb64, token])
+
+        time.sleep(2)  # supera el PASSWORD_RESET_TIMEOUT=1s de este test
+
+        response = self.client.get(url)
+
+        self.assertContains(response, 'no es válido o ya venció')
+
+    def test_token_con_uid_mal_formado_rechaza_sin_lanzar(self):
+        response = self.client.get(reverse('confirmar_recuperacion', args=['no-es-un-uid-valido', 'token-cualquiera']))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'no es válido o ya venció')
+
+    def test_usuario_inexistente_no_intenta_enviar_correo(self):
+        # Sin crear ningún proveedor con ese username en este test --
+        # aislado a propósito, para no depender de los demás.
+        response = self.client.post(reverse('solicitar_recuperacion'), {'username': 'NUNCA_EXISTIO'})
+
+        self.assertEqual(response.status_code, 200)
+        self.mock_enviar_correo.assert_not_called()
+
+    def test_forzar_cambio_password_middleware_no_bloquea_el_flujo_de_recuperacion(self):
+        # Proveedor CON el flag en True Y con una sesión activa (caso de
+        # borde: otra pestaña logueada) -- el link de recuperación debe
+        # seguir siendo accesible, no rebotar a cambiar_password_obligatorio.
+        user, _ = self._crear_proveedor('P80000000007', debe_cambiar=True)
+        self.client.login(username='P80000000007', password='x')
+        uidb64, token = self._token_y_uid(user)
+
+        response = self.client.get(reverse('confirmar_recuperacion', args=[uidb64, token]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Restablecer contraseña')
