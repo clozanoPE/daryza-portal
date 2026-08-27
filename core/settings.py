@@ -197,6 +197,15 @@ ONEDRIVE_DRIVE_ID      = os.getenv('ONEDRIVE_DRIVE_ID', '')
 # error explícito y visible, en vez de intentar enviar sin remitente).
 GRAPH_SENDER_EMAIL = os.getenv('GRAPH_SENDER_EMAIL', '')
 
+# Interruptor de seguridad de la Fase 3 (Facturación) — diseñado desde el
+# inicio (ver CLAUDE.md, sesión 66) para poder desplegar los endpoints del
+# daemon SAP para Factura (api/factura_api.py) sin que el daemon real
+# empiece a crear documentos en SAP hasta que se confirme explícitamente
+# que el flujo está listo en producción. Mismo patrón de parseo booleano
+# que DEBUG (arriba). Default 'False' — ningún endpoint de "pendientes"
+# devuelve nada mientras esta variable no esté en 'True' en el entorno.
+FACTURA_DRAFT_SAP_HABILITADO = os.getenv('FACTURA_DRAFT_SAP_HABILITADO', 'False') == 'True'
+
 # 10. Seguridad detrás de un proxy HTTPS (Railway u otro PaaS equivalente)
 #
 # CSRF_TRUSTED_ORIGINS: orígenes completos (con esquema) desde los que se

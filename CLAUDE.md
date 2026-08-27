@@ -2192,17 +2192,48 @@ Implementa el flujo real de revisión de Compras sobre una Factura ya enviada (S
 
 **Sub-fase 3.5 en producción, funcionando.**
 
+### 2026-08-27 (sesión 82) — Sub-fase 3.6: endpoints del daemon SAP para Factura (Preliminar/reconciliación/cancelación)
+
+Implementa los 6 endpoints del daemon VB.NET para que cree el Preliminar de una Factura en SAP B1 — mismo patrón ya establecido para OC (sesión 49) y `EntradaMercaderia` (sesiones 57-58): el daemon siempre inicia la conexión, upsert nunca delete+recreate, mismo `Token` de autenticación ya existente (`daemon_sap`, sesión 67). **Sin push/deploy esta sesión** — solo commit local, sin instrucción de subirlo.
+
+**1. Modelo (`apps/invoicing/models.py`, migración `0005`):** 3 campos nuevos en `Factura` — `error_mensaje_sap` (mismo rol que `EntradaMercaderia.error_mensaje`, distinto de `mensaje_validacion_documentos`, que es sobre la validez del comprobante en sí, no sobre SAP) + `fecha_preliminar_confirmado`/`fecha_definitivo_confirmado`/`fecha_cancelado_sap` (timestamps por transición, mismo patrón que `EntradaMercaderia`). `doc_entry_preliminar`/`doc_entry_definitivo` y el choice `'C'` de `estado_sap` ya existían desde la Sub-fase 3.1b (sesión 69) — quedaron listos de antemano.
+
+**2. Interruptor `settings.FACTURA_DRAFT_SAP_HABILITADO`** (`core/settings.py`, nace en esta sesión — no existía en el código hasta ahora, confirmado por `grep` antes de crearlo): mismo patrón de parseo booleano que `DEBUG` (`os.getenv(..., 'False') == 'True'`), default `False` — el mismo valor que producción tiene hoy (la variable no está configurada en Railway, sesión 66/67).
+
+**3. Serializers (`apps/invoicing/serializers.py`, nuevo):** `FacturaPreliminarSerializer` mapea los campos de cabecera a los nombres REALES de los UDF de SAP (`U_MSSL_FPC`/`U_MSSL_FNC` = serie/número, `U_MSSL_TOP`/`U_MSSL_CBS` ya documentados desde el modelo) + `card_code`/`sede_codigo`/`sede_sap_whs_code`; cada línea incluye `grpo_doc_entry`/`grpo_estado_sap` — la referencia a la `EntradaMercaderia` (GRPO) correspondiente para que SAP pueda hacer "Copy From". **Decisión**: no se filtran de la lista las Facturas cuyo GRPO todavía no esté confirmado en SAP (`grpo_estado_sap != 'Y'`) — se expone el dato tal cual (posiblemente `None`/`'L'`/`'B'`) y se deja que el daemon decida, mismo principio ya establecido ("el daemon es la fuente de verdad de SAP") en vez de que el Portal imponga una secuencia que en realidad depende de SAP. `base_line = po_line.line_num`: mismo supuesto ya aceptado un escalón antes en el mismo pipeline (`EntradaMercaderiaLineaSerializer`, sesión 57), no uno nuevo de esta sesión.
+
+**4. `api/factura_api.py`** (nuevo), 3 `ViewSet` (uno por etapa, mismo criterio `get_queryset` distinguiendo `self.action == 'list'` ya usado en `EntradaMercaderiaViewSet`):
+- `FacturaPreliminarViewSet` — `GET facturas-pendientes-preliminar/` (`APROBADA_COMPRAS` + `estado_sap='L'`) + `POST .../confirmar-preliminar/` (`'L'→'B'`, guarda `doc_entry_preliminar`) + `POST .../reportar-error/` (guarda `error_mensaje_sap`, **no** toca `estado_sap` — mismo patrón exacto que `EntradaMercaderia.reportar_error`, sesión 58).
+- `FacturaReconciliacionViewSet` — `GET facturas-preliminares/` (`estado_sap='B'`) + `POST .../confirmar-definitivo/` (`'B'→'Y'`, guarda `doc_entry_definitivo`).
+- `FacturaCancelacionViewSet` — `GET facturas-pendientes-cancelacion/` (`estado='CANCELADO'` + `estado_sap='B'`) + `POST .../confirmar-cancelacion/` (`'B'→'C'`, sin body obligatorio — cancelar no genera un `DocEntry` nuevo).
+- Los 3 son upsert retry-safe (reintentar cualquier POST con el mismo o distinto valor nunca falla, solo actualiza) — verificado con test dedicado en cada uno.
+- **Nota de alcance**: no existe todavía ningún flujo real de negocio para llevar una Factura a `estado='CANCELADO'` (ni botón ni servicio) — fuera de lo pedido en esta sesión; los tests de cancelación fuerzan el estado directamente sobre el modelo, mismo criterio ya usado en el resto de la suite para probar candados de forma aislada.
+
+**5. Interruptor aplicado a los 6 endpoints, no solo a los 3 `list`** (punto 6 del pedido, interpretación deliberadamente conservadora de "TODOS estos endpoints deben respetar" el flag): `get_queryset()` de los 3 `ViewSet` devuelve `Factura.objects.none()` cuando el flag está apagado, **sin importar la acción** — un intento de `POST .../confirmar-preliminar/` sobre un `id` real, con el flag apagado, responde `404` (como si la Factura no existiera), no solo la lista vacía.
+
+**6. Candado explícito `estado_sap='Y'` (punto 4 del pedido, `apps/invoicing/services_archivos.py::validar_permiso_edicion`):** chequeo independiente, agregado ANTES del ya existente `estado not in ESTADOS_CARGA_PERMITIDA` — hoy es transitivamente redundante (`estado_sap` solo avanza más allá de `''` cuando `estado` ya es `APROBADA_COMPRAS`, fuera del conjunto editable), pero se agregó igual como defensa en profundidad explícita: un cambio futuro que reabra una Factura `APROBADA_COMPRAS` a `BORRADOR`/`OBSERVADA` sin revisar `estado_sap` rompería esa garantía transitiva en silencio. Verificado con una combinación de estado forzada/inconsistente (`estado='BORRADOR'` + `estado_sap='Y'`, nunca alcanzable por el flujo real) para probar que el candado nuevo actúa de forma independiente, no solo a través del de `estado` — y también con el camino REAL (tras `confirmar-definitivo` de verdad, dentro del test de flujo completo).
+
+**Verificación del interruptor `FACTURA_DRAFT_SAP_HABILITADO`** (respuesta directa a lo pedido en el resumen): 8 tests en `InterruptorFacturaDraftSapTests`, **sin `@override_settings`** en la mayoría (usan el valor real por defecto de `settings.py`, el mismo que producción tiene hoy) y con una Factura REAL que sí calificaría para cada una de las 3 listas si el flag estuviera en `True` — no alcanzaba con una BD vacía, que habría probado poco. Confirmado: las 3 listas devuelven `[]` pese a los datos calificados, y los 3 `POST` de confirmación devuelven `404` sobre un `id` real sin tocar ningún campo. Un test adicional (`test_encender_el_flag_revela_los_mismos_datos_ya_probados_apagado`, con `@override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)`) usa la MISMA Factura para confirmar que el comportamiento cambia exactamente al togglear el flag — descarta que la lista vacía/404 previos fueran causados por otro motivo (p. ej. un `get_queryset` mal filtrado) en vez del interruptor.
+
+**Tests nuevos** (`apps/invoicing/tests.py`, 30 — 6 clases): idempotencia de cada uno de los 3 endpoints de confirmación (mismo patrón ya probado para OC/`EntradaMercaderia`); payload completo con los nombres UDF reales y la referencia al GRPO; el interruptor (8 tests, arriba); el candado `estado_sap='Y'` (4 tests, incluida la corrección de un test propio con premisa incorrecta detectada al correrlo — ver abajo); y el flujo completo simulado de punta a punta (aprobada → el demonio la toma → confirma Preliminar → reconciliación → confirma definitivo → edición bloqueada; más un segundo test de cancelación desde un Preliminar ya confirmado).
+
+**Corrección durante la validación (antes de comitear, no un bug de producto):** un test propio (`test_estado_sap_B_no_bloquea_por_si_solo`) partía de una premisa incorrecta en su propio comentario ("con `estado_sap='B'` la Factura ya está en `APROBADA_COMPRAS`" mientras el test forzaba `estado='OBSERVADA'` a mano, contradiciendo esa premisa) — la suite lo detectó de inmediato (`ValidationError not raised`). Corregido: el test ahora confirma correctamente que `estado_sap='B'` (a diferencia de `'Y'`) NO dispara el candado nuevo por sí solo, y se agregó un segundo test que sí ejercita la combinación real (`estado='APROBADA_COMPRAS'` + `estado_sap='B'`) para confirmar que ESA sigue bloqueada, mediante el candado de `estado`, no el de SAP.
+
+**Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios. `manage.py test apps.invoicing`: **129/129 OK** (99 anteriores + 30 nuevos). `manage.py test apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`: **210/210 OK**. Rutas de los 6 endpoints verificadas exactas contra el router real (`router.urls`), coinciden literalmente con las pedidas.
+
+**Fuera de alcance de esta sesión (confirmado explícitamente por el pedido, o señalado como no pedido):** ningún flujo de negocio real para cancelar una Factura (botón/servicio) — los endpoints de cancelación existen y funcionan, pero nada en el Portal lleva hoy una Factura a `estado='CANCELADO'`; `reportar-error` solo se construyó para la etapa de Preliminar (mismo texto literal del punto 2 del pedido), no para definitivo/cancelación; deploy a producción (sin instrucción de push esta vez).
+
 ---
 
-## 📍 Punto de retomada (actualizado, sesión 81 — 2026-08-27)
+## 📍 Punto de retomada (actualizado, sesión 82 — 2026-08-27)
 
 Estado exacto al pausar — leer esto primero al retomar, antes de releer el historial completo.
 
-**Repo y producción, sincronizados:**
-- `main` local = `origin/main` = producción, los 3 en el commit **`5c871de`** ("Agrega regla: Decimal en value= de input numerico exige stringformat" — el código real de la Sub-fase 3.5 es el commit `f550633`, redesplegado automáticamente sin cambios funcionales al pushear `5c871de`).
-- Deploy verificado `SUCCESS` en Railway (`vivacious-stillness`/`web`/`production`), sin ningún error de import ni migración pendiente (confirmado con `railway ssh` contra la BD real, no solo el log de boot).
-- `https://nexo.daryza.pe` sirviendo esta versión ahora mismo.
-- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **180/180 OK** a la fecha del último commit de código (`f550633`) — no hay ningún cambio de código sin testear ni sin comitear.
+**Repo:**
+- `main` local tiene el commit de la Sub-fase 3.6 (sesión 82) **por encima** del último estado ya desplegado (`98991b7`, = producción actual).
+- **`origin/main` y producción (Railway `vivacious-stillness`/`web`/`production`, `https://nexo.daryza.pe`) siguen en `98991b7`** — la Sub-fase 3.6 (esta sesión) **todavía no está pusheada ni desplegada**. Sin instrucción de push esta vez; pedirlo explícitamente para que se suba.
+- `FACTURA_DRAFT_SAP_HABILITADO` no está configurada en Railway (confirmado sesión 66/67) — aunque se despliegue el código, el interruptor sigue apagado por defecto hasta que se decida activarlo explícitamente ahí.
+- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **210/210 OK** en el commit local de la sesión 82 — no hay ningún cambio de código sin testear ni sin comitear.
 
 **Módulo de Facturación (`apps.invoicing`) — dónde va cada Sub-fase:**
 
@@ -2213,14 +2244,16 @@ Estado exacto al pausar — leer esto primero al retomar, antes de releer el his
 | 3.2 | Carga segura de archivos (XML/PDF/CDR/retención/detracción) a OneDrive, con hash | ✅ Listo (sesiones 75-76) |
 | 3.3 | Validación automática de negocio al completar los 3 archivos (`procesar_validacion_documentos`) + `enviar_a_revision` | ✅ Listo (sesión 77), verificación de hash agregada antes de producción (sesión 78) |
 | 3.4 | Pantalla completa del proveedor: "Copiar de OC(s)" → crear Factura → cargar archivos → enviar a revisión | ✅ Listo y en producción (sesiones 79-80) |
-| **3.5** | **Vista de Compras: listado (con filtro de estado/período) + detalle reutilizado (solo lectura) + Aprobar/Observar, con notificación real al proveedor** | ✅ **Listo y en producción** (sesión 81) |
-| **3.6** | **Endpoints del daemon SAP para `Factura`** (análogo a `api/entrada_mercaderia_api.py`, sesión 57/58: listar pendientes + confirmar borrador/definitivo/error en SAP) | ❌ **Sin construir — siguiente paso natural** |
-| **3.7** | **Columna de facturación real en el Panel de Consulta de OC** (`apps/base/oc_status.py`, hoy texto fijo "Próximamente") | ❌ **Sin construir** |
+| 3.5 | Vista de Compras: listado + detalle reutilizado (solo lectura) + Aprobar/Observar, con notificación real al proveedor | ✅ Listo y en producción (sesión 81) |
+| **3.6** | **Endpoints del daemon SAP para `Factura`** (Preliminar/reconciliación/cancelación) + interruptor `FACTURA_DRAFT_SAP_HABILITADO` | ✅ **Listo en `main` local — pendiente de push/deploy** (sesión 82) |
+| **3.7** | **Columna de facturación real en el Panel de Consulta de OC** (`apps/base/oc_status.py`, hoy texto fijo "Próximamente") | ❌ **Sin construir — siguiente paso natural** |
 
-**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural es la Sub-fase 3.6 (endpoints del daemon) — no requiere ningún dato externo del usuario, mismo criterio que la 3.5.
+**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural es: (a) pedir el push/deploy de la sesión 82 (y, cuando el daemon real esté listo, activar `FACTURA_DRAFT_SAP_HABILITADO=True` en Railway), y/o (b) la Sub-fase 3.7 (columna de facturación en el Panel de Consulta de OC) — tampoco requiere ningún dato externo del usuario.
 
 **Deuda/observaciones abiertas, sin urgencia:**
 - No hay test dedicado para "OC de sedes distintas rechaza" en la creación de Factura (el candado existe en `services_borrador.py`, documentado, solo falta el test — sesión 79).
 - `security.W004` (HSTS) sigue sin configurar en producción — warning conocido, no bloqueante, nunca se pidió resolverlo.
 - El token real de OneDrive/Graph y las credenciales de producción (`ONEDRIVE_*`, `GRAPH_SENDER_EMAIL`) — confirmar que siguen vigentes si pasó mucho tiempo antes de retomar pruebas reales de carga de archivos/correo en producción.
-- El bug de coma decimal (`LANGUAGE_CODE='es-pe'` + `Decimal` sin `|stringformat`) ya se corrigió 2 veces en puntos distintos del proyecto (sesión 41, sesión 81) — si aparece un tercer campo `Decimal` nuevo en cualquier template futuro (`value="..."` de un input numérico o texto plano), aplicar `|stringformat:".Nf"` desde el primer commit, no esperar a que se reporte.
+- El bug de coma decimal (`LANGUAGE_CODE='es-pe'` + `Decimal` sin `|stringformat`) ya se corrigió 2 veces en puntos distintos del proyecto (sesión 41, sesión 81) — regla permanente agregada al inicio de este archivo; revisar este patrón antes de cerrar cualquier sesión futura que toque formularios numéricos.
+- No existe ningún flujo de negocio real para cancelar una Factura (ni botón ni servicio) — los endpoints de cancelación de la Sub-fase 3.6 ya funcionan y están probados, pero nada en el Portal los alcanza todavía. Construir ese flujo (con su propia decisión de diseño: quién puede cancelar, en qué estados, si libera candados) es trabajo de una fase futura, no asumido aquí.
+- `reportar-error` del daemon SAP solo existe para la etapa de Preliminar (`FacturaPreliminarViewSet`) — las etapas de definitivo/cancelación no tienen un canal de error dedicado; si el daemon lo necesita ahí también, es una extensión pequeña y aislada cuando se pida.

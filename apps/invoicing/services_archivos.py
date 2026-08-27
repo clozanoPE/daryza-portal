@@ -113,9 +113,28 @@ def validar_permiso_edicion(factura, usuario):
     services_borrador.py para la edición de cabecera/línea de una Factura
     ya creada — el nombre "carga" ya no describía todos sus usos. Sin
     cambio de lógica, solo de nombre/visibilidad (pública, no privada).
+
+    CANDADO ADICIONAL, explícito (Sub-fase 3.6, pedido punto 4): una vez
+    que `estado_sap == 'Y'` (documento definitivo ya confirmado en SAP,
+    ver api/factura_api.py::FacturaReconciliacionViewSet.
+    confirmar_definitivo), esta función bloquea SIEMPRE, sin importar
+    `factura.estado` — no se confía en que `estado not in
+    ESTADOS_CARGA_PERMITIDA` ya lo cubra transitivamente (hoy lo hace,
+    porque `estado_sap` solo avanza más allá de '' cuando `estado` ya es
+    `APROBADA_COMPRAS`, fuera de `ESTADOS_CARGA_PERMITIDA`; pero un
+    cambio futuro que reabra una Factura `APROBADA_COMPRAS` a `BORRADOR`/
+    `OBSERVADA` sin revisar `estado_sap` rompería esa garantía en
+    silencio). Chequeo independiente, antes del de `estado`, para que el
+    mensaje de error sea específico ("ya confirmada en SAP") en vez del
+    genérico de estado.
     """
     if not factura.proveedor.user_id or factura.proveedor.user_id != usuario.pk:
         raise ValidationError("Solo el proveedor dueño de esta Factura puede cargar archivos.")
+    if factura.estado_sap == 'Y':
+        raise ValidationError(
+            "No se pueden editar los datos de una Factura ya confirmada como documento "
+            "definitivo en SAP (estado_sap='Y')."
+        )
     if factura.estado not in ESTADOS_CARGA_PERMITIDA:
         raise ValidationError(
             f"No se pueden cargar archivos con la Factura en estado '{factura.get_estado_display()}' "

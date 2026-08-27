@@ -26,13 +26,27 @@ archivo sí toca la base de datos):
      EN_REVISION_COMPRAS por firma inválida, CDR rechazado, o importe
      del XML que no coincide con la suma de FacturaLinea).
 
-  5. Sub-fase 3.4 (esta sesión): services_borrador.py — el patrón
-     "Copiar de OC(s)" completo (listar_ocs_elegibles/lineas_para_copiar/
-     crear_factura_desde_ocs/editar_cabecera_factura/editar_linea_
-     factura), más un flujo HTTP de punta a punta y una regresión de
-     concurrencia real (TransactionTestCase, mismo patrón de las
-     sesiones 70/71) contra crear_factura_desde_ocs — no solo contra
-     validar_oc_disponible aislado, que ya se probó entonces.
+  5. Sub-fase 3.4: services_borrador.py — el patrón "Copiar de OC(s)"
+     completo (listar_ocs_elegibles/lineas_para_copiar/crear_factura_
+     desde_ocs/editar_cabecera_factura/editar_linea_factura), más un
+     flujo HTTP de punta a punta y una regresión de concurrencia real
+     (TransactionTestCase, mismo patrón de las sesiones 70/71) contra
+     crear_factura_desde_ocs — no solo contra validar_oc_disponible
+     aislado, que ya se probó entonces.
+
+  6. Sub-fase 3.5: el lado de Compras (aprobar_factura/observar_factura),
+     candado de rol en el servicio, historial de FacturaObservacion, y
+     el ciclo HTTP completo observar -> corregir -> reenviar -> aprobar.
+
+  7. Sub-fase 3.6 (esta sesión): endpoints del daemon SAP para Factura
+     (api/factura_api.py) — idempotencia de cada endpoint (mismo patrón
+     ya probado para OC/EntradaMercaderia), el interruptor
+     FACTURA_DRAFT_SAP_HABILITADO vaciando las listas de pendientes
+     (y bloqueando también las acciones de confirmación), el candado
+     explícito de estado_sap='Y' bloqueando edición incluso con un
+     `estado` de negocio que en teoría lo permitiría, y el flujo
+     completo simulado de punta a punta (aprobada -> preliminar ->
+     reconciliación -> definitivo).
 """
 import hashlib
 import json
@@ -47,16 +61,20 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connections, transaction
 from django.db.models import Sum
-from django.test import SimpleTestCase, TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from django.utils import timezone
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 from apps.appointments.models import AppointmentSlot
 from apps.appointments.services import AppointmentService
 from apps.base.models import Sede, SupplierProfile
 from apps.base.services_correo import ResultadoEnvioCorreo
 from apps.invoicing import services_validacion as sv
-from apps.operations.models import Ticket, TicketLineInspection
+from apps.operations.models import EntradaMercaderia, Ticket, TicketLineInspection
 from apps.operations.services import OperationsService
 from apps.operations.tests import OperationsTestBase
+from apps.operations.tests import _doc_num_counter
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 from . import services_archivos as sa
@@ -2242,3 +2260,630 @@ class AprobarObservarFacturaHTTPTests(NuevaFacturaTestBase):
 
         factura.refresh_from_db()
         self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sub-fase 3.6 (esta sesión) — endpoints del daemon SAP para Factura
+# (api/factura_api.py). 3 flujos (preliminar/reconciliación/cancelación),
+# el interruptor FACTURA_DRAFT_SAP_HABILITADO, y el candado explícito de
+# estado_sap='Y' bloqueando edición.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class FacturaSAPAPITestBase(InvoicingTestBase):
+    """
+    Base compartida por los tests del daemon SAP de Factura — mismo
+    criterio de autenticación por Token ya usado en EntradaMercaderiaAPI
+    Tests (apps/operations/tests.py, sesión 57).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.daemon_user = User.objects.create_user(username='daemon_test_factura', password='x')
+        cls.token = Token.objects.create(user=cls.daemon_user)
+
+    def setUp(self):
+        self.api = APIClient()
+        self.api.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
+
+    def _finalizar_ticket_en_fecha(self, slot_date, cantidad_real):
+        """
+        Ticket real 'CDL' (comercial, sin COA) hasta FINALIZADO en un
+        slot con `slot_date` explícito — mismos pasos que InvoicingTest
+        Base._finalizar_ticket, sin reutilizarla: esa usa siempre la
+        fecha de slot FIJA '2026-09-01' (heredada de OperationsTestBase.
+        _crear_cita_confirmada), así que llamarla más de una vez en el
+        mismo test colisiona con AppointmentSlot.unique_together=
+        ('sede','date','start_time') — mismo motivo ya documentado en
+        NuevaFacturaTestBase._finalizar_segundo_ticket (sesión 79),
+        generalizado aquí a una fecha arbitraria por llamada (varios
+        tests de este bloque necesitan más de una Factura/Ticket real
+        dentro del mismo método, para probar qué queda excluido de cada
+        filtro, no solo qué queda incluido).
+        """
+        doc_num = next(_doc_num_counter)
+        po = PurchaseOrder.objects.create(
+            doc_entry=doc_num, doc_num=doc_num, card_code='TESTCODE', card_name='TEST SAC',
+            e_mail='test@test.com', status='PENDIENTE', u_mss_tdb='CDL',
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code=f'ITEM-{doc_num}', description='Item de prueba',
+            quantity_sap=10, und_medida='KG', requiere_coa=False,
+        )
+        slot = AppointmentSlot.objects.create(
+            sede=Sede.objects.get(codigo='LURIN'),
+            date=slot_date, start_time='08:00', dock='TEST', max_capacity=5,
+        )
+        appointment = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+        )
+        ticket = AppointmentService.confirmar_cita(
+            appointment_id=appointment.id, usuario_almacen=self.u_compras,
+        )
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
+        ticket.refresh_from_db()
+
+        resultados = [
+            {'inspeccion_id': insp.id, 'estado': 'CONFORME', 'cantidad_modificada': str(cantidad_real)}
+            for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen, resultados=resultados,
+        )
+        ticket.refresh_from_db()
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        ticket.refresh_from_db()
+        return ticket
+
+    def _factura_aprobada_con_grpo(self, *, slot_date='2026-10-01', grpo_doc_entry=5001,
+                                    cantidad=Decimal('10.0000'), precio=Decimal('118.0500'),
+                                    serie='F001', numero='500'):
+        """
+        Punto de partida real de casi todos los tests de este bloque: un
+        Ticket FINALIZADO con su EntradaMercaderia ya confirmada en SAP
+        (estado_sap='Y', doc_entry_definitivo=grpo_doc_entry — como si el
+        daemon ya hubiera sincronizado ese GRPO en una sesión anterior de
+        la Sub-fase 3.6 de EntradaMercaderia, sesiones 57-58), y la
+        Factura correspondiente ya APROBADA_COMPRAS (estado_sap='L') —
+        exactamente el estado que InvoicingService.aprobar_factura deja
+        (sesión 81), el punto de entrada real de facturas-pendientes-
+        preliminar/.
+        """
+        ticket = self._finalizar_ticket_en_fecha(slot_date, cantidad)
+        po_line = ticket.appointment.purchase_orders.first().lines.first()
+
+        entrada = EntradaMercaderia.objects.get(ticket=ticket)
+        entrada.doc_entry_definitivo = grpo_doc_entry
+        entrada.estado_sap = 'Y'
+        entrada.fecha_definitivo_confirmado = timezone.now()
+        entrada.save(update_fields=['doc_entry_definitivo', 'estado_sap', 'fecha_definitivo_confirmado'])
+
+        perfil = self._supplier_profile()
+        factura = Factura.objects.create(
+            proveedor=perfil, sede=self._sede(), estado='EN_REVISION_COMPRAS',
+            firma_valida=True, estado_cdr='ACEPTADO', importe_no_coincide=False,
+            serie_comprobante=serie, numero_comprobante=numero, doc_cur='PEN',
+            num_at_card=f'{serie}-{numero}', tipo_operacion='02', clasificacion_bienes_servicios=1,
+        )
+        self._crear_factura_linea(factura, po_line, cantidad=cantidad, precio=precio, precio_oc=precio)
+        InvoicingService.aprobar_factura(factura, self.u_compras)
+        factura.refresh_from_db()
+        return factura, po_line, entrada
+
+
+class FacturaPreliminarAPITests(FacturaSAPAPITestBase):
+    """GET facturas-pendientes-preliminar/ + confirmar-preliminar/ + reportar-error/."""
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_get_lista_solo_aprobada_compras_con_estado_sap_L(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(factura.id, [r['id'] for r in resp.data])
+
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['estado_sap'])
+        resp2 = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertNotIn(
+            factura.id, [r['id'] for r in resp2.data],
+            'Una Factura ya en B no debe listarse como pendiente de Preliminar.',
+        )
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_payload_incluye_udf_sap_y_referencia_al_grpo(self):
+        """Punto 1 del pedido: todos los datos que el demonio necesita, con los nombres reales de SAP."""
+        factura, po_line, entrada = self._factura_aprobada_con_grpo(
+            slot_date='2026-10-01', grpo_doc_entry=7777, serie='F002', numero='321',
+        )
+        resp = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        row = next(r for r in resp.data if r['id'] == factura.id)
+
+        self.assertEqual(row['card_code'], factura.proveedor.sap_card_code)
+        self.assertEqual(row['sede_codigo'], factura.sede.codigo)
+        self.assertEqual(row['doc_cur'], 'PEN')
+        self.assertEqual(row['num_at_card'], 'F002-321')
+        self.assertEqual(row['U_MSSL_FPC'], 'F002')
+        self.assertEqual(row['U_MSSL_FNC'], '321')
+        self.assertEqual(row['U_MSSL_TOP'], '02')
+        self.assertEqual(row['U_MSSL_CBS'], 1)
+        self.assertEqual(len(row['lineas']), 1)
+
+        linea = row['lineas'][0]
+        self.assertEqual(linea['item_code'], po_line.item_code)
+        self.assertEqual(linea['base_line'], po_line.line_num)
+        self.assertEqual(Decimal(linea['cantidad']), Decimal('10.0000'))
+        self.assertEqual(linea['grpo_doc_entry'], 7777)
+        self.assertEqual(linea['grpo_estado_sap'], 'Y')
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_preliminar_marca_B_y_guarda_doc_entry(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/',
+            {'doc_entry_preliminar': 90101}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'B')
+        self.assertEqual(factura.doc_entry_preliminar, '90101')
+        self.assertIsNotNone(factura.fecha_preliminar_confirmado)
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_preliminar_es_idempotente_en_reintento(self):
+        """Reintentar con el MISMO doc_entry no falla, solo actualiza — punto 7 del pedido."""
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        r1 = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/',
+            {'doc_entry_preliminar': 90102}, format='json',
+        )
+        r2 = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/',
+            {'doc_entry_preliminar': 90102}, format='json',
+        )
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.doc_entry_preliminar, '90102')
+        self.assertEqual(factura.estado_sap, 'B')
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_preliminar_sin_doc_entry_devuelve_400(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'L')
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_reportar_error_guarda_mensaje_sin_tocar_estado_sap(self):
+        """Mismo patrón que EntradaMercaderia.reportar_error (sesión 58) — punto 2 del pedido."""
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/reportar-error/',
+            {'error_mensaje': 'SAP rechazó: CardCode inexistente.'}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'L')
+        self.assertEqual(factura.error_mensaje_sap, 'SAP rechazó: CardCode inexistente.')
+
+        # Sigue lista para que el daemon la reintente en el siguiente ciclo.
+        resp2 = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertIn(factura.id, [r['id'] for r in resp2.data])
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_reportar_error_sin_mensaje_devuelve_400(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/reportar-error/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_sin_token_devuelve_401(self):
+        api_sin_token = APIClient()
+        resp = api_sin_token.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertEqual(resp.status_code, 401)
+
+
+class FacturaReconciliacionAPITests(FacturaSAPAPITestBase):
+    """GET facturas-preliminares/ (reconciliación) + confirmar-definitivo/ — puntos 3-4 del pedido."""
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_get_lista_solo_estado_sap_B(self):
+        factura_b, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01', grpo_doc_entry=7001)
+        factura_b.doc_entry_preliminar = '90200'
+        factura_b.estado_sap = 'B'
+        factura_b.save(update_fields=['doc_entry_preliminar', 'estado_sap'])
+
+        factura_l, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-02', grpo_doc_entry=7002)
+
+        resp = self.api.get('/api/v1/facturas-preliminares/')
+        self.assertEqual(resp.status_code, 200)
+        ids = [r['id'] for r in resp.data]
+        self.assertIn(factura_b.id, ids)
+        self.assertNotIn(factura_l.id, ids, 'Una Factura todavía en L (sin Preliminar) no es de reconciliación.')
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_definitivo_marca_Y_y_guarda_doc_entry(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.doc_entry_preliminar = '90201'
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['doc_entry_preliminar', 'estado_sap'])
+
+        resp = self.api.post(
+            f'/api/v1/facturas-preliminares/{factura.id}/confirmar-definitivo/',
+            {'doc_entry_definitivo': 90202}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'Y')
+        self.assertEqual(factura.doc_entry_definitivo, '90202')
+        self.assertIsNotNone(factura.fecha_definitivo_confirmado)
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_definitivo_es_idempotente_en_reintento(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.doc_entry_preliminar = '90203'
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['doc_entry_preliminar', 'estado_sap'])
+
+        r1 = self.api.post(
+            f'/api/v1/facturas-preliminares/{factura.id}/confirmar-definitivo/',
+            {'doc_entry_definitivo': 90204}, format='json',
+        )
+        r2 = self.api.post(
+            f'/api/v1/facturas-preliminares/{factura.id}/confirmar-definitivo/',
+            {'doc_entry_definitivo': 90204}, format='json',
+        )
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'Y')
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_definitivo_sin_doc_entry_devuelve_400(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['estado_sap'])
+        resp = self.api.post(
+            f'/api/v1/facturas-preliminares/{factura.id}/confirmar-definitivo/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
+class FacturaCancelacionAPITests(FacturaSAPAPITestBase):
+    """GET facturas-pendientes-cancelacion/ + confirmar-cancelacion/ — punto 5 del pedido."""
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_get_lista_solo_cancelado_con_preliminar_en_sap(self):
+        factura_cancelada_con_b, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01', grpo_doc_entry=7101)
+        factura_cancelada_con_b.doc_entry_preliminar = '90300'
+        factura_cancelada_con_b.estado_sap = 'B'
+        factura_cancelada_con_b.estado = 'CANCELADO'
+        factura_cancelada_con_b.save(update_fields=['doc_entry_preliminar', 'estado_sap', 'estado'])
+
+        # Cancelada pero SIN Preliminar en SAP todavía (estado_sap='L') —
+        # no hay nada que anular del lado de SAP, no debe listarse aquí.
+        factura_cancelada_sin_b, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-02', grpo_doc_entry=7102)
+        factura_cancelada_sin_b.estado = 'CANCELADO'
+        factura_cancelada_sin_b.save(update_fields=['estado'])
+
+        resp = self.api.get('/api/v1/facturas-pendientes-cancelacion/')
+        self.assertEqual(resp.status_code, 200)
+        ids = [r['id'] for r in resp.data]
+        self.assertIn(factura_cancelada_con_b.id, ids)
+        self.assertNotIn(factura_cancelada_sin_b.id, ids)
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_cancelacion_marca_C(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.doc_entry_preliminar = '90301'
+        factura.estado_sap = 'B'
+        factura.estado = 'CANCELADO'
+        factura.save(update_fields=['doc_entry_preliminar', 'estado_sap', 'estado'])
+
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-cancelacion/{factura.id}/confirmar-cancelacion/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'C')
+        self.assertIsNotNone(factura.fecha_cancelado_sap)
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_confirmar_cancelacion_es_idempotente_en_reintento(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.doc_entry_preliminar = '90302'
+        factura.estado_sap = 'B'
+        factura.estado = 'CANCELADO'
+        factura.save(update_fields=['doc_entry_preliminar', 'estado_sap', 'estado'])
+
+        r1 = self.api.post(
+            f'/api/v1/facturas-pendientes-cancelacion/{factura.id}/confirmar-cancelacion/', {}, format='json',
+        )
+        r2 = self.api.post(
+            f'/api/v1/facturas-pendientes-cancelacion/{factura.id}/confirmar-cancelacion/', {}, format='json',
+        )
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'C')
+
+
+class InterruptorFacturaDraftSapTests(FacturaSAPAPITestBase):
+    """
+    Punto 6 del pedido: FACTURA_DRAFT_SAP_HABILITADO — verificado SIN
+    @override_settings en ninguno de estos tests (usan el valor real por
+    defecto de settings.py, el mismo que producción tiene hoy — sesión
+    66/67: la variable no está configurada en Railway) y con datos
+    reales que SÍ calificarían para cada lista si el flag estuviera en
+    True — no alcanza con una BD vacía, que probaría poco.
+    """
+
+    def test_valor_por_defecto_es_false(self):
+        from django.conf import settings
+        self.assertFalse(
+            settings.FACTURA_DRAFT_SAP_HABILITADO,
+            'El default de settings.py debe ser False — mismo valor que producción hoy.',
+        )
+
+    def test_flag_apagado_vacia_lista_de_preliminar_pese_a_datos_calificados(self):
+        self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(list(resp.data), [])
+
+    def test_flag_apagado_bloquea_confirmar_preliminar_pese_a_id_real(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/',
+            {'doc_entry_preliminar': 1}, format='json',
+        )
+        self.assertEqual(resp.status_code, 404)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'L', 'Sin cambios — el flag apagado bloqueó la confirmación.')
+
+    def test_flag_apagado_vacia_lista_de_reconciliacion_pese_a_datos_calificados(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.doc_entry_preliminar = '1'
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['doc_entry_preliminar', 'estado_sap'])
+
+        resp = self.api.get('/api/v1/facturas-preliminares/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(list(resp.data), [])
+
+    def test_flag_apagado_bloquea_confirmar_definitivo_pese_a_id_real(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['estado_sap'])
+
+        resp = self.api.post(
+            f'/api/v1/facturas-preliminares/{factura.id}/confirmar-definitivo/',
+            {'doc_entry_definitivo': 1}, format='json',
+        )
+        self.assertEqual(resp.status_code, 404)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'B')
+
+    def test_flag_apagado_vacia_lista_de_cancelacion_pese_a_datos_calificados(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.doc_entry_preliminar = '1'
+        factura.estado_sap = 'B'
+        factura.estado = 'CANCELADO'
+        factura.save(update_fields=['doc_entry_preliminar', 'estado_sap', 'estado'])
+
+        resp = self.api.get('/api/v1/facturas-pendientes-cancelacion/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(list(resp.data), [])
+
+    def test_flag_apagado_bloquea_confirmar_cancelacion_pese_a_id_real(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        factura.doc_entry_preliminar = '1'
+        factura.estado_sap = 'B'
+        factura.estado = 'CANCELADO'
+        factura.save(update_fields=['doc_entry_preliminar', 'estado_sap', 'estado'])
+
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-cancelacion/{factura.id}/confirmar-cancelacion/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 404)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'B', 'Sin cambios — el flag apagado bloqueó la confirmación.')
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_encender_el_flag_revela_los_mismos_datos_ya_probados_apagado(self):
+        """
+        Contraprueba explícita: la MISMA Factura que con el flag apagado
+        devolvía lista vacía y 404 en las confirmaciones, con el flag
+        encendido (@override_settings) sí aparece y sí acepta la
+        confirmación — descarta que el flag esté simplemente rompiendo
+        el endpoint por otro motivo (un `get_queryset` mal filtrado
+        podría devolver vacío también con el flag en True; esta prueba
+        confirma que el comportamiento cambia EXACTAMENTE al togglear el
+        flag, no por casualidad).
+        """
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01')
+        resp = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertIn(factura.id, [r['id'] for r in resp.data])
+
+        resp2 = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/',
+            {'doc_entry_preliminar': 90999}, format='json',
+        )
+        self.assertEqual(resp2.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'B')
+
+
+class CandadoEstadoSapYBloqueaEdicionTests(InvoicingTestBase):
+    """
+    Punto 4 del pedido: verifica EXPLÍCITAMENTE que estado_sap='Y'
+    bloquea la edición incluso si `estado` fuera (hipotéticamente) uno
+    de los editables — construyendo a propósito esa combinación
+    inconsistente (nunca alcanzable por el flujo real: estado_sap solo
+    avanza más allá de '' cuando `estado` ya es APROBADA_COMPRAS, fuera
+    de ESTADOS_CARGA_PERMITIDA) para probar que el candado de
+    estado_sap actúa de forma INDEPENDIENTE al de `estado`, no solo
+    transitivamente a través de él — "no confíes en que el estado de
+    negocio ya lo garantizaba".
+    """
+
+    def test_estado_sap_Y_bloquea_pese_a_estado_BORRADOR_editable(self):
+        factura = self._crear_factura(estado='BORRADOR')
+        factura.estado_sap = 'Y'
+        factura.save(update_fields=['estado_sap'])
+
+        with self.assertRaises(ValidationError) as ctx:
+            sa.validar_permiso_edicion(factura, self.proveedor)
+        self.assertIn('SAP', str(ctx.exception))
+
+    def test_estado_sap_Y_bloquea_pese_a_estado_OBSERVADA_editable(self):
+        factura = self._crear_factura(estado='OBSERVADA')
+        factura.estado_sap = 'Y'
+        factura.save(update_fields=['estado_sap'])
+
+        with self.assertRaises(ValidationError):
+            sa.validar_permiso_edicion(factura, self.proveedor)
+
+    def test_estado_sap_Y_bloquea_carga_de_archivo(self):
+        factura = self._crear_factura(estado='OBSERVADA')
+        factura.estado_sap = 'Y'
+        factura.save(update_fields=['estado_sap'])
+
+        archivo = SimpleUploadedFile('f.xml', b'<a/>', content_type='application/xml')
+        with self.assertRaises(ValidationError):
+            sa.cargar_archivo_factura(factura, 'xml', archivo, self.proveedor)
+
+    def test_estado_sap_B_no_bloquea_por_si_solo(self):
+        """
+        Solo 'Y' (documento definitivo) bloquea explícitamente — 'B'
+        (Preliminar, todavía reversible del lado de SAP) NO dispara el
+        candado nuevo: con `estado` en un valor editable (OBSERVADA) y
+        estado_sap='B', validar_permiso_edicion no debe lanzar nada.
+        Confirma que el candado nuevo está acotado exactamente a 'Y', no
+        a "cualquier estado_sap no vacío" — una combinación (estado
+        editable + estado_sap='B') que nunca ocurre en el flujo real
+        (estado_sap solo avanza más allá de '' cuando `estado` ya es
+        APROBADA_COMPRAS) pero que aquí se fuerza para aislar el
+        comportamiento exacto del candado nuevo, igual que el resto de
+        este bloque.
+        """
+        factura = self._crear_factura(estado='OBSERVADA')
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['estado_sap'])
+
+        sa.validar_permiso_edicion(factura, self.proveedor)  # no debe lanzar
+
+    def test_estado_APROBADA_COMPRAS_con_estado_sap_B_bloquea_por_el_candado_de_estado(self):
+        """
+        Camino REAL (no forzado): tras aprobar_factura, `estado` ya es
+        APROBADA_COMPRAS (fuera de ESTADOS_CARGA_PERMITIDA) incluso antes
+        de que estado_sap llegue a 'Y' — el candado de `estado` ya
+        bloquea desde 'L'/'B' en adelante, con su mensaje genérico (no el
+        específico de SAP, que solo dispara con 'Y').
+        """
+        factura = self._crear_factura(estado='APROBADA_COMPRAS')
+        factura.estado_sap = 'B'
+        factura.save(update_fields=['estado_sap'])
+
+        with self.assertRaises(ValidationError) as ctx:
+            sa.validar_permiso_edicion(factura, self.proveedor)
+        self.assertNotIn('SAP', str(ctx.exception))
+
+
+class FlujoCompletoDaemonFacturaTests(FacturaSAPAPITestBase):
+    """
+    Punto 7 del pedido: flujo completo simulado de punta a punta —
+    Factura aprobada -> el demonio la toma -> confirma Preliminar ->
+    reconciliación -> confirma definitivo (y, en un segundo test,
+    cancelación desde un Preliminar ya confirmado).
+    """
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_flujo_completo_aprobada_preliminar_reconciliacion_definitivo(self):
+        factura, po_line, entrada = self._factura_aprobada_con_grpo(
+            slot_date='2026-10-01', grpo_doc_entry=6001,
+        )
+        self.assertEqual(factura.estado, 'APROBADA_COMPRAS')
+        self.assertEqual(factura.estado_sap, 'L')
+
+        # 1. El demonio la toma.
+        resp = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertIn(factura.id, [r['id'] for r in resp.data])
+
+        # 2. Confirma el Preliminar.
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/',
+            {'doc_entry_preliminar': 91001}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'B')
+
+        # Ya no está pendiente de Preliminar.
+        resp = self.api.get('/api/v1/facturas-pendientes-preliminar/')
+        self.assertNotIn(factura.id, [r['id'] for r in resp.data])
+
+        # 3. Reconciliación: aparece pendiente del definitivo.
+        resp = self.api.get('/api/v1/facturas-preliminares/')
+        self.assertIn(factura.id, [r['id'] for r in resp.data])
+
+        # 4. Confirma el definitivo.
+        resp = self.api.post(
+            f'/api/v1/facturas-preliminares/{factura.id}/confirmar-definitivo/',
+            {'doc_entry_definitivo': 91002}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'Y')
+        self.assertEqual(factura.doc_entry_preliminar, '91001')
+        self.assertEqual(factura.doc_entry_definitivo, '91002')
+
+        # Ya no aparece en reconciliación.
+        resp = self.api.get('/api/v1/facturas-preliminares/')
+        self.assertNotIn(factura.id, [r['id'] for r in resp.data])
+
+        # Fin del ciclo: ninguna edición se acepta ya (mismo candado del
+        # bloque anterior, esta vez alcanzado por el camino REAL, no
+        # forzado a mano).
+        with self.assertRaises(ValidationError):
+            sa.validar_permiso_edicion(factura, self.proveedor)
+
+    @override_settings(FACTURA_DRAFT_SAP_HABILITADO=True)
+    def test_flujo_completo_cancelacion_desde_preliminar_ya_confirmado(self):
+        factura, *_ = self._factura_aprobada_con_grpo(slot_date='2026-10-01', grpo_doc_entry=6002)
+        self.api.post(
+            f'/api/v1/facturas-pendientes-preliminar/{factura.id}/confirmar-preliminar/',
+            {'doc_entry_preliminar': 91003}, format='json',
+        )
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'B')
+
+        # La Factura se cancela — construir el flujo real de negocio para
+        # llegar a CANCELADO es explícitamente Sub-fase 3.7+ (no pedido
+        # en esta sesión); se fuerza el estado directamente, mismo
+        # criterio ya usado en el resto de esta suite para probar
+        # candados de forma aislada (p. ej. SaldoDisponibleTests.
+        # test_saldo_ignora_lineas_de_factura_cancelada).
+        factura.estado = 'CANCELADO'
+        factura.save(update_fields=['estado'])
+
+        resp = self.api.get('/api/v1/facturas-pendientes-cancelacion/')
+        self.assertIn(factura.id, [r['id'] for r in resp.data])
+
+        resp = self.api.post(
+            f'/api/v1/facturas-pendientes-cancelacion/{factura.id}/confirmar-cancelacion/', {}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado_sap, 'C')
+        self.assertIsNotNone(factura.fecha_cancelado_sap)
+
+        resp = self.api.get('/api/v1/facturas-pendientes-cancelacion/')
+        self.assertNotIn(factura.id, [r['id'] for r in resp.data])

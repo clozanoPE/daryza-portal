@@ -87,6 +87,31 @@ class Factura(TimeStampedModel):
     EntradaMercaderia.estado_sap (sesión 57), con un valor extra 'C'
     (cancelado en SAP) que EntradaMercaderia no necesita porque una
     Entrada de Mercancía nunca se cancela desde el Portal.
+
+    CICLO DE estado_sap, sincronizado por el daemon VB.NET vía los
+    endpoints de api/v1/facturas-*/ (Sub-fase 3.6, api/factura_api.py) —
+    mismo patrón de upsert retry-safe ya usado para OC/EntradaMercaderia:
+        ''  Sin generar (BORRADOR/EN_REVISION_COMPRAS/OBSERVADA — antes
+            de que Compras apruebe)
+        'L' Aprobada por Compras, pendiente de que el daemon cree el
+            Preliminar en SAP (facturas-pendientes-preliminar/)
+        'B' Preliminar confirmado en SAP (doc_entry_preliminar ya
+            asignado) — el daemon reconcilia periódicamente
+            (facturas-preliminares/) hasta que Contabilidad cree el
+            definitivo
+        'Y' Documento definitivo confirmado en SAP (doc_entry_definitivo
+            ya asignado) — fin del ciclo; NINGÚN endpoint de edición
+            acepta cambios sobre esta Factura a partir de aquí (candado
+            explícito en services_archivos.validar_permiso_edicion,
+            independiente de `estado` — ver su docstring)
+        'C' Cancelado en SAP — solo alcanzable desde 'B' cuando
+            `estado` pasa a CANCELADO (facturas-pendientes-cancelacion/)
+
+    Todos los endpoints del daemon respetan settings.
+    FACTURA_DRAFT_SAP_HABILITADO — con el flag en False (el valor por
+    defecto y el actual en producción), ningún endpoint de "pendientes"
+    devuelve nada, sin importar cuántas Facturas califiquen (interruptor
+    de seguridad diseñado desde el inicio de la Fase 3, sesión 66).
     """
     ESTADO_CHOICES = [
         ('BORRADOR', 'Borrador'),
@@ -230,6 +255,25 @@ class Factura(TimeStampedModel):
             "en 3 campos sueltos."
         ),
     )
+
+    # Sub-fase 3.6 (endpoints del daemon SAP): timestamps por transición de
+    # estado_sap, mismo patrón exacto que EntradaMercaderia.fecha_borrador_
+    # confirmado/fecha_definitivo_confirmado (sesión 57) — fecha_generada
+    # no hace falta duplicarla, TimeStampedModel.created_at ya cumple ese
+    # rol (la Factura nunca nace directamente en 'L': nace en 'BORRADOR'/
+    # estado_sap='', y recién pasa a 'L' cuando Compras la aprueba).
+    error_mensaje_sap = models.TextField(
+        blank=True, default='',
+        help_text=(
+            "Mensaje de error reportado por el daemon si SAP rechaza la "
+            "creación del Preliminar (diagnóstico) — distinto de "
+            "mensaje_validacion_documentos, que es sobre la validez del "
+            "propio comprobante (firma/CDR/importe), no sobre SAP."
+        ),
+    )
+    fecha_preliminar_confirmado = models.DateTimeField(null=True, blank=True)
+    fecha_definitivo_confirmado = models.DateTimeField(null=True, blank=True)
+    fecha_cancelado_sap = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         comprobante = f"{self.serie_comprobante}-{self.numero_comprobante}" if self.serie_comprobante else f"#{self.pk}"
