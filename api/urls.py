@@ -8,6 +8,7 @@ from .factura_api import (
     FacturaPreliminarViewSet,
     FacturaReconciliacionViewSet,
 )
+from .proveedor_api import ProveedorSyncViewSet
 
 router = DefaultRouter()
 router.register(r'sync-oc', SAPIntegrationViewSet, basename='sync-oc')
@@ -15,6 +16,7 @@ router.register(r'entradas-pendientes', EntradaMercaderiaViewSet, basename='entr
 router.register(r'facturas-pendientes-preliminar', FacturaPreliminarViewSet, basename='facturas-pendientes-preliminar')
 router.register(r'facturas-preliminares', FacturaReconciliacionViewSet, basename='facturas-preliminares')
 router.register(r'facturas-pendientes-cancelacion', FacturaCancelacionViewSet, basename='facturas-pendientes-cancelacion')
+router.register(r'sync-proveedores', ProveedorSyncViewSet, basename='sync-proveedores')
 
 urlpatterns = [
     path('', include(router.urls)),

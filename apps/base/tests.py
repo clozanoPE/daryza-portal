@@ -18,6 +18,9 @@ from django.contrib.auth.models import Group, User
 from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 from apps.base import graph_auth, services_correo
 from apps.base.models import SupplierProfile
@@ -297,3 +300,151 @@ class OnboardProveedorTests(TestCase):
         # atomic() también se revirtió — no queda ningún residuo.
         self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P99999999999').exists())
         self.mock_enviar_correo.assert_not_called()
+
+
+class ProveedorSyncEndpointTests(TestCase):
+    """
+    Sub-etapa 2.3 (sesión 88): `POST /api/v1/sync-proveedores/` — los 3
+    escenarios pedidos explícitamente. Mismo patrón de prueba ya
+    establecido para los demás endpoints del daemon (`apps.sap_sync.
+    tests`): `APIClient` + `Token` real de DRF contra la URL real, no
+    llamando al serializer/vista directo. `services_correo.enviar_correo`
+    mockeado (no se llama a Graph realmente).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.daemon_user = User.objects.create_user(username='daemon_test_proveedores', password='x')
+        cls.token = Token.objects.create(user=cls.daemon_user)
+        cls.url = reverse('sync-proveedores-list')
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
+
+        self.parche_correo = patch(
+            'apps.base.supplier_onboarding.services_correo.enviar_correo'
+        )
+        self.mock_enviar_correo = self.parche_correo.start()
+        self.addCleanup(self.parche_correo.stop)
+        self.mock_enviar_correo.return_value = services_correo.ResultadoEnvioCorreo(enviado=True)
+
+    def _payload_valido(self, card_code):
+        return {
+            'card_code': card_code,
+            'card_name': f'PROVEEDOR {card_code}',
+            'card_fname': f'PROVEEDOR {card_code} SAC',
+            'e_mail': f'{card_code.lower()}@proveedor.com',
+            'lic_trad_num': card_code.lstrip('P'),
+        }
+
+    def test_lote_con_1_registro_invalido_no_bloquea_a_los_demas(self):
+        payload = [
+            self._payload_valido('P10000000001'),
+            {**self._payload_valido('P10000000002'), 'e_mail': ''},  # inválido
+            self._payload_valido('P10000000003'),
+        ]
+
+        response = self.client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resultados = response.data['resultados']
+        self.assertEqual(len(resultados), 3)
+
+        self.assertEqual(resultados[0]['status'], ESTADO_CREADO)
+        self.assertEqual(resultados[1]['status'], 'error')
+        self.assertEqual(resultados[2]['status'], ESTADO_CREADO)
+
+        # Los 2 válidos sí se crearon de verdad en la BD.
+        self.assertTrue(User.objects.filter(username='P10000000001').exists())
+        self.assertTrue(User.objects.filter(username='P10000000003').exists())
+        # El inválido no dejó ningún rastro.
+        self.assertFalse(User.objects.filter(username='P10000000002').exists())
+        self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P10000000002').exists())
+
+    def test_email_vacio_rechaza_sin_crear_nada_para_ese_registro(self):
+        payload = {**self._payload_valido('P20000000001'), 'e_mail': ''}
+
+        response = self.client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resultado = response.data['resultados'][0]
+        self.assertEqual(resultado['status'], 'error')
+        self.assertIn('e_mail', resultado['errors'])
+
+        self.assertFalse(User.objects.filter(username='P20000000001').exists())
+        self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P20000000001').exists())
+        self.mock_enviar_correo.assert_not_called()
+
+    def test_lic_trad_num_vacio_rechaza_sin_crear_nada_para_ese_registro(self):
+        payload = {**self._payload_valido('P20000000002'), 'lic_trad_num': ''}
+
+        response = self.client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resultado = response.data['resultados'][0]
+        self.assertEqual(resultado['status'], 'error')
+        self.assertIn('lic_trad_num', resultado['errors'])
+
+        self.assertFalse(User.objects.filter(username='P20000000002').exists())
+        self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P20000000002').exists())
+        self.mock_enviar_correo.assert_not_called()
+
+    def test_lic_trad_num_ausente_rechaza_sin_crear_nada_para_ese_registro(self):
+        payload = self._payload_valido('P20000000003')
+        del payload['lic_trad_num']
+
+        response = self.client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resultado = response.data['resultados'][0]
+        self.assertEqual(resultado['status'], 'error')
+        self.assertIn('lic_trad_num', resultado['errors'])
+        self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P20000000003').exists())
+
+    def test_sin_token_da_401_antes_de_procesar(self):
+        client_sin_auth = APIClient()
+
+        response = client_sin_auth.post(self.url, self._payload_valido('P30000000001'), format='json')
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P30000000001').exists())
+        self.mock_enviar_correo.assert_not_called()
+
+    def test_token_invalido_da_401_antes_de_procesar(self):
+        client_token_falso = APIClient()
+        client_token_falso.credentials(HTTP_AUTHORIZATION='Token token-que-no-existe-en-la-bd')
+
+        response = client_token_falso.post(self.url, self._payload_valido('P30000000002'), format='json')
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(SupplierProfile.objects.filter(sap_card_code='P30000000002').exists())
+        self.mock_enviar_correo.assert_not_called()
+
+    def test_payload_de_un_solo_objeto_no_en_lista_tambien_funciona(self):
+        response = self.client.post(self.url, self._payload_valido('P40000000001'), format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resultados = response.data['resultados']
+        self.assertEqual(len(resultados), 1)
+        self.assertEqual(resultados[0]['status'], ESTADO_CREADO)
+        self.assertTrue(User.objects.filter(username='P40000000001').exists())
+
+    def test_resync_de_proveedor_ya_vinculado_via_endpoint_no_reenvia_correo(self):
+        grupo, _ = Group.objects.get_or_create(name='PROVEEDORES')
+        user = User.objects.create_user(username='P50000000001', email='ya@existe.com')
+        user.set_password('password-elegida-por-el-proveedor')
+        user.save()
+        user.groups.add(grupo)
+        SupplierProfile.objects.create(sap_card_code='P50000000001', user=user)
+
+        response = self.client.post(self.url, self._payload_valido('P50000000001'), format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resultado = response.data['resultados'][0]
+        self.assertEqual(resultado['status'], ESTADO_ACTUALIZADO_SIN_ALTA)
+        self.assertFalse(resultado['email_enviado'])
+        self.mock_enviar_correo.assert_not_called()
+
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('password-elegida-por-el-proveedor'))
