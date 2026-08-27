@@ -2250,7 +2250,12 @@ Completa la última pieza pendiente de la Fase 3 (Facturación electrónica): la
 
 **Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios (sin cambios de modelo — todo el estado se calcula en vivo). `manage.py test apps.invoicing`: **138/138 OK** (129 anteriores + 9 nuevos). `manage.py test apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`: **219/219 OK**. Barrido de `{#` multilínea (regla permanente, sesión 26): **0 instancias**. Smoke test real end-to-end vía `Client` (HTTP real, `transaction.atomic()` revertido, sin residuos) contra las 2 vistas con un Ticket→Factura real completo: Compras ve "FACTURADA" + link a `factura_detalle_compras`, el filtro `estado_facturacion=SIN_FACTURAR` excluye correctamente la OC ya facturada, y el proveedor ve "Facturada" + link a su propio `factura_detalle`.
 
-**Sin push/deploy esta sesión** — pendiente de que el usuario lo pida.
+**Continuación de la misma sesión — push/deploy a producción:**
+- **`git push origin main`** (`54635ac`) — deploy verificado `SUCCESS` en Railway, commit exacto confirmado. Logs de deploy: `No migrations to apply` (esperado, la Sub-fase 3.7 no tocó ningún modelo, solo cálculo en `apps/base/oc_status.py`), `168 static files copied` (sin cambios — no se agregó ningún archivo estático nuevo), gunicorn arrancó su worker sin ningún traceback. Confirmado además con `railway ssh -- python manage.py check` (ejercita la carga del `ROOT_URLCONF`, que importa `apps/operations/views.py`/`apps/appointments/views.py` → `apps/base/oc_status.py`): limpio, sin `ImportError`. `makemigrations --check --dry-run` en producción real: `No changes detected`.
+- **Smoke test real** contra `https://nexo.daryza.pe`, sin sesión (no hay credenciales de producción disponibles en este entorno): `/operations/compras/estado-oc/` y `/appointments/portal/` → `302` ambas (redirect a login, el comportamiento correcto para un request anónimo sobre una vista protegida — no `500`). El camino autenticado con datos reales (`FACTURADA`/`SIN_FACTURAR` + filtro + links) ya se verificó de punta a punta contra Postgres real vía `Client` en la sesión anterior, no repetido aquí por falta de una cuenta real de Compras/Proveedor con la que iniciar sesión en producción.
+- `manage.py check --deploy` final: **1 solo warning**, `security.W004` (HSTS, ya conocido, no bloqueante) — sin ningún error nuevo.
+
+**Sub-fase 3.7 en producción, funcionando. Fase 3 (Facturación electrónica) COMPLETA y desplegada de punta a punta.**
 
 ---
 
@@ -2279,14 +2284,15 @@ Con esta sesión se cierran las 8 Sub-fases de la Fase 3, iniciada en la sesión
 
 Estado exacto al pausar — leer esto primero al retomar, antes de releer el historial completo.
 
-**Repo:**
-- `main` local tiene el commit de la Sub-fase 3.7 (sesión 83) **por encima** del último estado ya desplegado (`64fb764`, = producción actual).
-- **`origin/main` y producción (Railway `vivacious-stillness`/`web`/`production`, `https://nexo.daryza.pe`) siguen en `64fb764`** — la Sub-fase 3.7 (esta sesión) **todavía no está pusheada ni desplegada**. Sin instrucción de push esta vez; pedirlo explícitamente para que se suba.
-- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **219/219 OK** en el commit local de la sesión 83 — no hay ningún cambio de código sin testear ni sin comitear.
+**Repo y producción, sincronizados:**
+- `main` local = `origin/main` = producción, los 3 en el commit **`54635ac`** ("Sub-fase 3.7: columna de Facturacion en el Panel de Consulta de OC (cierre Fase 3)").
+- Deploy verificado `SUCCESS` en Railway (`vivacious-stillness`/`web`/`production`), sin ningún error de import ni migración pendiente (confirmado con `railway ssh` contra el proceso real, no solo el log de boot).
+- `https://nexo.daryza.pe` sirviendo esta versión ahora mismo — `/operations/compras/estado-oc/` y `/appointments/portal/` responden `302` sin sesión (sin `500`); el camino autenticado con datos reales ya se verificó localmente contra Postgres real, no repetido en producción por falta de una cuenta real con la que iniciar sesión desde este entorno.
+- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **219/219 OK** a la fecha del último commit de código (`54635ac`) — no hay ningún cambio de código sin testear ni sin comitear.
 
-**Fase 3 (Facturación electrónica) — COMPLETA**, ver tabla de cierre arriba. Las 8 Sub-fases (3.0-3.7) están construidas y probadas; 3.0-3.6 ya en producción, 3.7 pendiente solo de push.
+**Fase 3 (Facturación electrónica) — COMPLETA Y DESPLEGADA**, ver tabla de cierre arriba. Las 8 Sub-fases (3.0-3.7) construidas, probadas, y las 8 en producción.
 
-**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** de la Fase 3. Próximos pasos posibles, ninguno urgente ni asumido: (a) pedir el push/deploy de la sesión 83; (b) cuando el daemon VB.NET real esté listo, activar `FACTURA_DRAFT_SAP_HABILITADO=True` en Railway (decisión explícita del usuario); (c) construir el flujo de negocio real para cancelar una Factura (ver deuda abajo — los endpoints de cancelación de la Sub-fase 3.6 ya funcionan, pero nada en el Portal los alcanza todavía); (d) cualquier trabajo fuera de Facturación — sin ningún tema abierto identificado en este momento.
+**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** de la Fase 3. Próximos pasos posibles, ninguno urgente ni asumido: (a) cuando el daemon VB.NET real esté listo, activar `FACTURA_DRAFT_SAP_HABILITADO=True` en Railway (decisión explícita del usuario); (b) construir el flujo de negocio real para cancelar una Factura (ver deuda abajo — los endpoints de cancelación de la Sub-fase 3.6 ya funcionan, pero nada en el Portal los alcanza todavía); (c) cualquier trabajo fuera de Facturación — sin ningún tema abierto identificado en este momento.
 
 **Deuda/observaciones abiertas, sin urgencia:**
 - No hay test dedicado para "OC de sedes distintas rechaza" en la creación de Factura (el candado existe en `services_borrador.py`, documentado, solo falta el test — sesión 79).
