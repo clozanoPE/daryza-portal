@@ -114,6 +114,42 @@ Con el aislamiento de despliegue ya verificado (sesión 84), se acordó el plan 
 
 **Fuera de alcance de esta sub-etapa (para 2.4 en adelante, según el plan):** el middleware de cambio de contraseña obligatorio (Etapa 2.4) y el flujo de recuperación (Etapa 2.5) — sin código todavía. Con esta sub-etapa, la parte Django del alta automática de proveedores ya está completa de punta a punta (modelo → servicio → endpoint) — falta la barrera de "primer acceso" y la recuperación de contraseña para que el ciclo de onboarding sea utilizable por un proveedor real.
 
+### Sesión 89 — Etapa 2, sub-etapa 2.4: `ForzarCambioPasswordMiddleware` + vista de cambio obligatorio
+
+**`apps/base/middleware.py`** (nuevo): `ForzarCambioPasswordMiddleware`, registrado en `core/settings.py::MIDDLEWARE` inmediatamente después de `AuthenticationMiddleware` (necesita `request.user` ya resuelto). Corre en **toda** request — no solo el redirect post-login (corrección explícita del diseño descartado antes de escribir código, ya discutido en el chat: `redirect_by_role` por sí solo no cubre un acceso directo a una URL profunda en una sesión posterior). `_debe_interceptar`: usa `getattr(request.user, 'supplier_profile', None)` — el `related_name='supplier_profile'` real del modelo (no `supplierprofile`, el default de Django sin `related_name`, que no aplica acá). `RelatedObjectDoesNotExist` (la excepción real que Django lanza al acceder a un `OneToOneField` inverso sin objeto relacionado) hereda también de `AttributeError` por diseño de Django para este caso exacto — `getattr(..., None)` la captura limpio, sin `try/except` explícito. Cubre automáticamente tanto a un superusuario como a cualquier staff interno (`ALMACEN`/`CALIDAD`/etc.), ninguno tiene `SupplierProfile`.
+
+**Punto 2 del pedido — rutas excluidas, verificadas exactas, con motivo de cada una:**
+
+| Ruta excluida | Motivo verificado |
+|---|---|
+| `reverse('cambiar_password_obligatorio')` (`/cuenta/cambiar-password/`) | Sin esto, la propia vista de cambio se redirigiría a sí misma en loop infinito — el usuario nunca podría llegar a completarla |
+| `reverse('logout')` (`/logout/`) | Sin esto, un proveedor con `debe_cambiar_password=True` no podría ni cerrar sesión — quedaría atrapado. Verificado que `templates/base.html` usa `<form method="post">` para el logout (Django 6 exige POST en `LogoutView`, GET da 405) — el test usa `self.client.post('/logout/')`, no GET, para reflejar el uso real |
+| `'/' + settings.STATIC_URL.lstrip('/')` (`/static/`) | Interceptar CSS/JS/imágenes rompería el propio render de `cambiar_password_obligatorio.html` (que extiende `base.html`, con sus assets) |
+| `'/' + settings.MEDIA_URL.lstrip('/')` (`/media/`) | Mismo criterio que `/static/`, para archivos servidos desde `MEDIA_ROOT` |
+
+Las 2 rutas (`cambiar_password_obligatorio`/`logout`) se resuelven una sola vez en `__init__` (el middleware se instancia una vez por proceso, después de que el URLconf ya está cargado), no en cada request — evita llamar `reverse()` repetidamente.
+
+**`apps/base/views.py::cambiar_password_obligatorio`** (nuevo, junto a `redirect_by_role`): usa `SetPasswordForm` de Django (sí valida — correcto acá, es la contraseña real que el proveedor va a usar de ahí en más, a diferencia del `set_password()` directo de la Etapa 2.2 para la temporal). **Detalle crítico manejado explícitamente**: `update_session_auth_hash(request, form.user)` inmediatamente después de `form.save()` — sin esto, la sesión actual del proveedor queda invalidada en la siguiente request (Django detecta que el hash de password guardado en la sesión ya no coincide con el nuevo), lo que habría roto el criterio 3 confirmado ("deja de interceptar sin necesitar relogin": la sesión se habría cerrado sola, no solo dejado de interceptar). `perfil.debe_cambiar_password = False` se guarda recién después de eso, dentro de la misma request.
+
+**`templates/cambiar_password_obligatorio.html`** (nuevo): extiende `base.html`, mismo estilo visual que `login.html`. Barrido de `{#` multilínea (regla permanente, sesión 26): **0 instancias**.
+
+**`core/urls.py`**: ruta nueva `path('cuenta/cambiar-password/', cambiar_password_obligatorio, name='cambiar_password_obligatorio')` — fuera de cualquier namespace de app de negocio, mismo criterio ya usado para `home_router`/`login`/`logout`.
+
+**Tests nuevos** (`apps/base/tests.py::ForzarCambioPasswordMiddlewareTests`, 7 — los 5 escenarios pedidos, con `self.client` normal de Django, no `APIClient`):
+- Intercepta en el primer login (`POST /login/` con `follow=True`, termina en `/cuenta/cambiar-password/`).
+- Intercepta en un acceso directo a una URL profunda con sesión ya iniciada (`self.client.login()` — bypasea `/login/`, simula exactamente "sesión de antes" — seguido de `GET /appointments/portal/`).
+- Tras cambiar la contraseña, deja de interceptar **sin re-login**: se verifica primero que sigue interceptado, se cambia la contraseña, se confirma `debe_cambiar_password=False` en BD, y el MISMO cliente (sin `login()` de nuevo) accede normal — más una verificación extra de que la sesión sigue siendo válida con la contraseña nueva (`update_session_auth_hash` funcionando, no solo el flag).
+- Superusuario y staff interno (`ALMACEN`) sin `SupplierProfile`: ninguno de los 2 genera `500` ni es redirigido a la vista de cambio.
+- Logout accesible (`POST`, no `GET`) mientras el flag sigue en `True`.
+- Estáticos accesibles mientras el flag sigue en `True` (sin necesitar que el archivo exista de verdad en el entorno de test — solo que el middleware no lo redirija).
+
+**Validación realizada:**
+- `manage.py check` limpio; `makemigrations --check --dry-run`: `No changes detected` (sin cambios de modelo).
+- `manage.py test apps.base`: **31/31 OK** (24 de la sesión 88 + 7 nuevos).
+- Suite completa del proyecto (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **242/242 OK**, sin regresiones.
+
+**Fuera de alcance de esta sub-etapa (para 2.5, según el plan):** el flujo de recuperación de contraseña (`default_token_generator`, las 2 vistas, el link real en `login.html`) — sin código todavía.
+
 ## Reglas de esta sesión en adelante (sesión 26)
 
 - **Las notas de implementación NUNCA van como comentario dentro de un `.html` de template** — ni `{# ... #}`, ni `{% comment %}...{% endcomment %}`, ni ninguna otra forma. Ese contenido vive únicamente en `CLAUDE.md` (historial de sesiones) o en el resumen entregado en el chat. Motivo: el patrón `{# ... #}` escrito en varias líneas ya causó texto de implementación visible en pantalla **dos veces** (sesión 20, reincidencia en la sesión 25) — el tokenizer de Django (`django/template/base.py::tag_re = re.compile(r"({%.*?%}|{{.*?}}|{#.*?#})")`, sin la flag `re.DOTALL`) no reconoce un comentario `{# #}` cuyo contenido cruza un salto de línea: en vez de descartarlo, lo trata como texto literal y lo renderiza tal cual. La única forma segura de anotar código con contexto de sesión sin este riesgo es no ponerlo en el `.html` en absoluto.

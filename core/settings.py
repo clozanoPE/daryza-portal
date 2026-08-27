@@ -84,6 +84,11 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Etapa 2.4 (Proveedores, sesión 89): necesita request.user ya
+    # resuelto (AuthenticationMiddleware, arriba) -- barrera de "primer
+    # acceso con credencial temporal" para cualquier request, no solo el
+    # redirect post-login.
+    'apps.base.middleware.ForzarCambioPasswordMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

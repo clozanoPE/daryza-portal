@@ -448,3 +448,121 @@ class ProveedorSyncEndpointTests(TestCase):
 
         user.refresh_from_db()
         self.assertTrue(user.check_password('password-elegida-por-el-proveedor'))
+
+
+class ForzarCambioPasswordMiddlewareTests(TestCase):
+    """
+    Sub-etapa 2.4 (sesión 89): los 5 escenarios pedidos explícitamente.
+    Usa `self.client` (Django, sesión de cookies normal) — NO `APIClient`
+    (eso es para los endpoints Token del daemon, un mecanismo aparte).
+    """
+
+    URL_CAMBIO = '/cuenta/cambiar-password/'
+
+    def _crear_proveedor(self, card_code, debe_cambiar=True, password='ruc-temporal-12345'):
+        grupo, _ = Group.objects.get_or_create(name='PROVEEDORES')
+        user = User.objects.create_user(username=card_code, password=password)
+        user.groups.add(grupo)
+        perfil = SupplierProfile.objects.create(
+            sap_card_code=card_code, user=user, debe_cambiar_password=debe_cambiar,
+        )
+        return user, perfil
+
+    def test_intercepta_en_el_primer_login(self):
+        self._crear_proveedor('P60000000001', password='ruc-temporal-12345')
+
+        response = self.client.post(
+            '/login/',
+            {'username': 'P60000000001', 'password': 'ruc-temporal-12345'},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.request['PATH_INFO'], self.URL_CAMBIO)
+        self.assertContains(response, 'Cambio de contraseña obligatorio')
+
+    def test_intercepta_en_acceso_directo_a_url_profunda_con_sesion_ya_iniciada(self):
+        self._crear_proveedor('P60000000002', password='ruc-temporal-12345')
+        # login() de Django establece la sesión directamente, sin pasar
+        # por /login/ -- simula exactamente "el usuario ya tenía una
+        # sesión abierta de antes" (no el momento del login en sí).
+        self.client.login(username='P60000000002', password='ruc-temporal-12345')
+
+        response = self.client.get('/appointments/portal/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, self.URL_CAMBIO)
+
+    def test_tras_cambiar_password_deja_de_interceptar_sin_relogin(self):
+        user, perfil = self._crear_proveedor('P60000000003', password='ruc-temporal-12345')
+        self.client.login(username='P60000000003', password='ruc-temporal-12345')
+
+        # Antes de cambiar: sigue interceptado.
+        response = self.client.get('/appointments/portal/')
+        self.assertEqual(response.url, self.URL_CAMBIO)
+
+        response = self.client.post(self.URL_CAMBIO, {
+            'new_password1': 'NuevaClaveSeguraDelProveedor2026',
+            'new_password2': 'NuevaClaveSeguraDelProveedor2026',
+        })
+        self.assertEqual(response.status_code, 302)  # redirect a home_router
+
+        perfil.refresh_from_db()
+        self.assertFalse(perfil.debe_cambiar_password)
+
+        # Mismo cliente/sesión, SIN self.client.login() de nuevo:
+        response = self.client.get('/appointments/portal/')
+        self.assertEqual(response.status_code, 200)  # ya no rebota
+
+        # Y la sesión sigue siendo válida con la contraseña nueva
+        # (update_session_auth_hash) -- si no lo estuviera, este login
+        # fallaría o la sesión ya se habría invalidado en el paso de
+        # arriba.
+        self.client.logout()
+        self.assertTrue(
+            self.client.login(username='P60000000003', password='NuevaClaveSeguraDelProveedor2026')
+        )
+
+    def test_superusuario_sin_supplierprofile_nunca_es_interceptado(self):
+        User.objects.create_superuser('admin_middleware_test', 'admin@test.com', 'x')
+        self.client.login(username='admin_middleware_test', password='x')
+
+        # No debe lanzar ninguna excepción (RelatedObjectDoesNotExist
+        # mal manejado daría 500, no un redirect) y no debe rebotar a
+        # cambiar_password_obligatorio.
+        response = self.client.get('/home/', follow=True)
+
+        self.assertNotEqual(response.status_code, 500)
+        self.assertNotEqual(response.request['PATH_INFO'], self.URL_CAMBIO)
+
+    def test_staff_interno_sin_supplierprofile_nunca_es_interceptado(self):
+        grupo, _ = Group.objects.get_or_create(name='ALMACEN')
+        user = User.objects.create_user(username='ualmacen_middleware_test', password='x')
+        user.groups.add(grupo)
+        self.client.login(username='ualmacen_middleware_test', password='x')
+
+        response = self.client.get('/home/', follow=True)
+
+        self.assertNotEqual(response.status_code, 500)
+        self.assertNotEqual(response.request['PATH_INFO'], self.URL_CAMBIO)
+
+    def test_logout_sigue_accesible_mientras_flag_en_true(self):
+        self._crear_proveedor('P60000000004', password='ruc-temporal-12345')
+        self.client.login(username='P60000000004', password='ruc-temporal-12345')
+
+        response = self.client.post('/logout/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertNotEqual(response.url, self.URL_CAMBIO)
+
+    def test_estaticos_siguen_accesibles_mientras_flag_en_true(self):
+        self._crear_proveedor('P60000000005', password='ruc-temporal-12345')
+        self.client.login(username='P60000000005', password='ruc-temporal-12345')
+
+        response = self.client.get('/static/css/daryza_style.css')
+
+        # No hace falta que el archivo exista de verdad en el entorno de
+        # test (sin collectstatic corrido) -- lo único que importa acá
+        # es que el middleware nunca lo redirigió a cambiar_password_
+        # obligatorio.
+        self.assertNotEqual(response.status_code, 302)

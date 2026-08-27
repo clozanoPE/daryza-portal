@@ -4,13 +4,17 @@ from django.contrib.auth import views as auth_views
 from django.urls import path, include
 from django.conf import settings             # <--- ESTA FALTA (Error actual)
 from django.conf.urls.static import static   # <--- ESTA FALTABA ANTES
-from apps.base.views import redirect_by_role  # <--- Importa el enrutador
+from apps.base.views import cambiar_password_obligatorio, redirect_by_role  # <--- Importa el enrutador
 
 urlpatterns = [
     # Panel de administración de Django
     path('', redirect_by_role, name='home_router'),
     path('admin/', admin.site.urls),
     path('home/', redirect_by_role, name='home_router'),
+    # Etapa 2.4 (Proveedores, sesión 89): destino del
+    # ForzarCambioPasswordMiddleware — fuera de cualquier namespace de
+    # app de negocio, mismo criterio ya usado para home_router/login/logout.
+    path('cuenta/cambiar-password/', cambiar_password_obligatorio, name='cambiar_password_obligatorio'),
     path('appointments/', include('apps.appointments.urls')),
     path('operations/',  include('apps.operations.urls')),   
     path('scheduling/',  include('apps.scheduling.urls')),
