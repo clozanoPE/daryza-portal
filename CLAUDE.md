@@ -2181,18 +2181,28 @@ Implementa el flujo real de revisión de Compras sobre una Factura ya enviada (S
 
 **Validación general:** `manage.py check`/`makemigrations --check --dry-run` limpios (sin cambios de modelo — toda la Sub-fase 3.5 es servicio+vista+template). `manage.py test apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`: **180/180 OK** (166 anteriores + 14 nuevos). Barrido de `{#` multilínea (regla permanente, sesión 26) sobre todo el proyecto: **0 instancias**.
 
-**Fuera de alcance de esta sesión (confirmado explícitamente por el pedido):** endpoints del daemon SAP para `Factura` (Sub-fase 3.6); columna de facturación en el Panel de Consulta de OC (Sub-fase 3.7, `apps/base/oc_status.py` sigue sin tocar); deploy a producción (sin instrucción de push esta vez, a diferencia de la sesión 78/80 — el commit queda listo en `main` local, pendiente de que el usuario pida el push).
+**Fuera de alcance de esta sesión (confirmado explícitamente por el pedido):** endpoints del daemon SAP para `Factura` (Sub-fase 3.6); columna de facturación en el Panel de Consulta de OC (Sub-fase 3.7, `apps/base/oc_status.py` sigue sin tocar).
+
+**Continuación de la misma sesión — regla nueva + push/deploy a producción:**
+- Se agregó una regla nueva a "Reglas de esta sesión en adelante" (ver inicio de este archivo): cualquier `Decimal` impreso dentro de un `value=` que el navegador vaya a parsear como número **debe** pasar por `|stringformat:'.Nf'` — el bug de coma decimal (`es-pe`) ya apareció 2 veces (sesión 41, sesión 81), así que queda como chequeo explícito a correr antes de cerrar cualquier sesión futura que toque formularios numéricos, en vez de esperar a que reaparezca una tercera vez.
+- **`git push origin main`** — subió los 2 commits de esta sesión (`f550633` Sub-fase 3.5, `5c871de` la regla nueva de arriba). Deploy verificado en Railway (`vivacious-stillness`/`web`/`production`): **`SUCCESS`**, commit confirmado exacto (`5c871de2d595bbc68ab7af9a5af3ac10ea3b89f3`).
+- Logs de build: `pip install -r requirements.txt` completo sin errores (incluidas `xmlsec`/`lxml`/`pypdf`, ya en caché). Logs de deploy: `Apply all migrations: ... invoicing ...` → **`No migrations to apply`** (esperado, la Sub-fase 3.5 no tocó ningún modelo), `168 static files copied` (mismo conteo que el deploy anterior — no se agregó ningún JS nuevo, solo se editó `factura_detalle.js` in-place), gunicorn arrancó su worker sin ningún traceback — confirma que no hay ningún `ImportError` en `apps/invoicing/views.py`/`services.py`/`urls.py` de esta sesión.
+- Verificado además con requests reales contra `https://nexo.daryza.pe`: `/login/` → `200`; `/invoicing/compras/` y `/invoicing/mis-facturas/` → `302` (redirect a login sin sesión, esperado — no `500`).
+- `makemigrations --check --dry-run` corrido **en producción real** (vía `railway ssh`, no local): `No changes detected` — sin ninguna migración pendiente en ninguna app. `showmigrations invoicing` confirma las 4 migraciones ya aplicadas (`0001`-`0004`), ninguna nueva pendiente.
+
+**Sub-fase 3.5 en producción, funcionando.**
 
 ---
 
-## 📍 Punto de retomada (actualizado, sesión 81 — 2026-08-26)
+## 📍 Punto de retomada (actualizado, sesión 81 — 2026-08-27)
 
 Estado exacto al pausar — leer esto primero al retomar, antes de releer el historial completo.
 
-**Repo:**
-- `main` local tiene el commit de la Sub-fase 3.5 (sesión 81) **por encima** del último estado ya desplegado (`43b12d1`, sesión "Agrega punto de retomada...", = producción actual).
-- **`origin/main` y producción (Railway `vivacious-stillness`/`web`/`production`, `https://nexo.daryza.pe`) siguen en `43b12d1`** — la Sub-fase 3.5 (esta sesión) **todavía no está pusheada ni desplegada**. Sin instrucción de push esta vez; pedirlo explícitamente para que se suba.
-- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **180/180 OK** en el commit local de la sesión 81 — no hay ningún cambio de código sin testear ni sin comitear.
+**Repo y producción, sincronizados:**
+- `main` local = `origin/main` = producción, los 3 en el commit **`5c871de`** ("Agrega regla: Decimal en value= de input numerico exige stringformat" — el código real de la Sub-fase 3.5 es el commit `f550633`, redesplegado automáticamente sin cambios funcionales al pushear `5c871de`).
+- Deploy verificado `SUCCESS` en Railway (`vivacious-stillness`/`web`/`production`), sin ningún error de import ni migración pendiente (confirmado con `railway ssh` contra la BD real, no solo el log de boot).
+- `https://nexo.daryza.pe` sirviendo esta versión ahora mismo.
+- Suite completa (`apps.base apps.appointments apps.invoicing apps.operations apps.sap_sync`): **180/180 OK** a la fecha del último commit de código (`f550633`) — no hay ningún cambio de código sin testear ni sin comitear.
 
 **Módulo de Facturación (`apps.invoicing`) — dónde va cada Sub-fase:**
 
@@ -2203,11 +2213,11 @@ Estado exacto al pausar — leer esto primero al retomar, antes de releer el his
 | 3.2 | Carga segura de archivos (XML/PDF/CDR/retención/detracción) a OneDrive, con hash | ✅ Listo (sesiones 75-76) |
 | 3.3 | Validación automática de negocio al completar los 3 archivos (`procesar_validacion_documentos`) + `enviar_a_revision` | ✅ Listo (sesión 77), verificación de hash agregada antes de producción (sesión 78) |
 | 3.4 | Pantalla completa del proveedor: "Copiar de OC(s)" → crear Factura → cargar archivos → enviar a revisión | ✅ Listo y en producción (sesiones 79-80) |
-| **3.5** | **Vista de Compras: listado (con filtro de estado/período) + detalle reutilizado (solo lectura) + Aprobar/Observar, con notificación real al proveedor** | ✅ **Lista en `main` local — pendiente de push/deploy** (sesión 81) |
+| **3.5** | **Vista de Compras: listado (con filtro de estado/período) + detalle reutilizado (solo lectura) + Aprobar/Observar, con notificación real al proveedor** | ✅ **Listo y en producción** (sesión 81) |
 | **3.6** | **Endpoints del daemon SAP para `Factura`** (análogo a `api/entrada_mercaderia_api.py`, sesión 57/58: listar pendientes + confirmar borrador/definitivo/error en SAP) | ❌ **Sin construir — siguiente paso natural** |
 | **3.7** | **Columna de facturación real en el Panel de Consulta de OC** (`apps/base/oc_status.py`, hoy texto fijo "Próximamente") | ❌ **Sin construir** |
 
-**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural es: (a) pedir el push/deploy de la sesión 81 si se quiere probar en producción, y/o (b) la Sub-fase 3.6 (endpoints del daemon) — no requiere ningún dato externo del usuario, mismo criterio que la 3.5.
+**No hay ninguna decisión de diseño abierta ni pendiente de confirmación** — todo lo implementado hasta acá fue confirmado explícitamente por el usuario antes de construirse. El siguiente paso natural es la Sub-fase 3.6 (endpoints del daemon) — no requiere ningún dato externo del usuario, mismo criterio que la 3.5.
 
 **Deuda/observaciones abiertas, sin urgencia:**
 - No hay test dedicado para "OC de sedes distintas rechaza" en la creación de Factura (el candado existe en `services_borrador.py`, documentado, solo falta el test — sesión 79).
