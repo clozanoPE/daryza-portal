@@ -393,7 +393,7 @@
       </div>
       </div>{# /tab-citas #}
 
-      {# ── Pestaña: Mis OC (sesión 52) — estado de despacho, sin facturación ── #}
+      {# ── Pestaña: Mis OC (sesión 52, facturación sesión 83) ── #}
       <div class="tab-pane fade" id="tab-oc" role="tabpanel" aria-labelledby="tab-oc-btn">
       <div style="max-height:560px;overflow-y:auto">
         {% for fila in estado_oc %}
@@ -421,15 +421,28 @@
           </div>
           {% endif %}
 
-          <div class="d-flex align-items-center justify-content-between text-xxs">
+          <div class="d-flex align-items-center justify-content-between text-xxs flex-wrap gap-1">
             <span class="text-muted">
-              <i class="bi bi-receipt me-1"></i>Facturación: <span class="fst-italic">Próximamente</span>
+              <i class="bi bi-receipt me-1"></i>Facturación:
+              <span class="fw-bold
+                {% if fila.estado_facturacion == 'SIN_FACTURAR' %}text-secondary
+                {% elif fila.estado_facturacion == 'FACTURACION_EN_CURSO' %}text-warning
+                {% else %}text-success{% endif %}">
+                {{ fila.estado_facturacion_display }}
+              </span>
             </span>
-            {% if fila.ticket_id %}
-            <a href="{% url 'operations:trazabilidad_ticket' pk=fila.ticket_id %}" class="btn btn-outline-success btn-sm rounded-3 text-xxs">
-              <i class="bi bi-eye me-1"></i>Ver Trazabilidad
-            </a>
-            {% endif %}
+            <div class="d-flex gap-1">
+              {% if fila.factura_id %}
+              <a href="{% url 'invoicing:factura_detalle' fila.factura_id %}" class="btn btn-outline-success btn-sm rounded-3 text-xxs">
+                <i class="bi bi-receipt me-1"></i>Ver Factura
+              </a>
+              {% endif %}
+              {% if fila.ticket_id %}
+              <a href="{% url 'operations:trazabilidad_ticket' pk=fila.ticket_id %}" class="btn btn-outline-success btn-sm rounded-3 text-xxs">
+                <i class="bi bi-eye me-1"></i>Ver Trazabilidad
+              </a>
+              {% endif %}
+            </div>
           </div>
         </div>
         {% empty %}

@@ -38,15 +38,24 @@ archivo sí toca la base de datos):
      candado de rol en el servicio, historial de FacturaObservacion, y
      el ciclo HTTP completo observar -> corregir -> reenviar -> aprobar.
 
-  7. Sub-fase 3.6 (esta sesión): endpoints del daemon SAP para Factura
-     (api/factura_api.py) — idempotencia de cada endpoint (mismo patrón
-     ya probado para OC/EntradaMercaderia), el interruptor
-     FACTURA_DRAFT_SAP_HABILITADO vaciando las listas de pendientes
-     (y bloqueando también las acciones de confirmación), el candado
-     explícito de estado_sap='Y' bloqueando edición incluso con un
-     `estado` de negocio que en teoría lo permitiría, y el flujo
-     completo simulado de punta a punta (aprobada -> preliminar ->
-     reconciliación -> definitivo).
+  7. Sub-fase 3.6: endpoints del daemon SAP para Factura (api/factura_
+     api.py) — idempotencia de cada endpoint (mismo patrón ya probado
+     para OC/EntradaMercaderia), el interruptor FACTURA_DRAFT_SAP_
+     HABILITADO vaciando las listas de pendientes (y bloqueando también
+     las acciones de confirmación), el candado explícito de
+     estado_sap='Y' bloqueando edición incluso con un `estado` de
+     negocio que en teoría lo permitiría, y el flujo completo simulado
+     de punta a punta (aprobada -> preliminar -> reconciliación ->
+     definitivo).
+
+  8. Sub-fase 3.7 (esta sesión) — apps.base.oc_status: estado de
+     FACTURACIÓN de la columna del Panel de Consulta de OC (cierre de la
+     Fase 3 completa). Los 3 estados (SIN_FACTURAR/FACTURACION_EN_CURSO/
+     FACTURADA) contra datos reales, y verificación de ausencia de N+1
+     con CaptureQueriesContext (no había precedente de este patrón en el
+     proyecto — es la herramienta estándar de Django para esto) — que
+     además encontró y permitió corregir un N+1 real preexistente desde
+     la sesión 52 en calcular_estado_despacho (ver su docstring).
 """
 import hashlib
 import json
@@ -59,15 +68,17 @@ from unittest.mock import patch
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connections, transaction
+from django.db import connection, connections, transaction
 from django.db.models import Sum
 from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from apps.appointments.models import AppointmentSlot
 from apps.appointments.services import AppointmentService
+from apps.base import oc_status
 from apps.base.models import Sede, SupplierProfile
 from apps.base.services_correo import ResultadoEnvioCorreo
 from apps.invoicing import services_validacion as sv
@@ -2887,3 +2898,255 @@ class FlujoCompletoDaemonFacturaTests(FacturaSAPAPITestBase):
 
         resp = self.api.get('/api/v1/facturas-pendientes-cancelacion/')
         self.assertNotIn(factura.id, [r['id'] for r in resp.data])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sub-fase 3.7 (esta sesión) — apps.base.oc_status: estado de FACTURACIÓN
+# de la columna del Panel de Consulta de OC (cierre de la Fase 3
+# completa). Los 3 estados contra datos reales + verificación explícita
+# de ausencia de N+1.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EstadoFacturacionOCTests(InvoicingTestBase):
+    """
+    calcular_estado_facturacion — los 3 estados (punto 1 del pedido),
+    cada uno contra un Ticket/OC real construido de punta a punta (nunca
+    escribiendo estado directo sobre PurchaseOrder, mismo criterio ya
+    establecido en toda la suite).
+    """
+
+    def test_sin_ninguna_factura_es_sin_facturar(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = self._po_line_de(ticket).purchase_order
+
+        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+
+        self.assertEqual(estado, oc_status.ESTADO_FACT_SIN_FACTURAR)
+        self.assertIsNone(factura_id)
+
+    def _oc_con_factura(self, estado_factura):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        po = po_line.purchase_order
+        factura = Factura.objects.create(
+            proveedor=self._supplier_profile(), sede=self._sede(), estado=estado_factura,
+        )
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+        self._crear_factura_linea(factura, po_line, cantidad=Decimal('10.0000'))
+        return po, factura
+
+    def test_factura_en_borrador_es_facturacion_en_curso(self):
+        po, factura = self._oc_con_factura('BORRADOR')
+        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        self.assertEqual(estado, oc_status.ESTADO_FACT_EN_CURSO)
+        self.assertEqual(factura_id, factura.id)
+
+    def test_factura_en_revision_compras_es_facturacion_en_curso(self):
+        po, factura = self._oc_con_factura('EN_REVISION_COMPRAS')
+        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        self.assertEqual(estado, oc_status.ESTADO_FACT_EN_CURSO)
+        self.assertEqual(factura_id, factura.id)
+
+    def test_factura_observada_es_facturacion_en_curso(self):
+        po, factura = self._oc_con_factura('OBSERVADA')
+        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        self.assertEqual(estado, oc_status.ESTADO_FACT_EN_CURSO)
+        self.assertEqual(factura_id, factura.id)
+
+    def test_factura_aprobada_compras_es_facturada(self):
+        """
+        Camino REAL (no forzado): pasa por InvoicingService.aprobar_
+        factura, con las 3 validaciones de firma/CDR/importe satisfechas
+        — el mismo candado que ya se prueba en AprobarObservarFacturaTests,
+        aquí solo para confirmar que oc_status lee el resultado correcto.
+        """
+        po, factura = self._oc_con_factura('EN_REVISION_COMPRAS')
+        factura.firma_valida = True
+        factura.estado_cdr = 'ACEPTADO'
+        factura.importe_no_coincide = False
+        factura.save(update_fields=['firma_valida', 'estado_cdr', 'importe_no_coincide'])
+        InvoicingService.aprobar_factura(factura, self.u_compras)
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'APROBADA_COMPRAS')  # precondición del test
+
+        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+
+        self.assertEqual(estado, oc_status.ESTADO_FACT_FACTURADA)
+        self.assertEqual(factura_id, factura.id)
+
+    def test_factura_cancelada_vuelve_a_sin_facturar(self):
+        """
+        Punto 1 del pedido, caso implícito: una Factura CANCELADO no
+        cuenta como "activa" — mismo criterio ya establecido en
+        InvoicingService.validar_oc_disponible/saldo_disponible. La OC
+        vuelve a SIN_FACTURAR, no queda "en curso" ni "facturada".
+        """
+        po, factura = self._oc_con_factura('BORRADOR')
+        factura.estado = 'CANCELADO'
+        factura.save(update_fields=['estado'])
+
+        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+
+        self.assertEqual(estado, oc_status.ESTADO_FACT_SIN_FACTURAR)
+        self.assertIsNone(factura_id)
+
+
+class ConstruirFilasEstadoOcFacturacionTests(NuevaFacturaTestBase):
+    """
+    construir_filas_estado_oc — combina despacho + facturación en una
+    sola pasada, sobre 3 OC reales con combinaciones distintas a
+    propósito (ninguna cita, cita finalizada sin Factura, cita
+    finalizada CON Factura aprobada) para confirmar que ambas columnas
+    se calculan correctamente juntas, no solo cada una por separado.
+    """
+
+    def _oc_pendiente_sin_ticket(self, suffix):
+        doc_num = next(_doc_num_counter)
+        po = PurchaseOrder.objects.create(
+            doc_entry=doc_num, doc_num=doc_num, card_code='TESTCODE', card_name=f'TEST SAC {suffix}',
+            e_mail='t@t.com', status='PENDIENTE', u_mss_tdb='CDL',
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code=f'ITEM-{doc_num}', description='Item de prueba',
+            quantity_sap=10, und_medida='KG', requiere_coa=False,
+        )
+        return po
+
+    def test_construir_filas_calcula_facturacion_junto_con_despacho(self):
+        po_pendiente = self._oc_pendiente_sin_ticket('A')
+
+        ticket_sin_factura = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_sin_factura = self._po_line_de(ticket_sin_factura).purchase_order
+
+        ticket_facturada = self._finalizar_segundo_ticket(cantidad_real=Decimal('10.0000'))
+        po_line_facturada = ticket_facturada.appointment.purchase_orders.first().lines.first()
+        po_facturada = po_line_facturada.purchase_order
+        factura = Factura.objects.create(
+            proveedor=self._perfil_oc(), sede=self._sede(), estado='EN_REVISION_COMPRAS',
+            firma_valida=True, estado_cdr='ACEPTADO', importe_no_coincide=False,
+        )
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po_facturada)
+        self._crear_factura_linea(factura, po_line_facturada, cantidad=Decimal('10.0000'))
+        InvoicingService.aprobar_factura(factura, self.u_compras)
+        factura.refresh_from_db()
+
+        filas = oc_status.construir_filas_estado_oc(
+            PurchaseOrder.objects.filter(
+                id__in=[po_pendiente.id, po_sin_factura.id, po_facturada.id],
+            )
+        )
+        por_oc = {f.purchase_order.id: f for f in filas}
+        self.assertEqual(len(por_oc), 3)
+
+        self.assertEqual(por_oc[po_pendiente.id].estado, oc_status.ESTADO_PENDIENTE)
+        self.assertEqual(por_oc[po_pendiente.id].estado_facturacion, oc_status.ESTADO_FACT_SIN_FACTURAR)
+        self.assertIsNone(por_oc[po_pendiente.id].factura_id)
+
+        self.assertEqual(por_oc[po_sin_factura.id].estado, oc_status.ESTADO_DESPACHADA)
+        self.assertEqual(por_oc[po_sin_factura.id].estado_facturacion, oc_status.ESTADO_FACT_SIN_FACTURAR)
+        self.assertIsNone(por_oc[po_sin_factura.id].factura_id)
+
+        self.assertEqual(por_oc[po_facturada.id].estado, oc_status.ESTADO_DESPACHADA)
+        self.assertEqual(por_oc[po_facturada.id].estado_facturacion, oc_status.ESTADO_FACT_FACTURADA)
+        self.assertEqual(por_oc[po_facturada.id].factura_id, factura.id)
+
+
+class ConstruirFilasEstadoOcSinN1Tests(InvoicingTestBase):
+    """
+    Punto 2 del pedido: verifica que la columna de facturación NO
+    reintroduce el problema de N+1 ya cuidado en la sesión 52 — con
+    CaptureQueriesContext (Django estándar; sin precedente de
+    assertNumQueries/CaptureQueriesContext en el proyecto hasta ahora,
+    así que se introduce aquí, tal como el pedido lo permitía
+    explícitamente: "de la forma que ya sea estándar aquí" — no había
+    ninguna).
+
+    BUG REAL encontrado al escribir esta verificación, no solo evitado
+    en el código nuevo: calcular_estado_despacho (sesión 52) tenía
+    EXACTAMENTE este problema para el caso "OC sin ningún Appointment
+    activo" (PENDIENTE) — nunca se había cerrado del todo. Corregido en
+    apps/base/oc_status.py (sentinel `_SIN_RESOLVER`, no `None`, como
+    valor por defecto) — ver el docstring de calcular_estado_despacho
+    para el detalle completo, incluida la medición real (14 queries para
+    5 OC pendientes, antes del fix).
+    """
+
+    def _oc_pendiente(self, suffix):
+        doc_num = next(_doc_num_counter)
+        po = PurchaseOrder.objects.create(
+            doc_entry=doc_num, doc_num=doc_num, card_code='TESTCODE', card_name=f'TEST SAC {suffix}',
+            e_mail='t@t.com', status='PENDIENTE', u_mss_tdb='CDL',
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=1, item_code=f'ITEM-{doc_num}', description='Item de prueba',
+            quantity_sap=10, und_medida='KG', requiere_coa=False,
+        )
+        return po
+
+    def test_query_count_no_crece_con_el_volumen_de_oc_pendientes(self):
+        """
+        La prueba directa de "sin N+1": el número de queries debe ser el
+        MISMO sin importar cuántas OC se procesen — si creciera de forma
+        lineal con el volumen de datos, sería un N+1 real. Se usan OC
+        PENDIENTE (el caso donde el bug real vivía — ver docstring de la
+        clase) a propósito, no datos "ricos".
+        """
+        pos_5 = [self._oc_pendiente(i) for i in range(5)]
+        with CaptureQueriesContext(connection) as ctx_5:
+            filas_5 = oc_status.construir_filas_estado_oc(
+                PurchaseOrder.objects.filter(id__in=[p.id for p in pos_5])
+            )
+
+        pos_15 = pos_5 + [self._oc_pendiente(i) for i in range(5, 15)]
+        with CaptureQueriesContext(connection) as ctx_15:
+            filas_15 = oc_status.construir_filas_estado_oc(
+                PurchaseOrder.objects.filter(id__in=[p.id for p in pos_15])
+            )
+
+        self.assertEqual(len(filas_5), 5)
+        self.assertEqual(len(filas_15), 15)
+        self.assertEqual(
+            len(ctx_5.captured_queries), len(ctx_15.captured_queries),
+            f"El conteo de queries creció con el volumen de datos "
+            f"({len(ctx_5.captured_queries)} -> {len(ctx_15.captured_queries)}) — indicio de N+1.",
+        )
+        self.assertLessEqual(
+            len(ctx_5.captured_queries), 4,
+            "Más de las 4 queries esperadas (1 principal + 3 prefetch: "
+            "appointment_set/lines/facturas_oc).",
+        )
+
+    def test_query_count_no_crece_con_una_factura_real_presente(self):
+        """
+        Mismo chequeo, con datos "ricos" (Ticket FINALIZADO real +
+        Factura real APROBADA_COMPRAS) mezclados con OC PENDIENTE — para
+        confirmar que el prefetch de facturas_oc tampoco genera una
+        query extra por fila cuando SÍ hay algo que traer, no solo
+        cuando está vacío.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        po_facturada = po_line.purchase_order
+        factura = Factura.objects.create(
+            proveedor=self._supplier_profile(), sede=self._sede(), estado='EN_REVISION_COMPRAS',
+            firma_valida=True, estado_cdr='ACEPTADO', importe_no_coincide=False,
+        )
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po_facturada)
+        self._crear_factura_linea(factura, po_line, cantidad=Decimal('10.0000'))
+        InvoicingService.aprobar_factura(factura, self.u_compras)
+
+        pos_extra = [self._oc_pendiente(i) for i in range(5)]
+
+        with CaptureQueriesContext(connection) as ctx:
+            filas = oc_status.construir_filas_estado_oc(
+                PurchaseOrder.objects.filter(id__in=[po_facturada.id] + [p.id for p in pos_extra])
+            )
+
+        self.assertEqual(len(filas), 6)
+        por_oc = {f.purchase_order.id: f for f in filas}
+        self.assertEqual(por_oc[po_facturada.id].estado_facturacion, oc_status.ESTADO_FACT_FACTURADA)
+        self.assertEqual(por_oc[po_facturada.id].factura_id, factura.id)
+        self.assertLessEqual(
+            len(ctx.captured_queries), 4,
+            "El prefetch de facturas_oc generó una query extra por fila con datos reales presentes.",
+        )

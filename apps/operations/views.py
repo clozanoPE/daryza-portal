@@ -36,7 +36,7 @@ from apps.base.decorators import (
 )
 from apps.base.filters import resolver_periodo
 from apps.base.reporting import ticket_a_row, exportar_excel, exportar_pdf
-from apps.base.oc_status import construir_filas_estado_oc
+from apps.base.oc_status import ESTADO_FACTURACION_LABELS, construir_filas_estado_oc
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -213,12 +213,11 @@ def exportar_historial_compras(request, formato: str):
 @compras_required
 def panel_estado_oc(request):
     """
-    GET /operations/compras/estado-oc/  (sesión 52)
+    GET /operations/compras/estado-oc/  (sesión 52, facturación sesión 83)
     Panel de Consulta de OC — TODAS las OC del sistema, con su estado de
-    DESPACHADO (recepción física) calculado en vivo por
-    apps.base.oc_status.construir_filas_estado_oc. El estado de
-    FACTURACIÓN queda fuera de esta fase (columna "Próximamente" en el
-    template — el modelo Factura todavía no existe).
+    DESPACHO (recepción física) Y de FACTURACIÓN, ambos calculados en
+    vivo por apps.base.oc_status.construir_filas_estado_oc — cierre de la
+    Fase 3 (Facturación) completa.
 
     Filtro de período (mes/año, Fase 10, mismo patrón que los historiales):
     a diferencia de esos historiales (que filtran por la fecha de la CITA,
@@ -233,8 +232,20 @@ def panel_estado_oc(request):
     Filtro de proveedor: búsqueda libre (q) sobre doc_num/card_name/
     card_code — mismo patrón ya usado en panel_compras (Historial), no un
     <select> de todos los proveedores (podría ser una lista larga).
+
+    Filtro de facturación (sesión 83, punto 3 del pedido — "también pueda
+    filtrar por estado de facturación, no solo por despacho"; no existía
+    ningún filtro de ESTADO en este panel hasta ahora, solo `q`/período,
+    así que se agrega este primero en vez de "extender uno de despacho"
+    que nunca llegó a construirse): `estado_facturacion` es un valor
+    CALCULADO en Python por fila (no una columna de BD sobre la que se
+    pueda `.filter()` directo), así que el filtro se aplica DESPUÉS de
+    construir_filas_estado_oc, sobre la lista ya calculada — mismo costo
+    que ya tenía este panel (una sola pasada sobre el resultado, sin
+    query adicional).
     """
     q = request.GET.get('q', '').strip()
+    f_facturacion = request.GET.get('estado_facturacion', '').strip()
     anio, mes, periodo = resolver_periodo(request)
 
     pos_qs = PurchaseOrder.objects.filter(
@@ -250,10 +261,15 @@ def panel_estado_oc(request):
 
     filas = construir_filas_estado_oc(pos_qs)
 
+    if f_facturacion:
+        filas = [f for f in filas if f.estado_facturacion == f_facturacion]
+
     return render(request, 'operations/panel_estado_oc.html', {
         'filas': filas,
         'periodo': periodo,
         'q': q,
+        'estado_facturacion': f_facturacion,
+        'estados_facturacion_choices': ESTADO_FACTURACION_LABELS.items(),
     })
 
 

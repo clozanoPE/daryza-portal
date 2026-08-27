@@ -11,7 +11,7 @@
       <i class="bi bi-clipboard-data text-success me-2"></i>Consulta de Órdenes de Compra
     </h1>
     <p class="page-header__subtitle">
-      Estado de despacho (recepción física) de todas las OC sincronizadas desde SAP
+      Estado de despacho (recepción física) y de facturación de todas las OC sincronizadas desde SAP
     </p>
   </div>
   <div class="d-flex gap-2">
@@ -22,11 +22,20 @@
 </div>
 
 <div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-3">
-  <form method="get" class="d-flex align-items-end gap-2">
+  <form method="get" class="d-flex align-items-end flex-wrap gap-2">
     <div>
       <label class="form-label text-xxs fw-bold text-muted text-uppercase mb-1 d-block">Proveedor / OC</label>
       <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm rounded-3 bg-white"
              placeholder="Buscar por N° de OC o razón social…" style="min-width:240px">
+    </div>
+    <div>
+      <label class="form-label text-xxs fw-bold text-muted text-uppercase mb-1 d-block">Facturación</label>
+      <select name="estado_facturacion" class="form-select form-select-sm rounded-3 bg-white">
+        <option value="">Todos</option>
+        {% for codigo, etiqueta in estados_facturacion_choices %}
+        <option value="{{ codigo }}" {% if estado_facturacion == codigo %}selected{% endif %}>{{ etiqueta }}</option>
+        {% endfor %}
+      </select>
     </div>
     {% include "partials/campo_filtro_periodo.html" %}
     <button type="submit" class="btn btn-success btn-sm rounded-3 shadow-sm">
@@ -74,7 +83,18 @@
             {% endif %}
           </td>
           <td class="text-center">
-            <span class="badge bg-light text-muted border text-xxs fst-italic">Próximamente</span>
+            {% if fila.estado_facturacion == 'SIN_FACTURAR' %}
+              <span class="badge bg-secondary text-xxs">SIN FACTURAR</span>
+            {% elif fila.estado_facturacion == 'FACTURACION_EN_CURSO' %}
+              <span class="badge bg-warning text-dark text-xxs">EN CURSO</span>
+            {% elif fila.estado_facturacion == 'FACTURADA' %}
+              <span class="badge bg-success text-xxs">FACTURADA</span>
+            {% endif %}
+            {% if fila.factura_id %}
+            <a href="{% url 'invoicing:factura_detalle_compras' fila.factura_id %}" class="d-block text-xxs mt-1">
+              Ver Factura
+            </a>
+            {% endif %}
           </td>
           <td class="text-center">
             {% if fila.ticket_id %}

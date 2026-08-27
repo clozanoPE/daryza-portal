@@ -138,13 +138,18 @@ class PortalProveedorView(TemplateView):
         context['periodo']        = periodo
         context['sedes_daryza']   = Sede.objects.filter(activa=True).order_by('nombre')
 
-        # Panel de Consulta de OC (sesión 52) — mismas OC del proveedor,
-        # con su estado de despacho. Mismo período (anio/mes) ya resuelto
-        # arriba para el Expediente de Citas ("mismo filtro por mes", según
-        # lo pedido) — filtrando aquí por PurchaseOrder.created_at (fecha
+        # Panel de Consulta de OC (sesión 52, facturación sesión 83) —
+        # mismas OC del proveedor, con su estado de despacho Y de
+        # facturación. Mismo período (anio/mes) ya resuelto arriba para
+        # el Expediente de Citas ("mismo filtro por mes", según lo
+        # pedido) — filtrando aquí por PurchaseOrder.created_at (fecha
         # de sync SAP), no por fecha de cita: una OC PENDIENTE todavía no
         # tiene ninguna cita de la cual tomar fecha. Mismo criterio que
-        # apps.operations.views.panel_estado_oc (Compras), ver ese docstring.
+        # apps.operations.views.panel_estado_oc (Compras), ver ese
+        # docstring. Sin filtro dedicado de estado de facturación aquí
+        # (a diferencia del panel de Compras) — esta es la pestaña
+        # compacta "Mis OC" del sidebar del proveedor, sin su propio
+        # formulario de filtros; no fue lo pedido en la sesión 83.
         oc_qs = PurchaseOrder.objects.filter(
             card_code=ruc_proveedor,
             created_at__year=anio, created_at__month=mes,
