@@ -29,7 +29,6 @@ from rest_framework.test import APIClient
 
 from apps.base import graph_auth, services_correo
 from apps.base.models import SupplierProfile
-from apps.base.site_utils import construir_url_absoluta
 from apps.base.supplier_onboarding import (
     ESTADO_ACTUALIZADO_SIN_ALTA,
     ESTADO_CREADO,
@@ -572,25 +571,6 @@ class ForzarCambioPasswordMiddlewareTests(TestCase):
         # es que el middleware nunca lo redirigió a cambiar_password_
         # obligatorio.
         self.assertNotEqual(response.status_code, 302)
-
-
-class ConstruirUrlAbsolutaTests(SimpleTestCase):
-    """
-    Sub-etapa 2.5 (sesión 90): helper extraído de
-    AppointmentService._notificar_proveedor_qr (sesión 74) — antes sin
-    ningún test dedicado (vivía inline). Se preserva el mismo
-    comportamiento ya validado manualmente en esa sesión.
-    """
-
-    @override_settings(ALLOWED_HOSTS=['web-production-ac867.up.railway.app', 'nexo.daryza.pe'])
-    def test_prefiere_el_dominio_custom_sobre_railway(self):
-        url = construir_url_absoluta('/cuenta/recuperar/abc/123/')
-        self.assertEqual(url, 'https://nexo.daryza.pe/cuenta/recuperar/abc/123/')
-
-    @override_settings(ALLOWED_HOSTS=['localhost', '127.0.0.1'])
-    def test_localhost_usa_http(self):
-        url = construir_url_absoluta('/x/')
-        self.assertEqual(url, 'http://localhost/x/')
 
 
 class RecuperacionPasswordTests(TestCase):

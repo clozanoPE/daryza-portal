@@ -380,7 +380,8 @@ def ajax_confirmar_cita_compras(request):
 
         ticket = AppointmentService.confirmar_cita(
             appointment_id=appointment_id,
-            usuario_almacen=request.user
+            usuario_almacen=request.user,
+            base_url=request.build_absolute_uri('/'),
         )
         # Si el correo de confirmación falló, la cita/ticket ya se
         # confirmaron igual (no debe romper el flujo) — se agrega el
@@ -545,7 +546,8 @@ def ajax_confirmar_cita(request):
             )
         ticket = AppointmentService.confirmar_cita(
             appointment_id=appointment_id,
-            usuario_almacen=request.user
+            usuario_almacen=request.user,
+            base_url=request.build_absolute_uri('/'),
         )
         email_error = getattr(ticket, 'email_notificacion_error', None)
         extra = {'email_error': email_error} if email_error else {}

@@ -102,7 +102,8 @@ class OperationsTestBase(TestCase):
             user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
         )
         return AppointmentService.confirmar_cita(
-            appointment_id=appointment.id, usuario_almacen=self.u_compras
+            appointment_id=appointment.id, usuario_almacen=self.u_compras,
+            base_url='http://testserver/',
         )
 
     def _avanzar_a_vigilancia_ingreso(self, ticket: Ticket) -> Ticket:

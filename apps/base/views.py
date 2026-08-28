@@ -83,7 +83,7 @@ def solicitar_recuperacion(request):
     if request.method == 'POST':
         username = request.POST.get('username', '').strip()
         if username:
-            services_recuperacion.solicitar_recuperacion(username)
+            services_recuperacion.solicitar_recuperacion(username, request.build_absolute_uri('/'))
         return render(request, 'solicitar_recuperacion.html', {'enviado': True})
 
     return render(request, 'solicitar_recuperacion.html', {'enviado': False})

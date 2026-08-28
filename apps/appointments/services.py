@@ -176,7 +176,22 @@ class AppointmentService:
             return appointment
 
     @staticmethod
-    def confirmar_cita(appointment_id, usuario_almacen):
+    def confirmar_cita(appointment_id, usuario_almacen, base_url):
+        """
+        `base_url` (ej. `request.build_absolute_uri('/')`, con
+        esquema+host+puerto reales de la request que confirma la cita):
+        se necesita para armar el link absoluto del correo de
+        notificación (`_notificar_proveedor_qr`). Parámetro obligatorio
+        a propósito, sin ningún valor por defecto — corrige un bug real
+        detectado en pruebas manuales (sesión 91): antes se armaba desde
+        `settings.ALLOWED_HOSTS`, que en Django es una lista de
+        hostnames SIN puerto por diseño (Django le quita el puerto al
+        header Host antes de comparar) — el link resultante en local
+        quedaba sin `:8000`, apuntando al puerto 80 por defecto, donde
+        no corre nada. `request.build_absolute_uri()` sí refleja el
+        host+puerto reales por los que llegó la request, sin asumir
+        nada — es la fuente correcta para esto, no un setting fijo.
+        """
         with transaction.atomic():
             # 1. Lock para evitar doble confirmación concurrente
             appointment = Appointment.objects.select_for_update().get(id=appointment_id)
@@ -260,7 +275,7 @@ class AppointmentService:
             # incluirlo en su respuesta JSON — no hay logging persistente
             # en este proyecto (sesión 49), así que perderlo en silencio
             # lo haría invisible por completo.
-            resultado_correo = AppointmentService._notificar_proveedor_qr(appointment, ticket)
+            resultado_correo = AppointmentService._notificar_proveedor_qr(appointment, ticket, base_url)
             ticket.email_notificacion_error = (
                 resultado_correo.error if resultado_correo and not resultado_correo.enviado else None
             )
@@ -294,26 +309,29 @@ class AppointmentService:
         return appointment
 
     @staticmethod
-    def _notificar_proveedor_qr(appointment: Appointment, ticket: Ticket):
+    def _notificar_proveedor_qr(appointment: Appointment, ticket: Ticket, base_url: str):
         """
         Notifica al proveedor por correo real (Microsoft Graph, ver
         apps/base/services_correo.py) que su cita fue confirmada — cierra
         la deuda histórica de este método (antes solo hacía `print()`, sin
         ningún envío real, desde que se escribió por primera vez).
 
+        `base_url`: esquema+host+puerto absolutos de la request real que
+        confirmó la cita (ej. `request.build_absolute_uri('/')`) — ver
+        docstring de `confirmar_cita` para el motivo (sesión 91, corrige
+        un link roto en local por depender antes de `ALLOWED_HOSTS`, que
+        nunca lleva puerto).
+
         Devuelve el ResultadoEnvioCorreo (o None si ni siquiera se intentó
         por falta de email) — el llamador (confirmar_cita) decide dónde
         dejarlo visible; esta función nunca lanza.
         """
         from apps.base.services_correo import enviar_correo
-        from apps.base.site_utils import construir_url_absoluta
 
         # URL absoluta: el link va en un correo real, no en una página ya
         # cargada en el navegador — una ruta relativa no resuelve a nada
-        # útil en un cliente de correo. Helper compartido desde la sesión
-        # 90 (Etapa 2.5, recuperación de contraseña, necesita la misma
-        # lógica de preferencia de dominio) — antes vivía inline acá.
-        url_qr = construir_url_absoluta(f"/appointments/ticket/{appointment.token_qr}/")
+        # útil en un cliente de correo.
+        url_qr = base_url.rstrip('/') + f"/appointments/ticket/{appointment.token_qr}/"
 
         proveedor_email = appointment.user.email
         if not proveedor_email:

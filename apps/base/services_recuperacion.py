@@ -32,15 +32,24 @@ from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
 from . import services_correo
-from .site_utils import construir_url_absoluta
 
 
-def solicitar_recuperacion(username: str) -> None:
+def solicitar_recuperacion(username: str, base_url: str) -> None:
     """
     Envía el correo de recuperación si `username` corresponde a una
     cuenta real y activa — no hace nada (sin lanzar, sin ningún efecto
     observable desde afuera) en cualquier otro caso. El llamador nunca
     debe inferir el resultado interno de esta función.
+
+    `base_url` (ej. `request.build_absolute_uri('/')`, con esquema+host
+    +puerto reales de la request): obligatorio, sin ningún valor por
+    defecto — corrige un bug real detectado en pruebas manuales (sesión
+    91): antes se armaba desde `settings.ALLOWED_HOSTS` (vía el ahora
+    retirado `apps.base.site_utils.construir_url_absoluta`), que en
+    Django es una lista de hostnames SIN puerto por diseño — el link
+    del correo en local quedaba sin `:8000`, apuntando al puerto 80 por
+    defecto, donde no corre nada. `request.build_absolute_uri()` sí
+    refleja el host+puerto reales por los que llegó la request.
     """
     user = User.objects.filter(username=username, is_active=True).first()
     if user is None:
@@ -48,7 +57,7 @@ def solicitar_recuperacion(username: str) -> None:
 
     uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
-    link = construir_url_absoluta(f"/cuenta/recuperar/{uidb64}/{token}/")
+    link = base_url.rstrip('/') + f"/cuenta/recuperar/{uidb64}/{token}/"
 
     asunto = "Recuperación de contraseña — Portal de Proveedores Daryza"
     cuerpo = f"""

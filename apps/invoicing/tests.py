@@ -671,6 +671,7 @@ class SaldoDisponibleConcurrenciaTests(TransactionTestCase):
         )
         ticket = AppointmentService.confirmar_cita(
             appointment_id=appointment.id, usuario_almacen=self.u_compras,
+            base_url='http://testserver/',
         )
         ticket = OperationsService.iniciar_ingreso_planta(
             ticket_id=ticket.id, usuario_vigilancia=u_vigilancia,
@@ -1433,6 +1434,7 @@ class NuevaFacturaTestBase(InvoicingTestBase):
         )
         ticket = AppointmentService.confirmar_cita(
             appointment_id=appointment.id, usuario_almacen=self.u_compras,
+            base_url='http://testserver/',
         )
         ticket = OperationsService.iniciar_ingreso_planta(
             ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
@@ -1894,6 +1896,7 @@ class CrearFacturaDesdeOCsConcurrenciaTests(TransactionTestCase):
         )
         ticket = AppointmentService.confirmar_cita(
             appointment_id=appointment.id, usuario_almacen=u_compras,
+            base_url='http://testserver/',
         )
         ticket = OperationsService.iniciar_ingreso_planta(
             ticket_id=ticket.id, usuario_vigilancia=u_vigilancia,
@@ -2330,6 +2333,7 @@ class FacturaSAPAPITestBase(InvoicingTestBase):
         )
         ticket = AppointmentService.confirmar_cita(
             appointment_id=appointment.id, usuario_almacen=self.u_compras,
+            base_url='http://testserver/',
         )
         ticket = OperationsService.iniciar_ingreso_planta(
             ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
