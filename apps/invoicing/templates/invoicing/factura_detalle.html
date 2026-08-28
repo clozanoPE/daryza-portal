@@ -238,14 +238,8 @@
         {% if linea.difiere_de_oc %}
         <div class="p-2 rounded-3 bg-warning-subtle text-warning text-xxs mb-2">
           <i class="bi bi-info-circle me-1"></i>
-          {% if linea.cantidad != linea.cantidad_oc %}
           Cantidad OC: <strong>{{ linea.cantidad_oc|stringformat:".4f" }}</strong> →
           Facturado: <strong>{{ linea.cantidad|stringformat:".4f" }}</strong>.
-          {% endif %}
-          {% if linea.precio != linea.precio_oc %}
-          Precio OC: <strong>{{ linea.precio_oc|stringformat:".4f" }}</strong> →
-          Facturado: <strong>{{ linea.precio|stringformat:".4f" }}</strong>.
-          {% endif %}
         </div>
         {% endif %}
         <div class="row g-2">
@@ -256,8 +250,10 @@
           </div>
           <div class="col-6">
             <label class="form-label text-xxs fw-bold">Precio</label>
-            <input type="number" step="0.0001" class="form-control form-control-sm rounded-3 inp-precio"
-                   data-linea="{{ linea.id }}" value="{{ linea.precio|stringformat:'.4f' }}" {% if not puede_editar %}disabled{% endif %}>
+            <div class="form-control form-control-sm rounded-3 bg-light text-xs">
+              {{ linea.precio|stringformat:".4f" }}
+              {% if linea.tax_code == 'IGV_EXE' %}<span class="text-muted text-xxs">(Exonerado)</span>{% endif %}
+            </div>
           </div>
         </div>
         {% if puede_editar %}
@@ -322,5 +318,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.1"></script>
+<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.2"></script>
 {% endblock %}

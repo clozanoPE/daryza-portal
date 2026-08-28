@@ -58,13 +58,13 @@ async function subirArchivoFactura(tipo, facturaId) {
 }
 
 async function guardarLinea(lineaId) {
+  // Sesión 92: precio ya no es editable — solo cantidad. El endpoint
+  // ahora rechaza explícitamente cualquier payload que incluya 'precio'.
   const { showToast } = DzUI;
   const cantidadInput = document.querySelector(`.inp-cantidad[data-linea="${lineaId}"]`);
-  const precioInput = document.querySelector(`.inp-precio[data-linea="${lineaId}"]`);
   try {
     const data = await DzApi.postJSON(`/invoicing/factura-linea/${lineaId}/editar/`, {
       cantidad: cantidadInput ? cantidadInput.value : undefined,
-      precio: precioInput ? precioInput.value : undefined,
     });
     if (data.status !== 'success') throw new Error(data.msg);
     showToast(data.msg || 'Línea actualizada.', 'success');

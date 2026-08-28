@@ -90,12 +90,67 @@ class SyncOCUpsertLineaPorLineaTests(TestCase):
         """El endpoint real debe aceptar re-enviar una OC ya existente."""
         payload = self._payload_base([
             {'line_num': 0, 'item_code': 'ITEM-A', 'description': 'Linea A',
-             'quantity_sap': '100.0000', 'und_medida': 'KG'},
+             'quantity_sap': '100.0000', 'und_medida': 'KG',
+             'precio_unitario': '10.0000', 'precio_total_linea': '1000.0000', 'tax_code': 'IGV'},
             {'line_num': 1, 'item_code': 'ITEM-B', 'description': 'Linea B',
-             'quantity_sap': '50.0000', 'und_medida': 'KG'},
+             'quantity_sap': '50.0000', 'und_medida': 'KG',
+             'precio_unitario': '20.0000', 'precio_total_linea': '1000.0000', 'tax_code': 'IGV'},
         ])
         response = self.client.post(self.url, payload, format='json')
         self.assertEqual(response.status_code, 201, response.data)
+
+    def test_precio_igv_sincronizan_correctamente(self):
+        """
+        Sesión 92: precio_unitario/precio_total_linea/tax_code llegan
+        reales de SAP (PriceBefDi/LineTotal/TaxCode) por cada línea, no
+        calculados por el demonio. Confirma persistencia correcta y que
+        un resync los refresca (no solo el alta inicial).
+        """
+        payload = self._payload_base([
+            {'line_num': 0, 'item_code': 'ITEM-A', 'description': 'Linea A',
+             'quantity_sap': '100.0000', 'und_medida': 'KG',
+             'precio_unitario': '15.5000', 'precio_total_linea': '1550.0000', 'tax_code': 'IGV'},
+            {'line_num': 1, 'item_code': 'ITEM-B', 'description': 'Linea B',
+             'quantity_sap': '50.0000', 'und_medida': 'KG',
+             'precio_unitario': '8.2500', 'precio_total_linea': '412.5000', 'tax_code': 'IGV_EXE'},
+        ])
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+
+        self.linea_a.refresh_from_db()
+        self.linea_b.refresh_from_db()
+        self.assertEqual(self.linea_a.precio_unitario, Decimal('15.5000'))
+        self.assertEqual(self.linea_a.precio_total_linea, Decimal('1550.0000'))
+        self.assertEqual(self.linea_a.tax_code, 'IGV')
+        self.assertEqual(self.linea_b.precio_unitario, Decimal('8.2500'))
+        self.assertEqual(self.linea_b.tax_code, 'IGV_EXE')
+
+        # Un resync con precio distinto REFRESCA el valor (no es un
+        # snapshot inmutable a este nivel — el snapshot inmutable vive
+        # en FacturaLinea.precio_oc/tax_code, no acá).
+        payload_2 = self._payload_base([
+            {'line_num': 0, 'item_code': 'ITEM-A', 'description': 'Linea A',
+             'quantity_sap': '100.0000', 'und_medida': 'KG',
+             'precio_unitario': '16.0000', 'precio_total_linea': '1600.0000', 'tax_code': 'IGV'},
+        ])
+        response_2 = self.client.post(self.url, payload_2, format='json')
+        self.assertEqual(response_2.status_code, 201, response_2.data)
+        self.linea_a.refresh_from_db()
+        self.assertEqual(self.linea_a.precio_unitario, Decimal('16.0000'))
+
+    def test_payload_sin_los_3_campos_nuevos_rechaza_con_400(self):
+        """
+        precio_unitario/precio_total_linea/tax_code son obligatorios en
+        el serializer (sin required=False) — un daemon desactualizado
+        que no los envíe recibe un 400 claro, no un 201 con datos en su
+        default transitorio.
+        """
+        payload = self._payload_base([
+            {'line_num': 0, 'item_code': 'ITEM-A', 'description': 'Linea A',
+             'quantity_sap': '100.0000', 'und_medida': 'KG'},
+        ])
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, 400)
 
     def test_resync_de_oc_con_ticket_e_inspecciones_no_rompe_fk(self):
         """
@@ -146,7 +201,8 @@ class SyncOCUpsertLineaPorLineaTests(TestCase):
         # completo (simula que SAP la canceló/eliminó del documento).
         payload = self._payload_base([
             {'line_num': 0, 'item_code': 'ITEM-A', 'description': 'Linea A actualizada',
-             'quantity_sap': '123.4500', 'und_medida': 'KG'},
+             'quantity_sap': '123.4500', 'und_medida': 'KG',
+             'precio_unitario': '11.0000', 'precio_total_linea': '1358.0000', 'tax_code': 'IGV'},
         ])
 
         response = self.client.post(self.url, payload, format='json')
@@ -233,7 +289,8 @@ class SyncOCCreaSupplierProfileTests(TestCase):
             'status': 'O', 'u_mss_tdb': 'CDL',
             'lines': [
                 {'line_num': 0, 'item_code': 'ITEM-SP', 'description': 'Item',
-                 'quantity_sap': '10.0000', 'und_medida': 'UND'},
+                 'quantity_sap': '10.0000', 'und_medida': 'UND',
+                 'precio_unitario': '5.0000', 'precio_total_linea': '50.0000', 'tax_code': 'IGV'},
             ],
         }
 

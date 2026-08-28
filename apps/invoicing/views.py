@@ -295,16 +295,13 @@ def crear_factura_ajax(request):
         if cantidad <= 0:
             continue
 
-        precio_raw = request.POST.get(f'precio_{po_line_id}')
-        try:
-            precio = Decimal(precio_raw) if precio_raw else Decimal('0')
-        except InvalidOperation:
-            return _json_err(f'Precio inválido para la línea {po_line.item_code}.')
-
+        # Sesión 92: precio ya NO se lee del POST — se ignora cualquier
+        # precio_<id> que llegue (ej. un POST directo fabricado a mano,
+        # saltándose la UI ya corregida). El precio real siempre lo
+        # deriva _crear_factura_y_lineas desde po_line.precio_unitario.
         lineas_payload.append({
             'po_line': po_line,
             'cantidad': cantidad,
-            'precio': precio,
             'aplica_retencion': request.POST.get(f'aplica_retencion_{po_line_id}') == 'on',
             'aplica_detraccion': request.POST.get(f'aplica_detraccion_{po_line_id}') == 'on',
             'archivo_retencion': request.FILES.get(f'archivo_retencion_{po_line_id}'),
@@ -404,17 +401,21 @@ def editar_linea_factura_ajax(request, linea_id: int):
     except (json.JSONDecodeError, UnicodeDecodeError):
         return _json_err('JSON inválido.')
 
+    # Sesión 92: precio ya no es editable — rechazo explícito y
+    # temprano (antes de tocar el servicio) si el payload intenta
+    # incluirlo, sea vía la UI (ya corregida, no debería enviarlo más)
+    # o vía un POST directo fabricado a mano.
+    if 'precio' in data:
+        return _json_err(
+            'El precio no es editable — se hereda directamente de la Orden de Compra.'
+        )
+
     kwargs = {}
     if 'cantidad' in data:
         try:
             kwargs['cantidad'] = Decimal(str(data['cantidad']))
         except InvalidOperation:
             return _json_err('Cantidad inválida.')
-    if 'precio' in data:
-        try:
-            kwargs['precio'] = Decimal(str(data['precio']))
-        except InvalidOperation:
-            return _json_err('Precio inválido.')
     if 'aplica_retencion' in data:
         kwargs['aplica_retencion'] = bool(data['aplica_retencion'])
     if 'aplica_detraccion' in data:

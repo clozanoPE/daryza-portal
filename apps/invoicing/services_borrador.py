@@ -153,11 +153,11 @@ def lineas_para_copiar(purchase_orders) -> list[dict]:
     Grupos {'purchase_order', 'lineas': [...]} para la Pantalla de Copia
     — SIN tocar la BD (solo lecturas, ver docstring del módulo sobre por
     qué se agrupa aquí y no con `{% regroup %}`). `cantidad_oc` de
-    referencia = po_line.quantity_sap (ver docstring de FacturaLinea,
-    models.py — "sí puede copiarse de po_line.quantity_sap"); `precio_oc`
-    no tiene ninguna fuente automática (idem) — se snapshotea igual al
-    precio que el proveedor ingrese recién al crear (crear_factura_
-    desde_ocs), no aquí.
+    referencia = po_line.quantity_sap. `precio_oc`/`precio` (sesión 92):
+    ya no se piden al proveedor — el template lee `po_line.precio_
+    unitario` directo (dato real de SAP, ya en el objeto `po_line` de
+    cada línea), solo lectura; `_crear_factura_y_lineas` es quien
+    efectivamente los asigna al crear el registro.
     """
     grupos = []
     for po in purchase_orders:
@@ -226,11 +226,16 @@ def _crear_factura_y_lineas(*, proveedor, purchase_order_ids, cabecera, lineas_p
                 f"La línea {po_line.item_code} (OC {po_line.purchase_order.doc_num}) excede "
                 f"el saldo disponible ({saldo})."
             )
-        precio = fila['precio']
+        # Sesión 92: precio SIEMPRE se hereda de po_line.precio_unitario
+        # (dato real de SAP) — cualquier 'precio' que venga en `fila`
+        # (ej. un POST directo fabricado a mano, saltándose la UI ya
+        # corregida) se ignora por completo, nunca se lee de ahí. Mismo
+        # criterio para tax_code (snapshot, no proviene del payload).
         FacturaLinea.objects.create(
             factura=factura, po_line=po_line,
-            cantidad_oc=po_line.quantity_sap, precio_oc=precio,
-            cantidad=cantidad, precio=precio,
+            cantidad_oc=po_line.quantity_sap, precio_oc=po_line.precio_unitario,
+            tax_code=po_line.tax_code,
+            cantidad=cantidad, precio=po_line.precio_unitario,
             aplica_retencion=fila.get('aplica_retencion', False),
             aplica_detraccion=fila.get('aplica_detraccion', False),
         )
@@ -307,19 +312,26 @@ def editar_cabecera_factura(factura, usuario, cabecera: dict):
 
 
 @transaction.atomic
-def editar_linea_factura(linea, usuario, *, cantidad=None, precio=None,
+def editar_linea_factura(linea, usuario, *, cantidad=None,
                           aplica_retencion=None, aplica_detraccion=None):
     """
-    Edita cantidad/precio/aplica_retencion/aplica_detraccion de una
-    FacturaLinea mientras la Factura esté en BORRADOR/OBSERVADA —
-    recalcula difiere_de_oc automáticamente (FacturaLinea.save(), Sub-
-    fase 3.1b, sin cambios). `cantidad` no puede exceder saldo_disponible
-    (excluyendo la propia Factura — mismo criterio ya usado en el resto
-    del sistema para no contarse a sí misma dos veces).
+    Edita cantidad/aplica_retencion/aplica_detraccion de una FacturaLinea
+    mientras la Factura esté en BORRADOR/OBSERVADA — recalcula
+    difiere_de_oc automáticamente (FacturaLinea.save()). `cantidad` no
+    puede exceder saldo_disponible (excluyendo la propia Factura — mismo
+    criterio ya usado en el resto del sistema para no contarse a sí
+    misma dos veces).
+
+    Sesión 92: `precio` YA NO es un parámetro editable de esta función
+    (antes sí) — se hereda de PurchaseOrderLine.precio_unitario al crear
+    la línea (_crear_factura_y_lineas) y no puede cambiarse después. El
+    rechazo explícito de un intento de editarlo vive en la vista
+    (editar_linea_factura_ajax, apps/invoicing/views.py) — se rechaza
+    ahí, antes de llegar a este servicio, con un mensaje claro.
 
     Actualiza SOLO los campos explícitamente provistos (None = "no
     tocar", permite un guardado parcial desde la UI — ej. solo tildar el
-    checkbox de retención sin reenviar cantidad/precio).
+    checkbox de retención sin reenviar cantidad).
     """
     factura = linea.factura
     sa.validar_permiso_edicion(factura, usuario)
@@ -333,9 +345,6 @@ def editar_linea_factura(linea, usuario, *, cantidad=None, precio=None,
             )
         linea.cantidad = cantidad
         campos.append('cantidad')
-    if precio is not None:
-        linea.precio = precio
-        campos.append('precio')
     if aplica_retencion is not None:
         linea.aplica_retencion = aplica_retencion
         campos.append('aplica_retencion')

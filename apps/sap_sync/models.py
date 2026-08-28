@@ -1,4 +1,6 @@
 # apps/sap_sync/models.py
+from decimal import Decimal
+
 from django.db import models
 from apps.base.models import TimeStampedModel
 
@@ -30,12 +32,48 @@ class PurchaseOrder(TimeStampedModel):
 
 
 class PurchaseOrderLine(models.Model):
+    # Catálogo de impuesto confirmado por el usuario (sesión 92): solo 2
+    # estados en el SAP real de Daryza, no los 3 típicos de SUNAT
+    # (Gravado/Exonerado/Inafecto) — 'IGV' cubre gravado, 'IGV_EXE' cubre
+    # exonerado. Si en el futuro aparece un 3er estado real en SAP, se
+    # agrega acá sin romper nada (choices, no un booleano).
+    TAX_CODE_IGV = 'IGV'
+    TAX_CODE_IGV_EXE = 'IGV_EXE'
+    TAX_CODE_CHOICES = [
+        (TAX_CODE_IGV, 'IGV (gravado)'),
+        (TAX_CODE_IGV_EXE, 'IGV Exonerado'),
+    ]
+
     purchase_order = models.ForeignKey(PurchaseOrder, related_name='lines', on_delete=models.CASCADE)
     line_num = models.IntegerField(help_text="LineNum de SAP: identificador estable de la línea dentro de la OC, usado como clave de upsert en cada sincronización.")
     item_code = models.CharField(max_length=50)
     description = models.CharField(max_length=255)
     quantity_sap = models.DecimalField(max_digits=18, decimal_places=4)
     und_medida = models.CharField(max_length=50)
+
+    # Sesión 92: datos de precio/impuesto que ya existen en SAP al momento
+    # de aceptar la OC — no calculados ni inventados por el demonio.
+    # Defaults transitorios (0 / IGV) solo para que la migración no falle
+    # sobre filas ya existentes (sincronizadas antes de este campo) — el
+    # próximo resync real desde SAP los refresca de inmediato, mismo
+    # criterio ya usado para "activa" cuando se agregó (sesión 49).
+    precio_unitario = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal('0'),
+        help_text="PriceBefDi de SAP: precio unitario, antes de descuento.",
+    )
+    precio_total_linea = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal('0'),
+        help_text=(
+            "LineTotal de SAP: total NETO de la línea (cantidad × precio "
+            "unitario, después de descuento de línea si aplica) — SIN "
+            "IGV incluido. No confundir con un total final para el "
+            "proveedor, que sí incluiría el impuesto."
+        ),
+    )
+    tax_code = models.CharField(
+        max_length=10, choices=TAX_CODE_CHOICES, default=TAX_CODE_IGV,
+        help_text="TaxCode de SAP: código de impuesto aplicado a la línea.",
+    )
 
     # Granularidad de inspección a nivel de línea.
     # Pre-marcado True automáticamente si OC padre tiene u_mss_tdb == 'MP'.

@@ -341,21 +341,30 @@ class FacturaOrdenCompra(models.Model):
 
 class FacturaLinea(models.Model):
     """
-    Línea de Factura por línea de OC (po_line). cantidad_oc/precio_oc son
-    una FOTO tomada al crear la línea (editable=False — no se actualizan
-    después aunque la OC cambie en SAP), distinta de cantidad/precio (lo
-    que el proveedor confirma/edita). La comparación entre ambos pares se
-    recalcula en save() → difiere_de_oc.
+    Línea de Factura por línea de OC (po_line). cantidad_oc/precio_oc/
+    tax_code son una FOTO tomada al crear la línea (editable=False — no
+    se actualizan después aunque la OC cambie en SAP), distinta de
+    cantidad (lo único que el proveedor confirma/edita desde la sesión
+    92 — ver punto siguiente). La comparación cantidad vs. cantidad_oc
+    se recalcula en save() → difiere_de_oc.
 
-    NOTA sobre precio_oc: PurchaseOrderLine (apps.sap_sync) no sincroniza
-    ningún precio unitario desde SAP hoy — a diferencia de cantidad_oc
-    (que sí puede copiarse de po_line.quantity_sap), precio_oc no tiene
-    ninguna fuente automática en el Portal todavía. Por eso esta fase NO
-    incluye ninguna lógica de auto-población en save() para estos 2
-    campos — quien cree la FacturaLinea (la orquestación de Sub-fase 3.2/
-    3.3, todavía no construida) es responsable de pasarlos explícitamente
-    al crear el registro. Ambos son obligatorios (sin null=True) porque
-    son la fuente de comparación de difiere_de_oc.
+    SESIÓN 92 — precio deja de ser editable por el proveedor: ahora se
+    hereda directamente de PurchaseOrderLine.precio_unitario (dato real
+    de SAP, `PriceBefDi`) al crear la línea (services_borrador.py) — el
+    proveedor ya NO puede escribir un precio propio, ni al crear la
+    Factura ni al editar la línea después (editar_linea_factura ya no
+    acepta `precio` como parámetro; el endpoint lo rechaza
+    explícitamente si llega en el payload). Por construcción, `precio`
+    y `precio_oc` son siempre iguales para toda línea creada desde esta
+    sesión en adelante — `difiere_de_oc` deja de comparar precio, queda
+    exclusivamente para cantidad (ver save() más abajo). `precio_oc` se
+    conserva como campo (snapshot histórico/auditoría), solo se retira
+    de la comparación.
+
+    `tax_code` (nuevo, sesión 92): snapshot de PurchaseOrderLine.tax_code
+    al crear la línea — igual criterio que cantidad_oc/precio_oc: el
+    cálculo de IGV de ESTA Factura no debe cambiar retroactivamente si
+    el TaxCode de la OC se resincroniza distinto más adelante.
 
     po_line usa on_delete=PROTECT — mismo criterio ya establecido para
     TicketLineInspection/TicketLineCOA/EntradaMercaderiaLinea (sesión 49):
@@ -373,15 +382,39 @@ class FacturaLinea(models.Model):
     )
     precio_oc = models.DecimalField(
         max_digits=18, decimal_places=4, editable=False,
-        help_text="Snapshot del precio de OC al crear esta línea. No se actualiza después.",
+        help_text=(
+            "Snapshot del precio de OC (PurchaseOrderLine.precio_unitario) "
+            "al crear esta línea. No se actualiza después. Desde la sesión "
+            "92, siempre igual a `precio` (ver docstring de la clase)."
+        ),
+    )
+    tax_code = models.CharField(
+        max_length=10, choices=PurchaseOrderLine.TAX_CODE_CHOICES,
+        default=PurchaseOrderLine.TAX_CODE_IGV, editable=False,
+        help_text=(
+            "Snapshot de PurchaseOrderLine.tax_code al crear esta línea "
+            "— base para el cálculo de IGV en procesar_validacion_"
+            "documentos (apps/invoicing/services.py)."
+        ),
     )
 
     cantidad = models.DecimalField(max_digits=18, decimal_places=4)
-    precio = models.DecimalField(max_digits=18, decimal_places=4)
+    precio = models.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text=(
+            "Heredado de PurchaseOrderLine.precio_unitario al crear la "
+            "línea — no editable por el proveedor desde la sesión 92 "
+            "(ver docstring de la clase)."
+        ),
+    )
 
     difiere_de_oc = models.BooleanField(
         default=False, editable=False,
-        help_text="Calculado en save(): True si cantidad o precio difieren del snapshot de OC.",
+        help_text=(
+            "Calculado en save(): True si cantidad difiere de cantidad_oc. "
+            "Desde la sesión 92 ya NO considera precio (precio/precio_oc "
+            "son siempre iguales por construcción, ver docstring de la clase)."
+        ),
     )
 
     aplica_retencion = models.BooleanField(default=False)
@@ -393,9 +426,11 @@ class FacturaLinea(models.Model):
     hash_documento_detraccion = models.CharField(max_length=128, blank=True, default='')
 
     def save(self, *args, **kwargs):
-        self.difiere_de_oc = (
-            self.cantidad != self.cantidad_oc or self.precio != self.precio_oc
-        )
+        # Sesión 92: precio ya no participa de esta comparación — precio/
+        # precio_oc son siempre iguales por construcción (ver docstring
+        # de la clase), así que compararlos sería un chequeo permanente
+        # de "False" sin ningún valor informativo.
+        self.difiere_de_oc = self.cantidad != self.cantidad_oc
         super().save(*args, **kwargs)
 
     def __str__(self):

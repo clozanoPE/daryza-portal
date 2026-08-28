@@ -119,17 +119,18 @@
               <span class="fw-bold d-block text-xs">{{ linea.po_line.item_code }}</span>
               <small class="text-muted text-xxs">{{ linea.po_line.description }}</small>
             </td>
-            <td class="text-end text-xs">{{ linea.cantidad_oc }}</td>
-            <td class="text-end text-xs fw-bold text-success">{{ linea.saldo }}</td>
+            <td class="text-end text-xs">{{ linea.cantidad_oc|stringformat:".4f" }}</td>
+            <td class="text-end text-xs fw-bold text-success">{{ linea.saldo|stringformat:".4f" }}</td>
             <td>
-              <input type="number" step="0.0001" min="0" max="{{ linea.saldo }}"
+              <input type="number" step="0.0001" min="0" max="{{ linea.saldo|stringformat:'.4f' }}"
                      name="cantidad_{{ linea.po_line.id }}" class="form-control form-control-sm rounded-3"
-                     value="{{ linea.saldo }}">
+                     value="{{ linea.saldo|stringformat:'.4f' }}">
             </td>
             <td>
-              <input type="number" step="0.0001" min="0"
-                     name="precio_{{ linea.po_line.id }}" class="form-control form-control-sm rounded-3"
-                     placeholder="0.0000">
+              <span class="fw-bold text-xs d-block">{{ linea.po_line.precio_unitario|stringformat:".4f" }}</span>
+              {% if linea.po_line.tax_code == 'IGV_EXE' %}
+              <small class="text-muted text-xxs">Exonerado de IGV</small>
+              {% endif %}
             </td>
             <td class="text-center">
               <input type="checkbox" class="form-check-input chk-retencion"

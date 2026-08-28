@@ -82,7 +82,7 @@ from apps.base import oc_status
 from apps.base.models import Sede, SupplierProfile
 from apps.base.services_correo import ResultadoEnvioCorreo
 from apps.invoicing import services_validacion as sv
-from apps.operations.models import EntradaMercaderia, Ticket, TicketLineInspection
+from apps.operations.models import EntradaMercaderia, EntradaMercaderiaLinea, Ticket, TicketLineInspection
 from apps.operations.services import OperationsService
 from apps.operations.tests import OperationsTestBase
 from apps.operations.tests import _doc_num_counter
@@ -526,7 +526,16 @@ class FacturaLineaDifiereDeOCTests(InvoicingTestBase):
         )
         self.assertTrue(linea.difiere_de_oc)
 
-    def test_difiere_de_oc_true_si_precio_distinto(self):
+    def test_precio_distinto_ya_no_activa_difiere_de_oc(self):
+        """
+        Sesión 92: precio dejó de participar en esta comparación —
+        precio/precio_oc son siempre iguales por construcción para
+        cualquier línea creada desde services_borrador.py en adelante,
+        pero este test fuerza el caso igual (construyendo la línea
+        directo, sin pasar por ese servicio) para confirmar que
+        difiere_de_oc de verdad ignora precio, no solo que "nunca
+        ocurre en la práctica".
+        """
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
         po_line = self._po_line_de(ticket)
         factura = self._crear_factura()
@@ -535,7 +544,7 @@ class FacturaLineaDifiereDeOCTests(InvoicingTestBase):
             factura, po_line, cantidad=Decimal('10.0000'),
             cantidad_oc=Decimal('10.0000'), precio_oc=Decimal('5.0000'), precio=Decimal('5.5000'),
         )
-        self.assertTrue(linea.difiere_de_oc)
+        self.assertFalse(linea.difiere_de_oc)
 
 
 class ValidarOcDisponibleConcurrenciaTests(TransactionTestCase):
@@ -1042,8 +1051,16 @@ class ProcesarValidacionDocumentosTests(InvoicingTestBase):
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
         po_line = self._po_line_de(ticket)
         factura = self._crear_factura()
-        # 10 * 118.05 = 1180.50 exacto.
-        self._crear_factura_linea(factura, po_line, cantidad=Decimal('10.0000'), precio=Decimal('118.05'))
+        # 10 * 118.05 = 1180.50 exacto, igual al PayableAmount del XML.
+        # tax_code='IGV_EXE' a propósito (sesión 92): este test verifica
+        # la TOLERANCIA de comparación, no el cálculo de IGV en sí (ese
+        # tiene su propio test dedicado, ComparacionImporteConIGVTests)
+        # — con la línea exonerada, el importe neto ya coincide 1:1 sin
+        # sumar nada, preservando los números redondos originales.
+        self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('10.0000'), precio=Decimal('118.05'),
+            tax_code=PurchaseOrderLine.TAX_CODE_IGV_EXE,
+        )
 
         self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
 
@@ -1053,6 +1070,65 @@ class ProcesarValidacionDocumentosTests(InvoicingTestBase):
         InvoicingService.enviar_a_revision(factura)  # no debe lanzar
         factura.refresh_from_db()
         self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_linea_gravada_suma_igv_18_porciento_y_coincide(self, mock_cls):
+        """
+        Sesión 92, punto 7: caso GRAVADO real — el importe del XML
+        (1180.50, con IGV incluido, como trae una factura real) debe
+        coincidir contra (línea neta + IGV 18%), NO contra la línea
+        neta sola. neto=1000.4237 (cantidad=1 * precio=1000.4237,
+        tax_code='IGV' default) -> +18% = 1180.4999...66, dentro de la
+        tolerancia de 0.02 contra 1180.50.
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')  # PayableAmount = 1180.50 PEN
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura()
+        # tax_code por defecto = 'IGV' (gravado, ver PurchaseOrderLine).
+        self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('1.0000'), precio=Decimal('1000.4237'),
+        )
+
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertFalse(factura.importe_no_coincide)
+        self.assertIn('IGV', factura.mensaje_validacion_documentos)
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_comparar_solo_contra_neto_sin_igv_hubiera_sido_incorrecto(self, mock_cls):
+        """
+        Confirma explícitamente el bug que existía antes de la sesión
+        92 (comparaba importe_total_xml directo contra la suma neta,
+        sin sumar IGV): una línea GRAVADA cuyo NETO ya es igual al
+        PayableAmount del XML (1180.50) — bajo la comparación VIEJA
+        esto habría marcado "coincide" incorrectamente; con el IGV
+        sumado (total real ~1392.99), la comparación NUEVA correctamente
+        lo marca como NO coincide.
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')  # PayableAmount = 1180.50 PEN
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        factura = self._crear_factura()
+        # 10 * 118.05 = 1180.50 NETO exacto, tax_code='IGV' (gravado) ->
+        # con IGV sumado, el total real es 1180.50 * 1.18 = 1392.99.
+        self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('10.0000'), precio=Decimal('118.05'),
+        )
+
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertTrue(factura.importe_no_coincide)
+        self.assertIn('NO COINCIDE', factura.mensaje_validacion_documentos)
+        self.assertIn('IGV', factura.mensaje_validacion_documentos)
 
     def test_enviar_a_revision_rechaza_si_estado_no_es_borrador_ni_observada(self):
         factura = self._crear_factura(estado='EN_REVISION_COMPRAS')
@@ -1517,13 +1593,17 @@ class CrearFacturaDesdeOCsTests(NuevaFacturaTestBase):
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
         po = ticket.appointment.purchase_orders.first()
         po_line = po.lines.first()
+        # Sesión 92: precio ya no viene del payload — se hereda de
+        # PurchaseOrderLine.precio_unitario (dato real de SAP).
+        po_line.precio_unitario = Decimal('2.5000')
+        po_line.save(update_fields=['precio_unitario'])
         perfil = self._perfil_oc()
 
         factura = sb.crear_factura_desde_ocs(
             proveedor=perfil, purchase_order_ids=[po.id],
             cabecera=self._cabecera_minima(),
             lineas_payload=[{
-                'po_line': po_line, 'cantidad': Decimal('6.0000'), 'precio': Decimal('2.5000'),
+                'po_line': po_line, 'cantidad': Decimal('6.0000'),
                 'aplica_retencion': False, 'aplica_detraccion': False,
             }],
             usuario=self.proveedor,
@@ -1542,6 +1622,7 @@ class CrearFacturaDesdeOCsTests(NuevaFacturaTestBase):
         self.assertEqual(linea.precio, Decimal('2.5000'))
         self.assertEqual(linea.cantidad_oc, po_line.quantity_sap)
         self.assertEqual(linea.precio_oc, Decimal('2.5000'))
+        self.assertEqual(linea.tax_code, po_line.tax_code)
 
     def test_creacion_exitosa_con_varias_oc(self):
         ticket1 = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
@@ -1680,6 +1761,38 @@ class CrearFacturaDesdeOCsTests(NuevaFacturaTestBase):
             )
         self.assertEqual(Factura.objects.count(), 1)  # solo la ya existente
 
+    def test_precio_en_el_payload_se_ignora_siempre_usa_po_line(self):
+        """
+        Sesión 92, punto 9 del pedido: "precio bloqueado... rechazo
+        también vía POST directo, no solo UI". A nivel de servicio, un
+        'precio' fabricado a mano en `fila` (simulando un caller que
+        bypasea la UI ya corregida) no tiene ningún efecto — el precio
+        real SIEMPRE es po_line.precio_unitario.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        po_line.precio_unitario = Decimal('7.0000')
+        po_line.save(update_fields=['precio_unitario'])
+        perfil = self._perfil_oc()
+
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[{
+                # 'precio' deliberadamente MUY distinto del real —
+                # simula un intento de manipulación.
+                'po_line': po_line, 'cantidad': Decimal('1.0000'), 'precio': Decimal('99999.0000'),
+                'aplica_retencion': False, 'aplica_detraccion': False,
+            }],
+            usuario=self.proveedor,
+        )
+
+        linea = factura.lineas.get()
+        self.assertEqual(linea.precio, Decimal('7.0000'))
+        self.assertEqual(linea.precio_oc, Decimal('7.0000'))
+        self.assertNotEqual(linea.precio, Decimal('99999.0000'))
+
 
 class EditarFacturaTests(NuevaFacturaTestBase):
     """Punto 6 del pedido: edición bloqueada tras EN_REVISION_COMPRAS."""
@@ -1730,6 +1843,52 @@ class EditarFacturaTests(NuevaFacturaTestBase):
         with self.assertRaises(ValidationError):
             sb.editar_linea_factura(linea, self.proveedor, cantidad=Decimal('11.0000'))
 
+    def test_precio_no_es_parametro_editable_del_servicio(self):
+        """
+        Sesión 92: editar_linea_factura ya no acepta 'precio' — pasarlo
+        como kwarg debe fallar con TypeError (no es un parámetro válido
+        de la función), no ser aceptado y luego ignorado en silencio.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        perfil = self._perfil_oc()
+        factura = self._crear_factura(estado='BORRADOR', proveedor=perfil)
+        linea = self._crear_factura_linea(factura, po_line, cantidad=Decimal('5.0000'))
+
+        with self.assertRaises(TypeError):
+            sb.editar_linea_factura(linea, self.proveedor, precio=Decimal('999.0000'))
+
+    def test_editar_linea_ajax_rechaza_precio_en_el_payload_via_post_directo(self):
+        """
+        Sesión 92, punto 9 del pedido: "rechazo también vía POST
+        directo, no solo UI". Simula un cliente que bypasea la UI (ya
+        corregida, nunca envía 'precio') y manda el campo a mano —
+        rechazo explícito ANTES de tocar el servicio, precio real
+        queda intacto.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        po_line.precio_unitario = Decimal('12.0000')
+        po_line.save(update_fields=['precio_unitario'])
+        perfil = self._perfil_oc()
+        factura = self._crear_factura(estado='BORRADOR', proveedor=perfil)
+        linea = self._crear_factura_linea(
+            factura, po_line, cantidad=Decimal('5.0000'), precio=Decimal('12.0000'),
+        )
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.post(
+            f'/invoicing/factura-linea/{linea.id}/editar/',
+            data=json.dumps({'precio': '1.0000'}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(resp.status_code, 400)  # _json_err real, no 500
+        self.assertEqual(resp.json()['status'], 'error')
+
+        linea.refresh_from_db()
+        self.assertEqual(linea.precio, Decimal('12.0000'))  # sin cambios
+
 
 class NuevaFacturaHTTPFlowTests(NuevaFacturaTestBase):
     """
@@ -1763,13 +1922,20 @@ class NuevaFacturaHTTPFlowTests(NuevaFacturaTestBase):
         # ProcesarValidacionDocumentosTests) — de lo contrario
         # InvoicingService.enviar_a_revision (paso 6) rechazaría por
         # importe_no_coincide, que es exactamente lo esperado pero no lo
-        # que este test de flujo feliz quiere ejercitar.
+        # que este test de flujo feliz quiere ejercitar. Sesión 92:
+        # precio ya no se envía por POST — se hereda de PurchaseOrderLine.
+        # precio_unitario. IGV_EXE a propósito, mismo criterio ya
+        # aplicado en el resto de la suite: mantiene el total neto ==
+        # PayableAmount sin recalcular los números redondos originales.
         po_line = po.lines.first()
+        po_line.precio_unitario = Decimal('118.0500')
+        po_line.tax_code = PurchaseOrderLine.TAX_CODE_IGV_EXE
+        po_line.save(update_fields=['precio_unitario', 'tax_code'])
         resp = self.client.post('/invoicing/nueva/crear/', data={
             'oc_ids': [po.id],
             'serie_comprobante': 'F001', 'numero_comprobante': '999',
             'doc_cur': 'PEN', 'tipo_operacion': '02',
-            f'cantidad_{po_line.id}': '10.0000', f'precio_{po_line.id}': '118.0500',
+            f'cantidad_{po_line.id}': '10.0000',
         })
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -1833,6 +1999,89 @@ class NuevaFacturaHTTPFlowTests(NuevaFacturaTestBase):
             data=json.dumps({'doc_cur': 'USD'}), content_type='application/json',
         )
         self.assertEqual(resp.json()['status'], 'error')
+
+    def test_pantalla_de_copia_no_tiene_ningun_input_editable_de_precio(self):
+        """
+        Sesión 92, punto 6: la Pantalla de Copia ya no debe ofrecer NADA
+        editable para precio — ni siquiera un input oculto. Verifica el
+        HTML real renderizado, no solo el comportamiento del backend.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        po_line.precio_unitario = Decimal('42.0000')
+        po_line.save(update_fields=['precio_unitario'])
+        self._perfil_oc()
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.get('/invoicing/nueva/copiar/', {'oc_ids': [po.id]})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, f'name="precio_{po_line.id}"')
+        # El precio real de SAP sí se muestra, en solo lectura.
+        self.assertContains(resp, '42.0000')
+
+    def test_precio_enviado_por_post_directo_en_la_creacion_se_ignora(self):
+        """
+        Sesión 92, punto 9: complemento HTTP del test de servicio ya
+        existente (CrearFacturaDesdeOCsTests) — un POST real, fabricado
+        a mano con un precio_<id> que la UI corregida nunca enviaría,
+        no tiene ningún efecto en el precio guardado.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        po_line.precio_unitario = Decimal('9.0000')
+        po_line.save(update_fields=['precio_unitario'])
+        self._perfil_oc()
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.post('/invoicing/nueva/crear/', data={
+            'oc_ids': [po.id],
+            'serie_comprobante': 'F001', 'numero_comprobante': '999',
+            'doc_cur': 'PEN', 'tipo_operacion': '02',
+            f'cantidad_{po_line.id}': '1.0000',
+            f'precio_{po_line.id}': '99999.0000',  # intento de manipulación
+        })
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['status'], 'success', data)
+
+        factura = Factura.objects.get(id=data['factura_id'])
+        linea = factura.lineas.get()
+        self.assertEqual(linea.precio, Decimal('9.0000'))
+        self.assertNotEqual(linea.precio, Decimal('99999.0000'))
+
+    def test_cantidad_a_facturar_precargada_con_cantidad_real_inspeccionada(self):
+        """
+        Sesión 92, punto 8: "Cantidad a Facturar" debe pre-cargarse con
+        EntradaMercaderiaLinea.cantidad (cantidad real inspeccionada),
+        acotada al saldo disponible como tope. Verificado empíricamente
+        (no solo por lectura de código): en el caso más común — primera
+        Factura sobre la línea, sin facturación previa — saldo_
+        disponible() (InvoicingService, Sub-fase 3.1) YA es exactamente
+        igual a EntradaMercaderiaLinea.cantidad (saldo = cantidad_real -
+        ya_facturado, y ya_facturado=0 acá), y ES el valor que la
+        Pantalla de Copia ya usa como value/max del input — confirma que
+        el punto 8 ya estaba satisfecho por el mecanismo existente, sin
+        necesitar ningún cambio de código.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('37.5000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        self._perfil_oc()
+
+        entrada_linea = EntradaMercaderiaLinea.objects.get(po_line=po_line)
+        self.assertEqual(entrada_linea.cantidad, Decimal('37.5000'))
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.get('/invoicing/nueva/copiar/', {'oc_ids': [po.id]})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, f'name="cantidad_{po_line.id}"')
+        self.assertContains(resp, 'value="37.5000"')
+        self.assertContains(resp, f'max="37.5000"')
 
 
 class CrearFacturaDesdeOCsConcurrenciaTests(TransactionTestCase):
@@ -2166,6 +2415,15 @@ class AprobarObservarFacturaHTTPTests(NuevaFacturaTestBase):
         po_line = po.lines.first()
         self._perfil_oc()
 
+        # Sesión 92: precio ya no se envía por POST — se hereda de
+        # PurchaseOrderLine.precio_unitario. IGV_EXE a propósito (mismo
+        # criterio ya aplicado en ProcesarValidacionDocumentosTests):
+        # mantiene el total neto == PayableAmount de la fixture sin
+        # tener que recalcular los números redondos originales.
+        po_line.precio_unitario = Decimal('118.0500')
+        po_line.tax_code = PurchaseOrderLine.TAX_CODE_IGV_EXE
+        po_line.save(update_fields=['precio_unitario', 'tax_code'])
+
         # El proveedor arma y envía la Factura (mismos datos ya probados
         # en NuevaFacturaHTTPFlowTests: cantidad*precio = 1180.50,
         # coincide con el PayableAmount de la fixture firmada).
@@ -2174,7 +2432,7 @@ class AprobarObservarFacturaHTTPTests(NuevaFacturaTestBase):
             'oc_ids': [po.id],
             'serie_comprobante': 'F001', 'numero_comprobante': '999',
             'doc_cur': 'PEN', 'tipo_operacion': '02',
-            f'cantidad_{po_line.id}': '10.0000', f'precio_{po_line.id}': '118.0500',
+            f'cantidad_{po_line.id}': '10.0000',
         })
         factura_id = resp.json()['factura_id']
 

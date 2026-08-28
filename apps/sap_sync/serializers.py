@@ -9,7 +9,24 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrderLine
         # requiere_coa se omite del payload SAP (se gestiona internamente)
-        fields = ['doc_num','line_num', 'item_code', 'description', 'quantity_sap', 'und_medida']
+        # precio_unitario/precio_total_linea/tax_code (sesión 92): datos
+        # reales de SAP (PriceBefDi/LineTotal/TaxCode), obligatorios en
+        # el payload. HALLAZGO real durante la implementación: como el
+        # modelo les da un `default=` (para que la migración no fallara
+        # sobre filas ya existentes, ver models.py), DRF los infiere
+        # automáticamente como required=False — sin este extra_kwargs
+        # explícito, un daemon desactualizado que los omitiera habría
+        # recibido 201 igual, con estos 3 campos silenciosamente en su
+        # default transitorio (0/'IGV'), no un 400 claro.
+        fields = [
+            'doc_num', 'line_num', 'item_code', 'description', 'quantity_sap', 'und_medida',
+            'precio_unitario', 'precio_total_linea', 'tax_code',
+        ]
+        extra_kwargs = {
+            'precio_unitario': {'required': True},
+            'precio_total_linea': {'required': True},
+            'tax_code': {'required': True},
+        }
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
     lines = PurchaseOrderLineSerializer(many=True)

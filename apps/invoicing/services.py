@@ -46,11 +46,11 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import F, Max, Sum
+from django.db.models import Max
 
 from apps.base.decorators import en_grupo
 from apps.operations.models import EntradaMercaderiaLinea
-from apps.sap_sync.models import PurchaseOrder
+from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 from . import services_validacion as sv
 from .models import Factura, FacturaLinea
@@ -60,6 +60,15 @@ from .models import Factura, FacturaLinea
 # FacturaLinea (4 decimales de precisión interna) — evita falsos
 # positivos por diferencias de centavos que no son un error de negocio.
 TOLERANCIA_IMPORTE = Decimal('0.02')
+
+# Tasa de IGV vigente en Perú desde 2011 (18%) — sin catálogo/
+# configuración propia todavía: es un valor estable y de aplicación
+# nacional, no específico de esta instalación de SAP (a diferencia de
+# TaxCode, que sí varía por línea vía PurchaseOrderLine.tax_code). Si
+# alguna vez cambiara o se necesitara por-línea, es el punto a
+# extender — hoy es una tasa única aplicada solo a líneas 'IGV'
+# (gravadas); las 'IGV_EXE' (exoneradas) no suman nada acá.
+TASA_IGV = Decimal('0.18')
 
 
 class InvoicingService:
@@ -281,15 +290,26 @@ class InvoicingService:
             importe_total_xml/
             moneda_xml                   <- extraer_datos_factura(xml)
             estado_cdr                   <- extraer_estado_cdr(cdr)
-            importe_no_coincide          <- importe_total_xml vs. suma
-                                             de FacturaLinea.cantidad*
-                                             precio ya cargadas (solo si
+            importe_no_coincide          <- importe_total_xml vs. suma de
+                                             FacturaLinea.cantidad*precio
+                                             (base NETA, sin IGV) MÁS el
+                                             IGV calculado línea por
+                                             línea según tax_code (sesión
+                                             92 — antes comparaba directo
+                                             contra la base neta, sin
+                                             sumar impuesto, pese a que
+                                             el XML real de una factura
+                                             trae el importe CON IGV
+                                             incluido; ver CLAUDE.md,
+                                             sesión 92, para el detalle
+                                             de por qué era inconsistente
+                                             y cómo se corrigió). Solo si
                                              la Factura ya tiene líneas;
                                              si todavía no tiene ninguna
                                              —normal en BORRADOR antes de
                                              la Sub-fase 3.4— no hay nada
                                              que comparar, se deja en
-                                             False sin marcar)
+                                             False sin marcar
             mensaje_validacion_documentos <- resumen legible de las 3
                                              validaciones, para que la
                                              razón de un bloqueo (o de
@@ -365,19 +385,37 @@ class InvoicingService:
 
         importe_no_coincide = False
         if datos_factura.importe_total is not None:
-            total_lineas = FacturaLinea.objects.filter(factura=factura).aggregate(
-                total=Sum(F('cantidad') * F('precio'))
-            )['total']
-            if total_lineas is not None:
-                diferencia = abs(datos_factura.importe_total - total_lineas)
+            # Sesión 92: se lee tax_code por línea (no un Sum() agregado
+            # con Case/When en SQL) porque el volumen de líneas por
+            # Factura es bajo y la lógica en Python es mucho más clara
+            # de leer/testear que una agregación condicional compleja.
+            lineas = list(
+                FacturaLinea.objects.filter(factura=factura).only('cantidad', 'precio', 'tax_code')
+            )
+            if lineas:
+                total_neto = sum((linea.cantidad * linea.precio for linea in lineas), Decimal('0'))
+                total_igv = sum(
+                    (
+                        linea.cantidad * linea.precio * TASA_IGV
+                        for linea in lineas
+                        if linea.tax_code == PurchaseOrderLine.TAX_CODE_IGV
+                    ),
+                    Decimal('0'),
+                )
+                total_calculado = total_neto + total_igv
+                diferencia = abs(datos_factura.importe_total - total_calculado)
                 importe_no_coincide = diferencia > TOLERANCIA_IMPORTE
                 if importe_no_coincide:
                     mensajes.append(
                         f"Importe: NO COINCIDE — XML declara {datos_factura.importe_total} "
-                        f"{datos_factura.moneda}, suma de líneas = {total_lineas}."
+                        f"{datos_factura.moneda}, calculado = {total_calculado} "
+                        f"(líneas netas {total_neto} + IGV {total_igv})."
                     )
                 else:
-                    mensajes.append("Importe: coincide con la suma de líneas.")
+                    mensajes.append(
+                        f"Importe: coincide (líneas netas {total_neto} + IGV {total_igv} "
+                        f"= {total_calculado})."
+                    )
             else:
                 mensajes.append("Importe: sin líneas cargadas todavía, no se comparó.")
         else:
