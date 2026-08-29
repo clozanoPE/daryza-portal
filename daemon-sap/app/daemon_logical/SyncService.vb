@@ -57,7 +57,8 @@ Public Class SyncService
                     .card_name = row("CardName").ToString(),
                     .e_mail = row("E_Mail").ToString(),
                     .status = "PENDIENTE",
-                    .u_mss_tdb = row("U_MSS_TDB").ToString()
+                    .u_mss_tdb = row("U_MSS_TDB").ToString(),
+                    .doc_cur = row("DocCur").ToString()
                 }
 
                 ' 2. Cargar las líneas desde PQT1 (Detalle)

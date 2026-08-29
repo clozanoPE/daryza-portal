@@ -7,6 +7,12 @@ Public Class PurchaseOrderDTO
     Public Property e_mail As String
     Public Property status As String
     Public Property u_mss_tdb As String
+
+    ' Sesión 93: DocCur de SAP — moneda del documento (texto directo,
+    ' ej. 'USD'/'SOL'), sin mapeo a ningún catálogo. Mismo nombre
+    ' snake_case que espera PurchaseOrderSerializer del lado Django.
+    Public Property doc_cur As String
+
     Public Property lines As New List(Of PurchaseOrderLineDTO)
 End Class
 

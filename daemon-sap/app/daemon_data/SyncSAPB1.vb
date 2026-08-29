@@ -5,13 +5,18 @@ Imports System.Collections.Generic
 Public Class SyncSAPB1
 
     ' Obtiene las cabeceras de cotizaciones pendientes
+    ' Sesión 93: se agrega T0."DocCur" — moneda del documento, confirmado
+    ' por el usuario que trae texto directo ('USD', 'SOL'), sin catálogo/
+    ' mapeo intermedio necesario. Ver CLAUDE.md sesión 93 para el detalle
+    ' completo (impacto en Facturación: doc_cur ya no lo tipea el
+    ' proveedor, se hereda de esta misma columna).
     Public Function GetPendingHeaders() As DataTable
         Dim dt As New DataTable()
         Using conn As HanaConnection = HanaConnectionManager.GetHanaConnection()
             ' U_DRYZ_PC = '1' es nuestro filtro de control
             Dim sql As String = "SELECT T0.""DocEntry"", T0.""DocNum"", T0.""CardCode"", T0.""CardName"" " &
                                 ", (select IFNULL(T1.""E_Mail"", 'clozano@daryza.com') from OCRD T1 where T1.""CardCode"" = T0.""CardCode"") as ""E_Mail"" " &
-                                ", T0.""U_MSS_TDB"" " &
+                                ", T0.""U_MSS_TDB"", T0.""DocCur"" " &
                                 "FROM OPOR T0 WHERE T0.""DocType""='I' and T0.""DocStatus"" = 'O' AND T0.""U_DRYZ_PC"" = '1'"
             Dim cmd As New HanaCommand(sql, conn)
             Dim adapter As New HanaDataAdapter(cmd)
