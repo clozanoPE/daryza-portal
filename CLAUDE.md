@@ -361,6 +361,20 @@ Arranca la Etapa 3 del plan de integración VB.NET ↔ Portal (tabla de 7 etapas
 
 **Fuera de alcance de esta sesión (confirmado explícitamente por el pedido):** ninguna creación de documentos en SAP (GRPO/Factura Preliminar, Etapas 4/5) — `SapServiceLayerClient` no tiene ningún método `PostAsync`/`PatchAsync` todavía, exclusivamente `LoginAsync`/`GetAsync`. No se tocó el lado Django en absoluto esta sesión.
 
+### Sesión 96 (`daemon-sap`) — `ARQUITECTURA_SAP.md`: documento de referencia técnica, sin tocar código
+
+Pedido explícito antes de arrancar la Etapa 4: documentación de arquitectura pura, sin ningún cambio de código. Nuevo `daemon-sap/ARQUITECTURA_SAP.md` — ver el archivo para el contenido completo; resumen de las 5 secciones pedidas:
+
+1. **Diagrama de capas** (ASCII, mismo estilo ya usado en `DOCUMENTACION_TECNICA.md` del Portal): Orquestación (`app`) → Lógica/orquestación de negocio (`daemon_logical`) → 2 mecanismos de acceso a SAP en `daemon_data`, explícitamente separados — SQL directo contra HANA (lectura masiva + 1 flag de control) vs. Service Layer (creación de documentos, la única vía correcta para eso — un `INSERT` SQL directo no replica numeración de series/asientos contables/movimientos de inventario que SAP gestiona internamente).
+2. **Tabla de archivos↔responsabilidad**: los 14 archivos reales de los 4 proyectos, incluido un hallazgo no pedido pero relevante — **`daemon_data/HanaService.vb` es código huérfano, no referenciado en `daemon_data.vbproj`, nunca compila ni corre** (consulta una vista de un contexto no relacionado, con tipos que ni siquiera existen en este proyecto). Documentado explícitamente para que nadie lo confunda con código activo.
+3. **Los 2 puntos de falla reales de la Etapa 3** (`Expect: 100-continue` → 500 vacío; `CookieContainer` no retiene `B1SESSION` → 401 tras login exitoso), con el síntoma HTTP exacto observado, la causa real, cómo confirmarlo si reaparece, y el fix ya aplicado — mismo detalle ya documentado en la sesión 95, reorganizado acá como referencia de debugging futuro, no una sesión narrativa.
+4. **Tabla de las 8 claves de `App.config`** relevantes (HANA + Portal + Service Layer), sin ningún valor real — solo nombre y propósito, más la advertencia de mantener `HanaCompanyDB`/`ServiceLayerCompanyDB` sincronizadas a mano entre entornos.
+5. **Flujo paso a paso de "crear un GRPO"** (Etapa 4) — marcado explícitamente como **diseño confirmado, sin código todavía** (mismo criterio ya establecido, sesión 86: flujo de un solo paso, `BaseType=22`/`BaseEntry`/`BaseLine` para el "Copy From" de la OC). Los campos exactos del payload (`doc_entry_oc`/`base_line`/`item_code`/`cantidad`) se tomaron directo de `apps/operations/serializers.py::EntradaMercaderiaSerializer` (Django, ya real y en producción desde la Fase 3) — no inventados. Confirmado además, por búsqueda explícita en todo `daemon-sap/`, que **ningún archivo VB.NET consume todavía ninguno de los endpoints de `entradas-pendientes`/`facturas-*`** — la tabla del punto 2 lo deja explícito, en vez de asumir que "ya documentados en CLAUDE.md" significa "ya consumidos".
+
+`CLAUDE.md` (este punto de retomada) actualizado para apuntar a `ARQUITECTURA_SAP.md` como lectura obligatoria antes de tocar cualquier cosa de SAP en este proyecto — `CLAUDE.md` sigue siendo la narrativa sesión por sesión, el documento nuevo es la referencia técnica de arquitectura, deliberadamente separada.
+
+**Sin cambios de código en esta sesión** — confirmado, `git status` sobre `daemon-sap/*.vb`/`*.vbproj` sin ninguna modificación.
+
 ## Reglas de esta sesión en adelante (sesión 26)
 
 - **Las notas de implementación NUNCA van como comentario dentro de un `.html` de template** — ni `{# ... #}`, ni `{% comment %}...{% endcomment %}`, ni ninguna otra forma. Ese contenido vive únicamente en `CLAUDE.md` (historial de sesiones) o en el resumen entregado en el chat. Motivo: el patrón `{# ... #}` escrito en varias líneas ya causó texto de implementación visible en pantalla **dos veces** (sesión 20, reincidencia en la sesión 25) — el tokenizer de Django (`django/template/base.py::tag_re = re.compile(r"({%.*?%}|{{.*?}}|{#.*?#})")`, sin la flag `re.DOTALL`) no reconoce un comentario `{# #}` cuyo contenido cruza un salto de línea: en vez de descartarlo, lo trata como texto literal y lo renderiza tal cual. La única forma segura de anotar código con contexto de sesión sin este riesgo es no ponerlo en el `.html` en absoluto.
@@ -2664,9 +2678,11 @@ Estado exacto al pausar — leer esto primero al retomar, antes de releer el his
 
 ---
 
-## 📍 Punto de retomada — integración VB.NET ↔ Portal (`daemon-sap/`, actualizado sesión 95)
+## 📍 Punto de retomada — integración VB.NET ↔ Portal (`daemon-sap/`, actualizado sesión 96)
 
 Distinto del punto de retomada de arriba (ese es sobre la Fase 3 del Portal, ya cerrada). Este es sobre la iniciativa nueva: conectar de verdad el demonio VB.NET con SAP B1 (Etapas 0-3 ya implementadas — lee OC vía HANA, migra Proveedores, y ya tiene un cliente de sesión de Service Layer funcionando; Etapas 4-6, creación real de documentos, siguen sin construir).
+
+**📖 Lectura obligatoria antes de tocar cualquier cosa relacionada con SAP en este proyecto**: `daemon-sap/ARQUITECTURA_SAP.md` (sesión 96) — diagrama de capas (por qué HANA directo y Service Layer son 2 mecanismos que nunca se mezclan), tabla completa de archivos↔responsabilidad, los 2 puntos de falla reales ya encontrados y corregidos en la Etapa 3 (con síntoma exacto observado, para no reinvestigar desde cero si reaparecen), las variables de `App.config` relevantes, y el diseño paso a paso ya confirmado (sin código todavía) de la Etapa 4 (crear un GRPO). Este `CLAUDE.md` sigue siendo la fuente de la narrativa sesión por sesión; `ARQUITECTURA_SAP.md` es la referencia técnica de arquitectura, mantenida aparte a propósito.
 
 **Plan completo, ver la tabla de 6 etapas más arriba** ("Plan de integración VB.NET ↔ Portal", sección `## Estructura del repositorio`). Decisión arquitectónica: **Service Layer**, no DI API — razones completas en esa misma sección.
 
