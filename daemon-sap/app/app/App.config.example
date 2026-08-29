@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<configuration>
+    <startup>
+        <supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8" />
+    </startup>
+
+    <!--
+      Plantilla de App.config (sesión 84) — copiar como "App.config" en
+      esta misma carpeta (app/app/) y completar los valores reales.
+      App.config (sin ".example") está en daemon-sap/.gitignore — nunca
+      se versiona, cada máquina que compila/ejecuta el demonio necesita
+      su propia copia local con credenciales reales.
+    -->
+    <appSettings>
+        <!-- Conexión a SAP HANA (HanaConnectionManager.vb, daemon_data) -->
+        <add key="HanaServer" value="" />
+        <add key="HanaCompanyDB" value="" />
+        <add key="HanaDbUser" value="" />
+        <add key="HanaDbPassword" value="" />
+
+        <!-- Autenticación contra el Portal Daryza (SyncService.vb, daemon_logical) -->
+        <!-- Token DRF del usuario daemon_user en el Portal — generarlo con
+             "python manage.py drf_create_token daemon_user" del lado Django. -->
+        <add key="DaryzaApiToken" value="" />
+        <!-- Sin barra final. Ej: http://127.0.0.1:8000 para desarrollo local,
+             https://nexo.daryza.pe para producción. -->
+        <add key="DaryzaApiBaseUrl" value="" />
+
+        <!-- Sesión 95 (Etapa 3, Sub-etapa 3.1): SAP Service Layer
+             (SapServiceLayerClient.vb, daemon_data) — cliente de sesión,
+             sin creación de documentos todavía. -->
+        <!-- Sin barra final. Ej: https://192.168.10.30:50000/b1s/v1 -->
+        <add key="ServiceLayerBaseUrl" value="" />
+        <add key="ServiceLayerCompanyDB" value="" />
+        <add key="ServiceLayerUser" value="" />
+        <add key="ServiceLayerPassword" value="" />
+    </appSettings>
+</configuration>
