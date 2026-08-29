@@ -39,6 +39,21 @@ Partial Class Service1
             Return
         End If
 
+        ' Sesión 97, Etapa 4: flag manual para correr SOLO el ciclo de
+        ' creación de GRPO — deliberadamente NO wireado al WorkerThread
+        ' permanente todavía (mismo criterio que --test-service-layer):
+        ' esta es la primera vez que el demonio CREA documentos reales
+        ' en SAP, y hacerlo automático cada 17s sin que el usuario haya
+        ' validado el comportamiento primero sería un riesgo real, no
+        ' solo una preferencia de estilo. Wireado al loop automático
+        ' recién cuando se pida explícitamente en una sesión futura.
+        If args.Contains("--sync-grpo") Then
+            Console.WriteLine("=== daemon-sap: ciclo de creación de GRPO (Etapa 4, sesión 97) ===")
+            Dim grpoSync As New GrpoSyncService()
+            grpoSync.ExecuteGrpoSync().GetAwaiter().GetResult()
+            Return
+        End If
+
         ' Sesión 92: modo consola para pruebas manuales end-to-end, sin
         ' instalar el servicio de Windows — Environment.UserInteractive
         ' es True cuando el proceso corre desde una consola real (False

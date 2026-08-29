@@ -71,6 +71,7 @@
     <Compile Include="Logger.vb" />
     <Compile Include="SyncService.vb" />
     <Compile Include="ServiceLayerSmokeTest.vb" />
+    <Compile Include="GrpoSyncService.vb" />
     <Compile Include="My Project\AssemblyInfo.vb" />
     <Compile Include="My Project\Application.Designer.vb">
       <AutoGen>True</AutoGen>

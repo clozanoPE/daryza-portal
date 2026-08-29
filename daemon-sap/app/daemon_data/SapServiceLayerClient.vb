@@ -2,10 +2,15 @@
 '
 ' Sesión 95, Sub-etapa 3.1/3.2 del plan de integración VB.NET ↔ Portal
 ' (ver CLAUDE.md raíz, sección "Plan de integración VB.NET ↔ Portal"):
-' cliente de sesión de SAP Service Layer — SOLO login + lectura por
-' ahora. Ninguna Etapa posterior (GRPO/Factura Preliminar, Etapas 4/5)
-' está implementada todavía; esta clase es exclusivamente la base de
-' conexión.
+' cliente de sesión de SAP Service Layer — login + lectura + (desde la
+' sesión 97) escritura genérica (PostAsync). Esta clase es el ÚNICO
+' punto de contacto HTTP con Service Layer en todo el proyecto — sabe
+' de sesión/cookies/reintentos, pero NADA de qué documento de negocio
+' se está creando (eso vive en GrpoService.vb, que la CONSUME — ver su
+' propio docstring). Mantener esta separación: si un mañana hace falta
+' un tercer tipo de documento (Factura Preliminar, Etapa 5), agrega
+' otra clase tipo GrpoService que reutilice PostAsync/GetAsync de acá,
+' nunca repitas el manejo de sesión/cookies en otro lado.
 '
 ' Decisión de diseño (confirmada en el plan, sesión 85): UNA sola
 ' sesión de Service Layer por ciclo del demonio — login una vez,
@@ -221,16 +226,24 @@ Public Class SapServiceLayerClient
     End Function
 
     ''' <summary>
-    ''' GET de solo lectura contra Service Layer, con la sesión ya
-    ''' activa. Si la sesión expiró (401 — Service Layer expira por
-    ''' inactividad, ~30 min por defecto, configurable del lado de
-    ''' SAP), re-loguea UNA vez de forma automática y reintenta la
-    ''' misma llamada — nunca más de un reintento, para no entrar en un
+    ''' Sesión 97: núcleo compartido de GetAsync/PostAsync — asegura
+    ''' sesión activa (loguea si hace falta), ejecuta el request (vía
+    ''' el delegate `construirRequest`, que arma un HttpRequestMessage
+    ''' NUEVO cada vez que se lo invoca — un HttpRequestMessage no se
+    ''' puede reenviar dos veces en .NET, de ahí que sea una función,
+    ''' no un objeto ya armado), y si la respuesta es 401 (sesión
+    ''' expirada — Service Layer expira por inactividad, ~30 min por
+    ''' defecto, configurable del lado de SAP) re-loguea UNA vez y
+    ''' reintenta — nunca más de un reintento, para no entrar en un
     ''' loop si las credenciales dejaron de ser válidas a mitad de
-    ''' camino. Si no hay ninguna sesión activa todavía, loguea primero.
+    ''' camino. Nunca lanza — cualquier excepción (red, timeout) se
+    ''' traduce a Exitoso=False.
     ''' </summary>
-    ''' <param name="relativeUrl">Ruta relativa a BaseUrl, ej. "BusinessPartners('P123')" (sin barra inicial).</param>
-    Public Async Function GetAsync(relativeUrl As String) As Task(Of ServiceLayerResult)
+    ''' <param name="descripcionOperacion">Solo para el Mensaje de error, ej. "GET '...'" o "POST '...'"</param>
+    Private Async Function EjecutarConReintentoAsync(
+        construirRequest As Func(Of HttpRequestMessage),
+        descripcionOperacion As String
+    ) As Task(Of ServiceLayerResult)
         If Not _SesionActiva Then
             Dim loginResult = Await LoginAsync()
             If Not loginResult.Exitoso Then
@@ -239,14 +252,14 @@ Public Class SapServiceLayerClient
         End If
 
         Try
-            Dim EjecutarGet =
+            Dim EnviarUnaVez =
                 Async Function() As Task(Of HttpResponseMessage)
-                    Dim req = New HttpRequestMessage(HttpMethod.Get, relativeUrl)
+                    Dim req = construirRequest()
                     req.Headers.Add("Cookie", ArmarHeaderCookie())
                     Return Await _client.SendAsync(req)
                 End Function
 
-            Dim response = Await EjecutarGet()
+            Dim response = Await EnviarUnaVez()
 
             If response.StatusCode = HttpStatusCode.Unauthorized Then
                 ' Sesión expirada — re-login una única vez y reintento.
@@ -255,7 +268,7 @@ Public Class SapServiceLayerClient
                 If Not loginResult.Exitoso Then
                     Return loginResult
                 End If
-                response = Await EjecutarGet()
+                response = Await EnviarUnaVez()
             End If
 
             Dim contenido = Await response.Content.ReadAsStringAsync()
@@ -263,14 +276,49 @@ Public Class SapServiceLayerClient
                 .Exitoso = response.IsSuccessStatusCode,
                 .StatusCode = CInt(response.StatusCode),
                 .Contenido = contenido,
-                .Mensaje = If(response.IsSuccessStatusCode, "OK.", $"GET rechazado: {response.StatusCode} - {contenido}")
+                .Mensaje = If(response.IsSuccessStatusCode, "OK.", $"{descripcionOperacion} rechazado: {response.StatusCode} - {contenido}")
             }
         Catch ex As Exception
             Return New ServiceLayerResult With {
                 .Exitoso = False, .StatusCode = 0, .Contenido = "",
-                .Mensaje = $"Error de conexión durante GET '{relativeUrl}': {ex.Message}"
+                .Mensaje = $"Error de conexión durante {descripcionOperacion}: {ex.Message}"
             }
         End Try
+    End Function
+
+    ''' <summary>
+    ''' GET de solo lectura contra Service Layer, con la sesión ya
+    ''' activa (login automático si hace falta, re-login automático
+    ''' ante un 401) — ver EjecutarConReintentoAsync.
+    ''' </summary>
+    ''' <param name="relativeUrl">Ruta relativa a BaseUrl, ej. "BusinessPartners('P123')" (sin barra inicial).</param>
+    Public Async Function GetAsync(relativeUrl As String) As Task(Of ServiceLayerResult)
+        Return Await EjecutarConReintentoAsync(
+            Function() New HttpRequestMessage(HttpMethod.Get, relativeUrl),
+            $"GET '{relativeUrl}'"
+        )
+    End Function
+
+    ''' <summary>
+    ''' Sesión 97 (Etapa 4): POST genérico contra Service Layer, con la
+    ''' sesión ya activa (mismo login/re-login automático que GetAsync).
+    ''' Genérico a propósito — no sabe nada de qué documento de negocio
+    ''' se está creando; eso es responsabilidad exclusiva del llamador
+    ''' (ej. GrpoService.vb), que arma el JSON del body. Reutilizable
+    ''' tal cual para cualquier escritura futura contra Service Layer
+    ''' (Etapa 5, Factura Preliminar).
+    ''' </summary>
+    ''' <param name="relativeUrl">Ruta relativa a BaseUrl, ej. "PurchaseDeliveryNotes" (sin barra inicial).</param>
+    ''' <param name="bodyJson">Body ya serializado a JSON — esta clase no conoce la forma del documento.</param>
+    Public Async Function PostAsync(relativeUrl As String, bodyJson As String) As Task(Of ServiceLayerResult)
+        Return Await EjecutarConReintentoAsync(
+            Function()
+                Dim req = New HttpRequestMessage(HttpMethod.Post, relativeUrl)
+                req.Content = New StringContent(bodyJson, Encoding.UTF8, "application/json")
+                Return req
+            End Function,
+            $"POST '{relativeUrl}'"
+        )
     End Function
 
     Public Sub Dispose() Implements IDisposable.Dispose
