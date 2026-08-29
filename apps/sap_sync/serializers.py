@@ -34,7 +34,15 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrder
         # u_mss_tdb viene del UDF de SAP; requerido para la lógica de ruteo
-        fields = ['doc_entry', 'doc_num', 'card_code', 'card_name', 'e_mail', 'status', 'u_mss_tdb', 'lines']
+        # doc_cur (sesión 93): DocCur de SAP, moneda del documento — mismo
+        # criterio ya aplicado a precio_unitario/precio_total_linea/
+        # tax_code (extra_kwargs abajo): required=True explícito, porque
+        # el default='' del modelo haría que DRF lo infiera required=False
+        # por su cuenta.
+        fields = [
+            'doc_entry', 'doc_num', 'card_code', 'card_name', 'e_mail', 'status',
+            'u_mss_tdb', 'doc_cur', 'lines',
+        ]
         # doc_entry/doc_num son unique=True en el modelo: DRF les agrega
         # automáticamente un UniqueValidator, que rechaza con 400 CUALQUIER
         # POST cuyo doc_entry/doc_num ya exista en BD — antes de que create()
@@ -47,6 +55,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'doc_entry': {'validators': []},
             'doc_num': {'validators': []},
+            'doc_cur': {'required': True},
         }
 
     def create(self, validated_data):

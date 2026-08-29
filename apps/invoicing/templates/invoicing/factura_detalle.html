@@ -104,9 +104,8 @@
                  value="{{ factura.numero_comprobante|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
         </div>
         <div class="col-6">
-          <label class="form-label text-xs fw-bold">Moneda</label>
-          <input type="text" name="doc_cur" class="form-control form-control-sm rounded-3" maxlength="10"
-                 value="{{ factura.doc_cur|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
+          <label class="form-label text-xs fw-bold">Moneda (de la OC)</label>
+          <div class="form-control form-control-sm rounded-3 bg-light text-xs">{{ factura.doc_cur|default:'—' }}</div>
         </div>
         <div class="col-6">
           <label class="form-label text-xs fw-bold">N° Doc. Proveedor</label>
@@ -273,12 +272,17 @@
             {% if linea.aplica_retencion %}
             <div class="mt-1">
               {% if linea.documento_retencion %}
-              <span class="badge bg-success-subtle text-success text-xxs"><i class="bi bi-check-circle me-1"></i>Cargado</span>
+              <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="badge bg-success-subtle text-success text-xxs"><i class="bi bi-check-circle me-1"></i>Cargado</span>
+                <a href="{{ linea.documento_retencion }}" target="_blank" class="text-xxs">
+                  <i class="bi bi-eye me-1"></i>Ver
+                </a>
+              </div>
               {% endif %}
               {% if puede_editar %}
               <input type="file" class="form-control form-control-sm rounded-3 mt-1" id="file-retencion-{{ linea.id }}" accept=".pdf">
               <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'retencion')">
-                <i class="bi bi-upload me-1"></i>Subir
+                <i class="bi bi-upload me-1"></i>{% if linea.documento_retencion %}Reemplazar{% else %}Subir{% endif %}
               </button>
               {% endif %}
             </div>
@@ -294,12 +298,17 @@
             {% if linea.aplica_detraccion %}
             <div class="mt-1">
               {% if linea.documento_detraccion %}
-              <span class="badge bg-success-subtle text-success text-xxs"><i class="bi bi-check-circle me-1"></i>Cargado</span>
+              <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="badge bg-success-subtle text-success text-xxs"><i class="bi bi-check-circle me-1"></i>Cargado</span>
+                <a href="{{ linea.documento_detraccion }}" target="_blank" class="text-xxs">
+                  <i class="bi bi-eye me-1"></i>Ver
+                </a>
+              </div>
               {% endif %}
               {% if puede_editar %}
               <input type="file" class="form-control form-control-sm rounded-3 mt-1" id="file-detraccion-{{ linea.id }}" accept=".pdf">
               <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'detraccion')">
-                <i class="bi bi-upload me-1"></i>Subir
+                <i class="bi bi-upload me-1"></i>{% if linea.documento_detraccion %}Reemplazar{% else %}Subir{% endif %}
               </button>
               {% endif %}
             </div>

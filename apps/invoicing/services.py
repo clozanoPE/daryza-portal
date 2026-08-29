@@ -286,10 +286,31 @@ class InvoicingService:
             firma_valida                 <- validar_firma_xml(xml)
             serie_comprobante/
             numero_comprobante/
-            doc_cur/
             importe_total_xml/
             moneda_xml                   <- extraer_datos_factura(xml)
             estado_cdr                   <- extraer_estado_cdr(cdr)
+            moneda_no_coincide           <- moneda_xml vs. doc_cur (sesión
+                                             93 — doc_cur ya NO se
+                                             sobreescribe acá con el valor
+                                             del XML: desde la sesión 93
+                                             es un campo bloqueado,
+                                             heredado de la OC al crear la
+                                             Factura, y es justamente
+                                             contra ESE valor real que se
+                                             compara la moneda declarada
+                                             en el XML. Solo se marca si
+                                             ambos valores están
+                                             poblados — un doc_cur vacío
+                                             (OC sin DocCur sincronizado
+                                             todavía) no cuenta como
+                                             mismatch. Sin conversión de
+                                             moneda: solo detección y
+                                             bloqueo, ver CLAUDE.md sesión
+                                             93 para la investigación
+                                             completa de por qué la
+                                             comparación de importe de
+                                             abajo también dependía de
+                                             que ambas monedas coincidan
             importe_no_coincide          <- importe_total_xml vs. suma de
                                              FacturaLinea.cantidad*precio
                                              (base NETA, sin IGV) MÁS el
@@ -310,11 +331,11 @@ class InvoicingService:
                                              la Sub-fase 3.4— no hay nada
                                              que comparar, se deja en
                                              False sin marcar
-            mensaje_validacion_documentos <- resumen legible de las 3
+            mensaje_validacion_documentos <- resumen legible de las 4
                                              validaciones, para que la
                                              razón de un bloqueo (o de
                                              que todo esté OK) no quede
-                                             oculta en 3 campos sueltos
+                                             oculta en 4 campos sueltos
 
         No-op silencioso si todavía falta alguno de los 3 archivos —
         permite invocarla también de forma defensiva/idempotente desde
@@ -383,6 +404,24 @@ class InvoicingService:
             f"CDR SUNAT: {estado_cdr.estado} (código {estado_cdr.response_code}) — {estado_cdr.descripcion}"
         )
 
+        # Sesión 93, punto 3: doc_cur ya es el valor real de la OC (no se
+        # sobreescribe con el XML, ver más abajo) — se compara tal cual
+        # contra la moneda que el XML realmente declara. Solo se marca
+        # mismatch si AMBOS valores están poblados (evita un falso
+        # positivo si la OC todavía no tiene doc_cur sincronizado).
+        moneda_no_coincide = bool(factura.doc_cur) and bool(datos_factura.moneda) and (
+            datos_factura.moneda != factura.doc_cur
+        )
+        if moneda_no_coincide:
+            mensajes.append(
+                f"Moneda: NO COINCIDE — XML declara '{datos_factura.moneda}', "
+                f"la OC está en '{factura.doc_cur}'."
+            )
+        elif factura.doc_cur and datos_factura.moneda:
+            mensajes.append(f"Moneda: coincide ({factura.doc_cur}).")
+        else:
+            mensajes.append("Moneda: sin datos suficientes para comparar, no se comparó.")
+
         importe_no_coincide = False
         if datos_factura.importe_total is not None:
             # Sesión 92: se lee tax_code por línea (no un Sum() agregado
@@ -421,19 +460,27 @@ class InvoicingService:
         else:
             mensajes.append("Importe: el XML no trae PayableAmount, no se comparó.")
 
+        # Sesión 93: doc_cur YA NO se toca acá — desde esta sesión es un
+        # campo bloqueado (heredado de la OC al crear la Factura, no
+        # editable, ver services_borrador.py) y es justamente el valor
+        # real contra el que se comparó la moneda del XML arriba;
+        # sobreescribirlo con datos_factura.moneda (como hacía antes)
+        # habría hecho que la comparación de moneda_no_coincide nunca
+        # pudiera detectar nada — factura.doc_cur habría terminado
+        # siendo siempre igual a datos_factura.moneda por construcción.
         factura.firma_valida = resultado_firma.valido
         factura.serie_comprobante = serie
         factura.numero_comprobante = numero
-        factura.doc_cur = datos_factura.moneda or factura.doc_cur
         factura.importe_total_xml = datos_factura.importe_total
         factura.moneda_xml = datos_factura.moneda
         factura.estado_cdr = estado_cdr.estado
         factura.importe_no_coincide = importe_no_coincide
+        factura.moneda_no_coincide = moneda_no_coincide
         factura.mensaje_validacion_documentos = '\n'.join(mensajes)
         factura.save(update_fields=[
-            'firma_valida', 'serie_comprobante', 'numero_comprobante', 'doc_cur',
+            'firma_valida', 'serie_comprobante', 'numero_comprobante',
             'importe_total_xml', 'moneda_xml', 'estado_cdr', 'importe_no_coincide',
-            'mensaje_validacion_documentos', 'updated_at',
+            'moneda_no_coincide', 'mensaje_validacion_documentos', 'updated_at',
         ])
         return factura
 
@@ -459,6 +506,11 @@ class InvoicingService:
         if factura.importe_no_coincide:
             errores.append(
                 "el importe del XML no coincide con el total calculado de las líneas de la Factura."
+            )
+        if factura.moneda_no_coincide:
+            errores.append(
+                f"la moneda del XML ('{factura.moneda_xml}') no coincide con la moneda "
+                f"real de la Orden de Compra ('{factura.doc_cur}')."
             )
         return errores
 

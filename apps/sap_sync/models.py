@@ -22,6 +22,17 @@ class PurchaseOrder(TimeStampedModel):
         help_text="UDF SAP: 'MP' para Materia Prima, vacío/otro para Comercial."
     )
 
+    # Sesión 93: DocCur de SAP — confirmado por el usuario que trae texto
+    # directo ('USD', 'SOL'), sin catálogo/mapeo intermedio necesario.
+    # blank=True/default='' (no choices) porque no hay una lista cerrada
+    # de valores posibles confirmada; una OC vieja sin este dato queda en
+    # '' hasta el próximo resync (mismo criterio ya usado para 'activa'
+    # y los campos de precio/IGV, sesiones 49/92).
+    doc_cur = models.CharField(
+        max_length=5, blank=True, default='',
+        help_text="DocCur de SAP: moneda del documento (texto directo, ej. 'USD'/'SOL').",
+    )
+
     @property
     def es_materia_prima(self):
         """True si la OC es de tipo Materia Prima (requiere Calidad)."""

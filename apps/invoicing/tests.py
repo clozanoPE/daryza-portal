@@ -854,6 +854,14 @@ class ProcesarValidacionDocumentosTests(InvoicingTestBase):
         self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
 
         factura = self._crear_factura()
+        # Sesión 93: doc_cur ya NO se sobreescribe con datos_factura.
+        # moneda — se fija acá explícitamente, imitando lo que
+        # _crear_factura_y_lineas ya hace siempre en la vida real
+        # (heredarlo de la OC al crear), para poder verificar que se
+        # compara contra el XML (que también declara 'PEN') Y que el
+        # valor queda intacto después de procesar.
+        factura.doc_cur = 'PEN'
+        factura.save(update_fields=['doc_cur'])
         self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
 
         factura.refresh_from_db()
@@ -861,9 +869,11 @@ class ProcesarValidacionDocumentosTests(InvoicingTestBase):
         self.assertEqual(factura.estado_cdr, 'ACEPTADO')
         self.assertEqual(factura.serie_comprobante, 'F001')
         self.assertEqual(factura.numero_comprobante, '123')
-        self.assertEqual(factura.doc_cur, 'PEN')
+        self.assertEqual(factura.doc_cur, 'PEN')  # intacto, no lo tocó el procesamiento
         self.assertEqual(factura.importe_total_xml, Decimal('1180.50'))
         self.assertEqual(factura.moneda_xml, 'PEN')
+        self.assertFalse(factura.moneda_no_coincide)
+        self.assertIn('Moneda: coincide', factura.mensaje_validacion_documentos)
         # Sin FacturaLinea todavía (Sub-fase 3.4, sin construir) -> nada
         # que comparar, no se marca el flag.
         self.assertFalse(factura.importe_no_coincide)
@@ -1009,6 +1019,65 @@ class ProcesarValidacionDocumentosTests(InvoicingTestBase):
 
         factura.refresh_from_db()
         self.assertEqual(factura.estado, 'BORRADOR')
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_moneda_no_coincide_bloquea_el_envio_a_revision(self, mock_cls):
+        """
+        Sesión 93, punto 3: la Factura con doc_cur heredado de una OC en
+        una moneda distinta a la que el XML real declara (la fixture
+        'factura_sintetica_firmada.xml' está en PEN) debe bloquear el
+        envío a revisión con un mensaje claro — mismo tratamiento que
+        firma inválida/CDR rechazado/importe no coincide. Sin ninguna
+        conversión: solo detección y bloqueo (instrucción explícita).
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')  # PayableAmount en PEN
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        factura = self._crear_factura()
+        factura.doc_cur = 'USD'  # la OC real de esta Factura está en USD
+        factura.save(update_fields=['doc_cur'])
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertTrue(factura.firma_valida)  # la firma sí es válida — el bloqueo es solo por la moneda
+        self.assertEqual(factura.estado_cdr, 'ACEPTADO')
+        self.assertEqual(factura.moneda_xml, 'PEN')
+        self.assertEqual(factura.doc_cur, 'USD')  # intacto, no lo pisó el XML
+        self.assertTrue(factura.moneda_no_coincide)
+        self.assertIn('Moneda: NO COINCIDE', factura.mensaje_validacion_documentos)
+
+        with self.assertRaises(ValidationError) as cm:
+            InvoicingService.enviar_a_revision(factura)
+        self.assertIn('moneda', str(cm.exception).lower())
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'BORRADOR')  # no avanzó
+
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_moneda_sin_doc_cur_en_la_oc_no_bloquea_por_moneda(self, mock_cls):
+        """
+        Una Factura cuya OC todavía no tiene doc_cur poblado (blank/None
+        — dato transitorio, self-healing en el próximo resync real,
+        mismo criterio ya usado para otros campos de PurchaseOrderLine)
+        no debe bloquear por moneda — no hay nada real contra qué
+        comparar, así que no se marca ningún falso positivo.
+        """
+        xml_bytes = _leer_fixture('factura_sintetica_firmada.xml')
+        cdr_bytes = _leer_fixture('cdr_sintetico_aceptado.xml')
+        self._mock_onedrive(mock_cls, xml_bytes, cdr_bytes)
+
+        factura = self._crear_factura()  # doc_cur queda en None (default del helper)
+        self._cargar_los_3_archivos(factura, xml_bytes, cdr_bytes)
+
+        factura.refresh_from_db()
+        self.assertIsNone(factura.doc_cur)
+        self.assertFalse(factura.moneda_no_coincide)
+        self.assertIn('Moneda: sin datos suficientes', factura.mensaje_validacion_documentos)
+
+        InvoicingService.enviar_a_revision(factura)  # no debe lanzar por moneda
+        factura.refresh_from_db()
+        self.assertEqual(factura.estado, 'EN_REVISION_COMPRAS')
 
     @patch('apps.invoicing.services_archivos.OneDriveClient')
     def test_importe_no_coincide_marca_el_flag_y_bloquea_el_envio_a_revision(self, mock_cls):
@@ -1532,8 +1601,12 @@ class NuevaFacturaTestBase(InvoicingTestBase):
 
     @staticmethod
     def _cabecera_minima():
+        # Sesión 93: doc_cur ya no va acá — _crear_factura_y_lineas lo
+        # deriva de la(s) OC seleccionadas (PurchaseOrder.doc_cur), no
+        # del payload; incluirlo acá colisionaría con el kwarg explícito
+        # doc_cur=moneda que ese método ya pasa a Factura.objects.create.
         return {
-            'doc_cur': 'PEN', 'tax_date': None, 'doc_due_date': None,
+            'tax_date': None, 'doc_due_date': None,
             'num_at_card': 'F001-1', 'serie_comprobante': 'F001',
             'numero_comprobante': '1', 'tipo_operacion': '02',
             'clasificacion_bienes_servicios': 1,
@@ -1722,6 +1795,46 @@ class CrearFacturaDesdeOCsTests(NuevaFacturaTestBase):
         self.assertEqual(linea.documento_retencion, 'https://onedrive.example.com/retencion.pdf')
         self.assertTrue(linea.hash_documento_retencion)
 
+    @patch('apps.invoicing.services_archivos.OneDriveClient')
+    def test_documento_retencion_ya_cargado_muestra_link_ver_en_el_detalle(self, mock_cls):
+        """
+        Bug real reportado: el documento de retención SÍ se guardaba
+        correctamente (DB + OneDrive, Fase 2 de la sesión 79) — el
+        problema era que factura_detalle.html mostraba solo un badge
+        "Cargado" sin ningún link para verlo, a diferencia del patrón ya
+        usado para COA (badge + link "Ver" clicable, botón "Reemplazar"
+        en vez de "Subir" cuando ya existe un documento). Verifica el
+        HTML real renderizado, no solo el dato en BD.
+        """
+        mock_cls.return_value.upload_documento_factura.return_value = 'https://onedrive.example.com/retencion.pdf'
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[{
+                'po_line': po_line, 'cantidad': Decimal('5.0000'),
+                'aplica_retencion': True, 'aplica_detraccion': False,
+                'archivo_retencion': SimpleUploadedFile(
+                    'r.pdf', _leer_fixture('pdf_valido_minimo.pdf'), content_type='application/pdf',
+                ),
+            }],
+            usuario=self.proveedor,
+        )
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.get(f'/invoicing/factura/{factura.id}/')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'https://onedrive.example.com/retencion.pdf')
+        self.assertContains(resp, 'bi-eye')  # ícono del link "Ver", mismo patrón que COA
+        self.assertContains(resp, 'Ver')
+        self.assertContains(resp, 'Reemplazar')
+        self.assertNotContains(resp, 'Subir')  # el único botón de subida visible ya dice "Reemplazar"
+
     def test_oc_de_otro_proveedor_rechaza(self):
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
         po = ticket.appointment.purchase_orders.first()
@@ -1793,6 +1906,90 @@ class CrearFacturaDesdeOCsTests(NuevaFacturaTestBase):
         self.assertEqual(linea.precio_oc, Decimal('7.0000'))
         self.assertNotEqual(linea.precio, Decimal('99999.0000'))
 
+    def test_doc_cur_se_hereda_de_la_oc(self):
+        """
+        Sesión 93, punto 2 del pedido: doc_cur ya no se pide al
+        proveedor — se hereda de PurchaseOrder.doc_cur (dato real de
+        SAP). _cabecera_minima() ya no incluye 'doc_cur' en absoluto.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po.doc_cur = 'USD'
+        po.save(update_fields=['doc_cur'])
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[{
+                'po_line': po_line, 'cantidad': Decimal('1.0000'),
+                'aplica_retencion': False, 'aplica_detraccion': False,
+            }],
+            usuario=self.proveedor,
+        )
+
+        self.assertEqual(factura.doc_cur, 'USD')
+
+    def test_ocs_con_monedas_distintas_rechaza_sin_crear_nada(self):
+        """Sesión 93, punto 2: mismo criterio que el candado de sede."""
+        ticket1 = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        ticket2 = self._finalizar_segundo_ticket(cantidad_real=Decimal('4.0000'))
+        po1 = ticket1.appointment.purchase_orders.first()
+        po2 = ticket2.appointment.purchase_orders.first()
+        po1.doc_cur = 'PEN'
+        po1.save(update_fields=['doc_cur'])
+        po2.doc_cur = 'USD'
+        po2.save(update_fields=['doc_cur'])
+        po_line1 = po1.lines.first()
+        po_line2 = po2.lines.first()
+        perfil = self._perfil_oc()
+
+        with self.assertRaises(ValidationError):
+            sb.crear_factura_desde_ocs(
+                proveedor=perfil, purchase_order_ids=[po1.id, po2.id],
+                cabecera=self._cabecera_minima(),
+                lineas_payload=[
+                    {'po_line': po_line1, 'cantidad': Decimal('10.0000'),
+                     'aplica_retencion': False, 'aplica_detraccion': False},
+                    {'po_line': po_line2, 'cantidad': Decimal('4.0000'),
+                     'aplica_retencion': False, 'aplica_detraccion': False},
+                ],
+                usuario=self.proveedor,
+            )
+
+        self.assertEqual(Factura.objects.count(), 0)
+        self.assertEqual(FacturaOrdenCompra.objects.count(), 0)
+
+    def test_doc_cur_en_el_payload_se_ignora_al_crear(self):
+        """
+        Sesión 93: mismo criterio que test_precio_en_el_payload_se_
+        ignora_siempre_usa_po_line — un 'doc_cur' fabricado a mano en
+        `cabecera` (bypaseando la vista, que ya lo excluye vía
+        _parsear_cabecera) no tiene ningún efecto; el valor real siempre
+        es PurchaseOrder.doc_cur.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po.doc_cur = 'PEN'
+        po.save(update_fields=['doc_cur'])
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+
+        cabecera_manipulada = dict(self._cabecera_minima(), doc_cur='USD')
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=cabecera_manipulada,
+            lineas_payload=[{
+                'po_line': po_line, 'cantidad': Decimal('1.0000'),
+                'aplica_retencion': False, 'aplica_detraccion': False,
+            }],
+            usuario=self.proveedor,
+        )
+
+        self.assertEqual(factura.doc_cur, 'PEN')
+        self.assertNotEqual(factura.doc_cur, 'USD')
+
 
 class EditarFacturaTests(NuevaFacturaTestBase):
     """Punto 6 del pedido: edición bloqueada tras EN_REVISION_COMPRAS."""
@@ -1804,8 +2001,14 @@ class EditarFacturaTests(NuevaFacturaTestBase):
         factura = self._crear_factura(estado='EN_REVISION_COMPRAS', proveedor=perfil)
         linea = self._crear_factura_linea(factura, po_line, cantidad=Decimal('1.0000'))
 
+        # Sesión 93: doc_cur ya no es un campo editable en absoluto (se
+        # usaba acá como campo de prueba genérico, sin relación con lo
+        # que este test verifica realmente — el candado de ESTADO). Se
+        # reemplaza por num_at_card, un campo que sigue siendo editable
+        # en BORRADOR/OBSERVADA, para seguir probando exactamente el
+        # mismo candado sin depender de un campo ya bloqueado.
         with self.assertRaises(ValidationError):
-            sb.editar_cabecera_factura(factura, self.proveedor, {'doc_cur': 'USD'})
+            sb.editar_cabecera_factura(factura, self.proveedor, {'num_at_card': 'F001-999'})
 
         with self.assertRaises(ValidationError):
             sb.editar_linea_factura(linea, self.proveedor, cantidad=Decimal('2.0000'))
@@ -1813,7 +2016,7 @@ class EditarFacturaTests(NuevaFacturaTestBase):
         # Nada cambió.
         factura.refresh_from_db()
         linea.refresh_from_db()
-        self.assertIsNone(factura.doc_cur)
+        self.assertIsNone(factura.num_at_card)
         self.assertEqual(linea.cantidad, Decimal('1.0000'))
 
     def test_edicion_permitida_en_borrador_recalcula_difiere_de_oc(self):
@@ -1829,9 +2032,11 @@ class EditarFacturaTests(NuevaFacturaTestBase):
         self.assertEqual(linea.cantidad, Decimal('1.0000'))
         self.assertTrue(linea.difiere_de_oc)
 
-        sb.editar_cabecera_factura(factura, self.proveedor, {'doc_cur': 'USD'})
+        # Sesión 93: mismo reemplazo que el test anterior (doc_cur ya no
+        # es editable) — num_at_card sigue siéndolo.
+        sb.editar_cabecera_factura(factura, self.proveedor, {'num_at_card': 'F001-999'})
         factura.refresh_from_db()
-        self.assertEqual(factura.doc_cur, 'USD')
+        self.assertEqual(factura.num_at_card, 'F001-999')
 
     def test_edicion_excede_saldo_rechaza(self):
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
@@ -1889,6 +2094,48 @@ class EditarFacturaTests(NuevaFacturaTestBase):
         linea.refresh_from_db()
         self.assertEqual(linea.precio, Decimal('12.0000'))  # sin cambios
 
+    def test_editar_cabecera_ajax_rechaza_doc_cur_en_el_payload_via_post_directo(self):
+        """
+        Sesión 93, punto 2: mismo criterio exacto que el rechazo de
+        'precio' de arriba — un 'doc_cur' fabricado a mano en el POST de
+        edición de cabecera se rechaza explícito, ANTES de tocar el
+        servicio; el valor real (heredado de la OC al crear) queda
+        intacto, y el resto de campos del mismo payload tampoco se
+        aplica (rechazo de la request completa, no un ignorado parcial).
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po.doc_cur = 'PEN'
+        po.save(update_fields=['doc_cur'])
+        po_line = po.lines.first()
+        perfil = self._perfil_oc()
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[{
+                'po_line': po_line, 'cantidad': Decimal('1.0000'),
+                'aplica_retencion': False, 'aplica_detraccion': False,
+            }],
+            usuario=self.proveedor,
+        )
+        self.assertEqual(factura.doc_cur, 'PEN')
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.post(
+            f'/invoicing/factura/{factura.id}/editar/',
+            data=json.dumps({'doc_cur': 'USD', 'num_at_card': 'F001-999'}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['status'], 'error')
+
+        factura.refresh_from_db()
+        self.assertEqual(factura.doc_cur, 'PEN')  # sin cambios
+        # num_at_card='F001-1' viene de _cabecera_minima(), usada al
+        # crear — tampoco se aplicó el 'F001-999' del payload rechazado.
+        self.assertEqual(factura.num_at_card, 'F001-1')
+
 
 class NuevaFacturaHTTPFlowTests(NuevaFacturaTestBase):
     """
@@ -1934,7 +2181,7 @@ class NuevaFacturaHTTPFlowTests(NuevaFacturaTestBase):
         resp = self.client.post('/invoicing/nueva/crear/', data={
             'oc_ids': [po.id],
             'serie_comprobante': 'F001', 'numero_comprobante': '999',
-            'doc_cur': 'PEN', 'tipo_operacion': '02',
+            'tipo_operacion': '02',
             f'cantidad_{po_line.id}': '10.0000',
         })
         self.assertEqual(resp.status_code, 200)
@@ -2039,7 +2286,7 @@ class NuevaFacturaHTTPFlowTests(NuevaFacturaTestBase):
         resp = self.client.post('/invoicing/nueva/crear/', data={
             'oc_ids': [po.id],
             'serie_comprobante': 'F001', 'numero_comprobante': '999',
-            'doc_cur': 'PEN', 'tipo_operacion': '02',
+            'tipo_operacion': '02',
             f'cantidad_{po_line.id}': '1.0000',
             f'precio_{po_line.id}': '99999.0000',  # intento de manipulación
         })
@@ -2165,8 +2412,12 @@ class CrearFacturaDesdeOCsConcurrenciaTests(TransactionTestCase):
 
     @staticmethod
     def _cabecera_minima():
+        # Sesión 93: doc_cur ya no va acá — _crear_factura_y_lineas lo
+        # deriva de la(s) OC seleccionadas (PurchaseOrder.doc_cur), no
+        # del payload; incluirlo acá colisionaría con el kwarg explícito
+        # doc_cur=moneda que ese método ya pasa a Factura.objects.create.
         return {
-            'doc_cur': 'PEN', 'tax_date': None, 'doc_due_date': None,
+            'tax_date': None, 'doc_due_date': None,
             'num_at_card': 'F001-1', 'serie_comprobante': 'F001',
             'numero_comprobante': '1', 'tipo_operacion': '02',
             'clasificacion_bienes_servicios': 1,
@@ -2431,7 +2682,7 @@ class AprobarObservarFacturaHTTPTests(NuevaFacturaTestBase):
         resp = self.client.post('/invoicing/nueva/crear/', data={
             'oc_ids': [po.id],
             'serie_comprobante': 'F001', 'numero_comprobante': '999',
-            'doc_cur': 'PEN', 'tipo_operacion': '02',
+            'tipo_operacion': '02',
             f'cantidad_{po_line.id}': '10.0000',
         })
         factura_id = resp.json()['factura_id']
@@ -2486,9 +2737,11 @@ class AprobarObservarFacturaHTTPTests(NuevaFacturaTestBase):
         # Verifica en carne propia (no solo por lectura de código, punto
         # 4 del pedido) que el candado de la Sub-fase 3.2/3.4 sí permite
         # reeditar mientras la Factura está OBSERVADA.
+        # Sesión 93: doc_cur ya no se envía acá — se rechazaría el POST
+        # completo (ya no es editable, ver test dedicado más abajo).
         resp = self.client.post(
             f'/invoicing/factura/{factura_id}/editar/',
-            data=json.dumps({'doc_cur': 'PEN', 'num_at_card': 'F001-999-CORREGIDO'}),
+            data=json.dumps({'num_at_card': 'F001-999-CORREGIDO'}),
             content_type='application/json',
         )
         self.assertEqual(resp.json()['status'], 'success')

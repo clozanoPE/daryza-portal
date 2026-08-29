@@ -9,15 +9,19 @@ candado de saldo por línea (apps/invoicing/services.py).
 
 DECISIÓN — Sub-fase 3.3 (validación de negocio sobre los 3 archivos):
 firma_valida/estado_cdr/importe_total_xml/moneda_xml/importe_no_coincide/
-mensaje_validacion_documentos se poblan automáticamente vía
-InvoicingService.procesar_validacion_documentos, disparado desde
+moneda_no_coincide/mensaje_validacion_documentos se poblan automáticamente
+vía InvoicingService.procesar_validacion_documentos, disparado desde
 services_archivos.cargar_archivo_factura en cuanto xml_file/pdf_file/
 cdr_xml_file quedan los 3 presentes — no hace falta ningún endpoint nuevo
 para esto (Sub-fase 3.4/3.5, todavía sin construir). El candado real (no
 avanzar a EN_REVISION_COMPRAS con firma inválida/CDR rechazado/importe no
-coincide) vive en InvoicingService.enviar_a_revision — mismo principio ya
-establecido en este archivo: la máquina de estados de negocio la valida
-el servicio, no el modelo.
+coincide/moneda no coincide) vive en InvoicingService.enviar_a_revision —
+mismo principio ya establecido en este archivo: la máquina de estados de
+negocio la valida el servicio, no el modelo. moneda_no_coincide (sesión
+93): compara moneda_xml contra doc_cur — desde esta misma sesión, doc_cur
+dejó de ser editable por el proveedor y pasó a heredarse de la OC al
+crear la Factura, así que la comparación es contra el valor real de SAP,
+no contra un valor que el propio XML ya había sobreescrito antes.
 
 DECISIÓN — proveedor (Factura.proveedor): reemplazado por FK a
 `apps.base.SupplierProfile` (sesión posterior a la creación de este
@@ -246,13 +250,33 @@ class Factura(TimeStampedModel):
             "centavos). Bloquea el envío a revisión."
         ),
     )
+    # Sesión 93, punto 3: True si moneda_xml (currencyID real del XML)
+    # no coincide con doc_cur (heredado de la OC al crear la Factura,
+    # ahora bloqueado — no editable por el proveedor). Solo se evalúa
+    # cuando ambos valores están poblados (doc_cur puede quedar vacío
+    # transitoriamente si la OC no trae DocCur todavía, mismo criterio
+    # self-healing ya usado para otros campos transitorios del proyecto)
+    # — un doc_cur vacío no cuenta como mismatch, evita un falso
+    # positivo. Bloquea el envío a revisión, mismo tratamiento que
+    # firma_valida/estado_cdr/importe_no_coincide — sin ninguna
+    # conversión de moneda (instrucción explícita del usuario: solo
+    # detectar y bloquear, la conversión real queda para una decisión
+    # de diseño futura).
+    moneda_no_coincide = models.BooleanField(
+        default=False,
+        help_text=(
+            "True si moneda_xml no coincide con doc_cur (moneda real de "
+            "la OC). Bloquea el envío a revisión. No implica ninguna "
+            "conversión — solo detección."
+        ),
+    )
     mensaje_validacion_documentos = models.TextField(
         blank=True, default='',
         help_text=(
             "Resumen legible de por qué firma_valida/estado_cdr/"
-            "importe_no_coincide quedaron como quedaron — para que la "
-            "razón del bloqueo (o de que todo esté OK) no quede oculta "
-            "en 3 campos sueltos."
+            "importe_no_coincide/moneda_no_coincide quedaron como "
+            "quedaron — para que la razón del bloqueo (o de que todo "
+            "esté OK) no quede oculta en 4 campos sueltos."
         ),
     )
 

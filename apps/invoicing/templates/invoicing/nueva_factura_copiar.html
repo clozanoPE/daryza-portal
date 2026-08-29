@@ -13,6 +13,7 @@
     <p class="page-header__subtitle">
       Revise y ajuste los datos antes de crear la Factura — nada se guarda todavía.
       {% if sede %}<span class="fw-bold text-success">Sede: {{ sede.nombre }}</span>{% endif %}
+      {% if moneda %}<span class="fw-bold text-success ms-2">Moneda: {{ moneda }}</span>{% endif %}
     </p>
   </div>
   <a href="{% url 'invoicing:nueva_factura_ocs' %}" class="btn btn-outline-success rounded-3">
@@ -23,6 +24,10 @@
 {% if error_sede %}
 <div class="alert alert-danger">
   <i class="bi bi-x-octagon me-1"></i>{{ error_sede }}
+</div>
+{% elif error_moneda %}
+<div class="alert alert-danger">
+  <i class="bi bi-x-octagon me-1"></i>{{ error_moneda }}
 </div>
 {% else %}
 
@@ -58,8 +63,8 @@
         <input type="text" name="numero_comprobante" class="form-control form-control-sm rounded-3" placeholder="123">
       </div>
       <div class="col-6 col-md-3">
-        <label class="form-label text-xs fw-bold">Moneda</label>
-        <input type="text" name="doc_cur" class="form-control form-control-sm rounded-3" placeholder="PEN" maxlength="10">
+        <label class="form-label text-xs fw-bold">Moneda (de la OC)</label>
+        <div class="form-control form-control-sm rounded-3 bg-light text-xs">{{ moneda|default:'—' }}</div>
       </div>
       <div class="col-6 col-md-3">
         <label class="form-label text-xs fw-bold">N° Documento Proveedor</label>

@@ -33,11 +33,15 @@ archivos) de services.py.
        proveedor, que todas las OC compartan la misma sede (Factura.sede
        es una única FK; mezclar sedes en una misma Factura no tiene
        sentido de negocio, mismo criterio ya aplicado a "no mezclar OC
-       MP con comercial en una misma cita", sesión 28), y
-       validar_oc_disponible (Sub-fase 3.1, con su candado de
-       concurrencia real ya verificado — sesión 70) para CADA OC
-       seleccionada, dentro del MISMO bloque atómico que crea los
-       registros — así el lock de PurchaseOrder cubre hasta el commit.
+       MP con comercial en una misma cita", sesión 28), que todas
+       compartan la misma moneda (Factura.doc_cur es un único campo;
+       mezclar OC en monedas distintas no tiene sentido de negocio,
+       sesión 93 — mismo criterio exacto que la validación de sede,
+       inmediatamente debajo de ella), y validar_oc_disponible
+       (Sub-fase 3.1, con su candado de concurrencia real ya verificado
+       — sesión 70) para CADA OC seleccionada, dentro del MISMO bloque
+       atómico que crea los registros — así el lock de PurchaseOrder
+       cubre hasta el commit.
 
        Fase 2 (_adjuntar_retencion_detraccion, FUERA del atomic de la
        fase 1): sube los documentos de retención/detracción reutilizando
@@ -196,6 +200,28 @@ def _crear_factura_y_lineas(*, proveedor, purchase_order_ids, cabecera, lineas_p
         )
     sede = next(iter(sede_por_po.values()))
 
+    # Sesión 93: doc_cur se hereda de la OC (dato real de SAP, DocCur),
+    # nunca se pide al proveedor — mismo criterio ya aplicado a `precio`
+    # (sesión 92, ver FacturaLinea más abajo). Mismo patrón de candado
+    # que la validación de sede de arriba: si las OC seleccionadas están
+    # en monedas distintas, no hay un único `Factura.doc_cur` válido para
+    # asignar, así que se rechaza la combinación completa.
+    moneda_por_po = {po.id: po.doc_cur for po in purchase_orders}
+    if len({moneda for moneda in moneda_por_po.values()}) > 1:
+        raise ValidationError(
+            "No se puede combinar Órdenes de Compra en monedas distintas en una misma Factura."
+        )
+    moneda = next(iter(moneda_por_po.values()))
+
+    # `cabecera` puede traer una clave 'doc_cur' propia si un caller
+    # bypasea _parsear_cabecera (que ya la excluye, vista real) y llama
+    # a este servicio directo con un dict fabricado a mano — se descarta
+    # acá explícitamente, en vez de dejar que **cabecera choque con el
+    # kwarg doc_cur=moneda de abajo (TypeError: multiple values). Mismo
+    # criterio de "ignorar silenciosamente, nunca crashear con el tipo
+    # de excepción equivocado" ya aplicado a 'precio' en FacturaLinea.
+    cabecera = {k: v for k, v in cabecera.items() if k != 'doc_cur'}
+
     for po in purchase_orders:
         try:
             InvoicingService.validar_oc_disponible(po)
@@ -205,7 +231,9 @@ def _crear_factura_y_lineas(*, proveedor, purchase_order_ids, cabecera, lineas_p
                 f"La OC {po.doc_num} ya no está disponible para facturar: {mensaje}"
             )
 
-    factura = Factura.objects.create(proveedor=proveedor, sede=sede, estado='BORRADOR', **cabecera)
+    factura = Factura.objects.create(
+        proveedor=proveedor, sede=sede, doc_cur=moneda, estado='BORRADOR', **cabecera
+    )
 
     for po in purchase_orders:
         FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
@@ -299,8 +327,14 @@ def editar_cabecera_factura(factura, usuario, cabecera: dict):
     """
     sa.validar_permiso_edicion(factura, usuario)
 
+    # Sesión 93: `doc_cur` YA NO es un campo editable acá — mismo criterio
+    # exacto que `precio` en editar_linea_factura (sesión 92): se hereda
+    # de la(s) OC al crear (_crear_factura_y_lineas) y no puede cambiarse
+    # después. El rechazo explícito de un intento de editarlo vive en la
+    # vista (editar_cabecera_factura_ajax, apps/invoicing/views.py) — se
+    # rechaza ahí, antes de llegar a este servicio, con un mensaje claro.
     campos = [
-        'doc_cur', 'tax_date', 'doc_due_date', 'num_at_card',
+        'tax_date', 'doc_due_date', 'num_at_card',
         'serie_comprobante', 'numero_comprobante', 'tipo_operacion',
         'clasificacion_bienes_servicios',
     ]

@@ -83,6 +83,10 @@ class SyncOCUpsertLineaPorLineaTests(TestCase):
             'e_mail': self.po.e_mail,
             'status': self.po.status,
             'u_mss_tdb': self.po.u_mss_tdb,
+            # Sesión 93: doc_cur (DocCur de SAP) ahora obligatorio en el
+            # payload, mismo criterio que precio_unitario/precio_total_
+            # linea/tax_code (sesión 92).
+            'doc_cur': 'PEN',
             'lines': lines,
         }
 
@@ -287,6 +291,8 @@ class SyncOCCreaSupplierProfileTests(TestCase):
             'doc_entry': doc_entry, 'doc_num': doc_num,
             'card_code': card_code, 'card_name': card_name, 'e_mail': e_mail,
             'status': 'O', 'u_mss_tdb': 'CDL',
+            # Sesión 93: doc_cur obligatorio, mismo criterio que la línea 2 arriba.
+            'doc_cur': 'PEN',
             'lines': [
                 {'line_num': 0, 'item_code': 'ITEM-SP', 'description': 'Item',
                  'quantity_sap': '10.0000', 'und_medida': 'UND',

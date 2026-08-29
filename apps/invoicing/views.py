@@ -175,8 +175,13 @@ def _parsear_cabecera(data: dict) -> dict:
         if clasificacion not in dict(Factura.CLASIFICACION_BIENES_SERVICIOS_CHOICES):
             raise ValueError('Clasificación de Bienes/Servicios inválida.')
 
+    # Sesión 93: doc_cur ya no se lee de acá — se hereda de la(s) OC
+    # seleccionadas (PurchaseOrder.doc_cur), nunca del formulario. Un
+    # 'doc_cur' en el payload de creación simplemente se ignora (mismo
+    # criterio silencioso ya usado para 'precio_<id>' en crear_factura_
+    # ajax); en el payload de EDICIÓN se rechaza explícito, antes de
+    # llegar acá (ver editar_cabecera_factura_ajax).
     return {
-        'doc_cur': _texto('doc_cur', 50),
         'tax_date': _texto('tax_date'),
         'doc_due_date': _texto('doc_due_date'),
         'num_at_card': _texto('num_at_card', 100),
@@ -237,21 +242,37 @@ def copiar_oc_view(request):
 
     sedes_distintas = {e['sede'].id for e in seleccionadas}
     error_sede = None
+    error_moneda = None
     grupos = []
+    moneda = None
     if len(sedes_distintas) > 1:
         error_sede = (
             "Las OC seleccionadas pertenecen a sedes distintas — no se pueden "
             "combinar en una misma Factura. Vuelva y seleccione solo OC de la misma sede."
         )
     else:
-        purchase_orders = [e['purchase_order'] for e in seleccionadas]
-        grupos = sb.lineas_para_copiar(purchase_orders)
+        # Sesión 93: mismo criterio que la validación de sede de arriba —
+        # doc_cur ahora se hereda de la OC (dato real de SAP), así que si
+        # las OC seleccionadas están en monedas distintas no hay un único
+        # valor válido para la Factura.
+        monedas_distintas = {e['purchase_order'].doc_cur for e in seleccionadas}
+        if len(monedas_distintas) > 1:
+            error_moneda = (
+                "Las OC seleccionadas están en monedas distintas — no se pueden "
+                "combinar en una misma Factura. Vuelva y seleccione solo OC de la misma moneda."
+            )
+        else:
+            purchase_orders = [e['purchase_order'] for e in seleccionadas]
+            grupos = sb.lineas_para_copiar(purchase_orders)
+            moneda = seleccionadas[0]['purchase_order'].doc_cur
 
     return render(request, 'invoicing/nueva_factura_copiar.html', {
         'grupos': grupos,
         'sede': seleccionadas[0]['sede'] if not error_sede else None,
+        'moneda': moneda,
         'omitidas_count': omitidas_count,
         'error_sede': error_sede,
+        'error_moneda': error_moneda,
         'tipos_operacion': Factura.TIPO_OPERACION_CHOICES,
         'clasificaciones': Factura.CLASIFICACION_BIENES_SERVICIOS_CHOICES,
     })
@@ -374,6 +395,15 @@ def editar_cabecera_factura_ajax(request, factura_id: int):
         data = json.loads(request.body)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return _json_err('JSON inválido.')
+
+    # Sesión 93: doc_cur ya no es editable — rechazo explícito y temprano
+    # (antes de tocar el servicio), mismo patrón exacto que el rechazo de
+    # 'precio' en editar_linea_factura_ajax (sesión 92). Se hereda de la
+    # OC al crear la Factura y no puede cambiarse después.
+    if 'doc_cur' in data:
+        return _json_err(
+            'La moneda no es editable — se hereda directamente de la Orden de Compra.'
+        )
 
     try:
         cabecera = _parsear_cabecera(data)
