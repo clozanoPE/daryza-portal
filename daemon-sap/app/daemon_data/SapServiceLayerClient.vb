@@ -321,6 +321,25 @@ Public Class SapServiceLayerClient
         )
     End Function
 
+    ''' <summary>
+    ''' Sesión 97 (Etapa 5, Sub-etapa 5.4): DELETE genérico contra
+    ''' Service Layer — mismo criterio que PostAsync (genérico, sin
+    ''' saber qué entidad se está borrando). Único uso hoy:
+    ''' FacturaService.CancelarPreliminarAsync, DELETE /Drafts(DocEntry)
+    ''' para anular un Preliminar todavía no confirmado como documento
+    ''' definitivo en SAP. Un 204 (No Content, la respuesta típica de un
+    ''' DELETE exitoso en Service Layer) cuenta como éxito igual que
+    ''' cualquier otro 2xx — IsSuccessStatusCode ya lo cubre, sin
+    ''' necesitar ningún caso especial acá.
+    ''' </summary>
+    ''' <param name="relativeUrl">Ruta relativa a BaseUrl, ej. "Drafts(123)" (sin barra inicial).</param>
+    Public Async Function DeleteAsync(relativeUrl As String) As Task(Of ServiceLayerResult)
+        Return Await EjecutarConReintentoAsync(
+            Function() New HttpRequestMessage(HttpMethod.Delete, relativeUrl),
+            $"DELETE '{relativeUrl}'"
+        )
+    End Function
+
     Public Sub Dispose() Implements IDisposable.Dispose
         _client?.Dispose()
         _handler?.Dispose()

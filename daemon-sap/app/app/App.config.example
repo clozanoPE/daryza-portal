@@ -34,5 +34,16 @@
         <add key="ServiceLayerCompanyDB" value="" />
         <add key="ServiceLayerUser" value="" />
         <add key="ServiceLayerPassword" value="" />
+
+        <!-- Sesión 97 (Etapa 5, Sub-etapa 5.3): FacturaSyncService.vb
+             (daemon_logical) — intervalo mínimo entre corridas del ciclo
+             de reconciliación (busca en SAP si Contabilidad ya creó el
+             documento definitivo), deliberadamente MAYOR que el ciclo de
+             OC/GRPO. Solo tiene efecto real una vez que este ciclo se
+             llame repetidamente desde un proceso de larga vida (no lo
+             tiene hoy — se dispara manualmente vía --sync-factura-
+             reconciliar). Si falta o no es un entero positivo, el
+             código usa 30 (minutos) por default. -->
+        <add key="FacturaReconciliacionIntervaloMinutos" value="30" />
     </appSettings>
 </configuration>

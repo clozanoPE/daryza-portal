@@ -54,6 +54,33 @@ Partial Class Service1
             Return
         End If
 
+        ' Sesión 97, Etapa 5: 3 flags manuales independientes, uno por
+        ' cada sub-etapa (5.1/5.2 creación, 5.3 reconciliación, 5.4
+        ' cancelación) — mismo criterio que --sync-grpo/--test-service-
+        ' layer: deliberadamente NO wireados a WorkerThread todavía.
+        ' Ninguno de los 3 depende de los otros para ejecutarse (cada
+        ' uno abre/cierra su propia sesión de Service Layer).
+        If args.Contains("--sync-factura-preliminar") Then
+            Console.WriteLine("=== daemon-sap: ciclo de creación del Preliminar de Factura (Etapa 5.1/5.2, sesión 97) ===")
+            Dim facturaSync As New FacturaSyncService()
+            facturaSync.ExecutePreliminarSync().GetAwaiter().GetResult()
+            Return
+        End If
+
+        If args.Contains("--sync-factura-reconciliar") Then
+            Console.WriteLine("=== daemon-sap: ciclo de reconciliación de Factura (Etapa 5.3, sesión 97) ===")
+            Dim facturaSync As New FacturaSyncService()
+            facturaSync.ExecuteReconciliacionSync().GetAwaiter().GetResult()
+            Return
+        End If
+
+        If args.Contains("--sync-factura-cancelar") Then
+            Console.WriteLine("=== daemon-sap: ciclo de cancelación de Factura (Etapa 5.4, sesión 97) ===")
+            Dim facturaSync As New FacturaSyncService()
+            facturaSync.ExecuteCancelacionSync().GetAwaiter().GetResult()
+            Return
+        End If
+
         ' Sesión 92: modo consola para pruebas manuales end-to-end, sin
         ' instalar el servicio de Windows — Environment.UserInteractive
         ' es True cuando el proceso corre desde una consola real (False
