@@ -16,6 +16,12 @@ class EntradaMercaderiaLineaSerializer(serializers.ModelSerializer):
     # original — doc_entry ya es el DocEntry real de SAP (sap_sync,
     # sincronizado por el propio daemon); line_num es el LineNum real de
     # SAP (confirmado estable sesión 49, usado ahí como clave de upsert).
+    #
+    # Sesión 99: numero_lote / fecha_vencimiento_lote / fecha_fabricacion_
+    # lote — el LOTE que Almacén/MP completó en el Portal. El daemon los
+    # envía a SAP como BatchNumbers=[{BatchNumber, Quantity, ExpiryDate?,
+    # ManufactureDate?}] SOLO si numero_lote no está vacío. Las fechas
+    # viajan como 'YYYY-MM-DD' o null (DateField de DRF).
     doc_entry_oc = serializers.IntegerField(source='po_line.purchase_order.doc_entry', read_only=True)
     doc_num_oc = serializers.IntegerField(source='po_line.purchase_order.doc_num', read_only=True)
     base_line = serializers.IntegerField(source='po_line.line_num', read_only=True)
@@ -23,7 +29,10 @@ class EntradaMercaderiaLineaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EntradaMercaderiaLinea
-        fields = ['doc_entry_oc', 'doc_num_oc', 'base_line', 'item_code', 'cantidad']
+        fields = [
+            'doc_entry_oc', 'doc_num_oc', 'base_line', 'item_code', 'cantidad',
+            'numero_lote', 'fecha_vencimiento_lote', 'fecha_fabricacion_lote',
+        ]
 
 
 class EntradaMercaderiaSerializer(serializers.ModelSerializer):
@@ -35,8 +44,8 @@ class EntradaMercaderiaSerializer(serializers.ModelSerializer):
     class Meta:
         model = EntradaMercaderia
         fields = [
-            'id', 'ticket_id', 'card_code', 'card_name', 'estado_sap',
-            'doc_entry_borrador', 'doc_entry_definitivo', 'error_mensaje',
+            'id', 'ticket_id', 'card_code', 'card_name', 'estado', 'estado_sap',
+            'doc_entry_borrador', 'doc_entry_definitivo', 'doc_num_sap', 'error_mensaje',
             'fecha_generada', 'fecha_borrador_confirmado', 'fecha_definitivo_confirmado',
             'lineas',
         ]

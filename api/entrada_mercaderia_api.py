@@ -5,12 +5,20 @@ Endpoints del daemon SAP para el ciclo de vida de EntradaMercaderia
 (Token) y de upsert (nunca falla en un reintento) ya usado por
 SAPIntegrationViewSet (api/sap_api.py) para la sincronización de OC.
 
-GET  /api/v1/entradas-pendientes/                             -> 'L' pendientes
-POST /api/v1/entradas-pendientes/<id>/confirmar-borrador/     -> 'L' -> 'B'
-POST /api/v1/entradas-pendientes/<id>/confirmar-definitivo/   -> 'B' -> 'Y'
+GET  /api/v1/entradas-pendientes/                             -> estado_sap='L' pendientes
+POST /api/v1/entradas-pendientes/<id>/confirmar-borrador/     -> estado_sap 'L' -> 'B'
+POST /api/v1/entradas-pendientes/<id>/confirmar-definitivo/   -> estado_sap 'B' -> 'Y', estado -> CREADO_SAP
 POST /api/v1/entradas-pendientes/<id>/reportar-error/         -> guarda error_mensaje,
-                                                                   NO toca estado_sap
+                                                                   NO toca estado/estado_sap
                                                                    (sesión 58)
+
+Sesión 99: confirmar-borrador/confirmar-definitivo aceptan además un
+`doc_num` opcional (el DocNum visible del GRPO en SAP B1) que se guarda en
+`doc_num_sap`. El daemon lo obtiene síncronamente de la misma respuesta
+del POST /PurchaseDeliveryNotes (no hace falta buscarlo después, a
+diferencia de Factura). Si el daemon no lo envía, no falla — el campo
+queda como estaba. Además, `estado` (de negocio) avanza junto con
+`estado_sap`: confirmar-definitivo lo lleva a CREADO_SAP.
 
 <id> es EntradaMercaderia.pk (identificador interno consumido solo por el
 daemon, nunca mostrado a un usuario — no aplica el criterio de la sesión
@@ -59,10 +67,20 @@ class EntradaMercaderiaViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
         entrada.doc_entry_borrador = doc_entry
         entrada.estado_sap = 'B'
+        # Defensivo (upsert): confirmar-borrador solo llega sobre una
+        # entrada que ya fue enviada, así que estado ya debería ser
+        # ENVIADO — se fija explícito por si el daemon confirmara sobre
+        # una entrada en un estado inesperado.
+        entrada.estado = EntradaMercaderia.ESTADO_ENVIADO
         entrada.fecha_borrador_confirmado = timezone.now()
-        entrada.save(update_fields=[
-            'doc_entry_borrador', 'estado_sap', 'fecha_borrador_confirmado',
-        ])
+        update_fields = [
+            'doc_entry_borrador', 'estado', 'estado_sap', 'fecha_borrador_confirmado',
+        ]
+        doc_num = request.data.get('doc_num')
+        if doc_num not in (None, ''):
+            entrada.doc_num_sap = str(doc_num)
+            update_fields.append('doc_num_sap')
+        entrada.save(update_fields=update_fields)
         return Response(
             {'status': 'success', 'message': 'Borrador confirmado.'},
             status=status.HTTP_200_OK,
@@ -70,7 +88,11 @@ class EntradaMercaderiaViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     @action(detail=True, methods=['post'], url_path='confirmar-definitivo')
     def confirmar_definitivo(self, request, pk=None):
-        """Marca estado_sap='Y' y guarda doc_entry_definitivo. Mismo criterio de upsert."""
+        """
+        Marca estado_sap='Y', estado='CREADO_SAP' y guarda
+        doc_entry_definitivo (+ doc_num opcional -> doc_num_sap). Mismo
+        criterio de upsert que el resto de este archivo.
+        """
         entrada = self.get_object()
         doc_entry = request.data.get('doc_entry_definitivo')
         if not doc_entry:
@@ -81,10 +103,16 @@ class EntradaMercaderiaViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
         entrada.doc_entry_definitivo = doc_entry
         entrada.estado_sap = 'Y'
+        entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
         entrada.fecha_definitivo_confirmado = timezone.now()
-        entrada.save(update_fields=[
-            'doc_entry_definitivo', 'estado_sap', 'fecha_definitivo_confirmado',
-        ])
+        update_fields = [
+            'doc_entry_definitivo', 'estado', 'estado_sap', 'fecha_definitivo_confirmado',
+        ]
+        doc_num = request.data.get('doc_num')
+        if doc_num not in (None, ''):
+            entrada.doc_num_sap = str(doc_num)
+            update_fields.append('doc_num_sap')
+        entrada.save(update_fields=update_fields)
         return Response(
             {'status': 'success', 'message': 'Documento definitivo confirmado.'},
             status=status.HTTP_200_OK,

@@ -28,10 +28,13 @@
       </span>
       {% if ticket.entrada_mercaderia %}
       <span class="badge text-xxs
-        {% if ticket.entrada_mercaderia.estado_sap == 'Y' %}bg-success-subtle text-success border border-success-subtle
-        {% elif ticket.entrada_mercaderia.estado_sap == 'B' %}bg-warning-subtle text-warning border border-warning-subtle
+        {% if ticket.entrada_mercaderia.estado == 'CREADO_SAP' %}bg-success-subtle text-success border border-success-subtle
+        {% elif ticket.entrada_mercaderia.estado == 'ENVIADO' %}bg-primary-subtle text-primary border border-primary-subtle
         {% else %}bg-secondary-subtle text-secondary border border-secondary-subtle{% endif %}">
-        <i class="bi bi-box-seam me-1"></i>SAP: {{ ticket.entrada_mercaderia.get_estado_sap_display }}
+        <i class="bi bi-box-seam me-1"></i>Entrada Mercadería: {{ ticket.entrada_mercaderia.get_estado_display }}
+        {% if ticket.entrada_mercaderia.doc_num_sap %}
+        <span class="ms-1">· GRPO {{ ticket.entrada_mercaderia.doc_num_sap }}</span>
+        {% endif %}
       </span>
       {% endif %}
     </div>

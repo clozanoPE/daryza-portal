@@ -325,25 +325,39 @@ class TicketDatosIngreso(models.Model):
 
 class EntradaMercaderia(models.Model):
     """
-    Borrador de Entrada de Mercadería (Goods Receipt PO) para SAP, generado
+    Entrada de Mercadería (Goods Receipt PO) para SAP. Se genera
     automáticamente cuando Vigilancia registra la salida (Ticket →
-    FINALIZADO — ver OperationsService.registrar_salida). Un solo registro
-    por Ticket, con sus líneas en EntradaMercaderiaLinea.
+    FINALIZADO — ver OperationsService.registrar_salida), pero nace en
+    estado PENDIENTE: Almacén / Materia Prima todavía debe completar el
+    número de LOTE por línea (y opcionalmente fechas de vencimiento/
+    fabricación) en el Portal antes de enviarla al daemon (sesión 99 —
+    ver apps/operations/services_entrada.py). Un solo registro por Ticket,
+    con sus líneas en EntradaMercaderiaLinea.
 
-    Ciclo de vida de estado_sap, sincronizado por el daemon VB.NET vía los
-    endpoints de api/v1/entradas-pendientes/ (GET lista las 'L' pendientes,
-    POST .../confirmar-borrador/ y .../confirmar-definitivo/ avanzan el
-    estado) — mismo patrón de upsert ya usado para la sincronización de OC
-    (apps/sap_sync/serializers.py, sesión 49): el daemon puede reintentar
-    cualquiera de los 2 POST sin que un reintento accidental rompa nada.
+    DOS campos de estado, mismo patrón que Factura (estado de negocio +
+    estado de sincronización), a propósito separados:
 
-        ''  Sin generar (no debería verse en un registro ya persistido —
-            este modelo solo se crea directamente en 'L')
-        'L' Generado en el Portal, pendiente de que el daemon cree el
-            borrador en SAP
-        'B' Borrador confirmado en SAP (doc_entry_borrador ya asignado)
-        'Y' Documento definitivo confirmado en SAP (doc_entry_definitivo
-            ya asignado) — fin del ciclo
+      estado (negocio, esta sesión):
+        PENDIENTE   Recién generada al finalizar el Ticket — Almacén/MP
+                    la está preparando en el Portal (falta el LOTE).
+        ENVIADO     Almacén/MP la envió (services_entrada.enviar_a_sap):
+                    LOTE completo en todas las líneas, estado_sap='L', el
+                    daemon la creará en SAP B1 en el próximo ciclo.
+        CREADO_SAP  GRPO real creado en SAP B1 (doc_entry_definitivo /
+                    doc_num_sap ya asignados por el daemon) — fin del ciclo.
+
+      estado_sap (sincronización con SAP, SIN CAMBIOS — los choices se
+      preservan porque el serializer/DTO del daemon dependen de ellos):
+        ''  Todavía no enviada al daemon (estado=PENDIENTE).
+        'L' Enviada, pendiente de que el daemon cree el GRPO en SAP.
+        'B' confirmar-borrador ya llamado por el daemon.
+        'Y' confirmar-definitivo ya llamado por el daemon — GRPO real listo.
+
+    Mapa estado ↔ estado_sap: PENDIENTE↔'', ENVIADO↔{'L','B'},
+    CREADO_SAP↔'Y'. El daemon sigue el MISMO patrón de upsert retry-safe
+    ya usado para la sincronización de OC (apps/sap_sync/serializers.py,
+    sesión 49): puede reintentar cualquiera de los 2 POST de confirmación
+    sin que un reintento accidental rompa nada.
     """
     ESTADO_SAP_CHOICES = [
         ('', 'Sin generar'),
@@ -352,8 +366,21 @@ class EntradaMercaderia(models.Model):
         ('Y', 'Definitivo confirmado en SAP'),
     ]
 
+    ESTADO_PENDIENTE = 'PENDIENTE'
+    ESTADO_ENVIADO = 'ENVIADO'
+    ESTADO_CREADO_SAP = 'CREADO_SAP'
+    ESTADO_CHOICES = [
+        (ESTADO_PENDIENTE, 'Pendiente (falta completar el lote en el Portal)'),
+        (ESTADO_ENVIADO, 'Enviado a SAP B1'),
+        (ESTADO_CREADO_SAP, 'Creado en SAP B1'),
+    ]
+
     ticket = models.OneToOneField(
         Ticket, on_delete=models.CASCADE, related_name='entrada_mercaderia'
+    )
+    estado = models.CharField(
+        max_length=12, choices=ESTADO_CHOICES, default=ESTADO_PENDIENTE,
+        help_text="Estado de negocio: PENDIENTE → ENVIADO → CREADO_SAP (ver docstring del modelo)."
     )
     estado_sap = models.CharField(
         max_length=1, choices=ESTADO_SAP_CHOICES, default='', blank=True
@@ -366,13 +393,17 @@ class EntradaMercaderia(models.Model):
         null=True, blank=True,
         help_text="DocEntry del documento definitivo en SAP, asignado por el daemon (estado_sap='Y')."
     )
+    doc_num_sap = models.CharField(
+        max_length=30, null=True, blank=True,
+        help_text="DocNum visible del GRPO en SAP B1 (número humano), devuelto por el daemon junto con el DocEntry."
+    )
     error_mensaje = models.TextField(
         blank=True, default='',
         help_text="Mensaje de error reportado por el daemon si SAP rechaza la entrada (diagnóstico)."
     )
 
     # Timestamps por transición — fecha_generada coincide con la creación del
-    # registro (siempre se crea directamente en 'L', nunca en '').
+    # registro (siempre se crea directamente en estado=PENDIENTE / estado_sap='').
     fecha_generada = models.DateTimeField(auto_now_add=True)
     fecha_borrador_confirmado = models.DateTimeField(null=True, blank=True)
     fecha_definitivo_confirmado = models.DateTimeField(null=True, blank=True)
@@ -382,7 +413,7 @@ class EntradaMercaderia(models.Model):
         verbose_name_plural = "Entradas de Mercadería"
 
     def __str__(self):
-        return f"Entrada Mercadería Ticket {self.ticket_id} [{self.estado_sap or 'sin generar'}]"
+        return f"Entrada Mercadería Ticket {self.ticket_id} [{self.estado}]"
 
 
 class EntradaMercaderiaLinea(models.Model):
@@ -404,6 +435,28 @@ class EntradaMercaderiaLinea(models.Model):
     )
     po_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT)
     cantidad = models.DecimalField(max_digits=18, decimal_places=4)
+
+    # Sesión 99: LOTE del artículo, capturado por Almacén / Materia Prima
+    # en el Portal antes de enviar la Entrada al daemon. Regla de negocio
+    # confirmada: UN solo lote por línea de OC (nunca varios en la misma
+    # línea). El daemon lo envía a SAP como BatchNumbers=[{BatchNumber,
+    # Quantity, ExpiryDate?, ManufactureDate?}] SOLO cuando numero_lote no
+    # está vacío (un ítem NO gestionado por lote con BatchNumbers también
+    # hace que SAP rechace el documento). Las 2 fechas son opcionales: se
+    # envían a SAP únicamente si el artículo las exige (materia prima
+    # química/alimenticia) y Almacén las completa.
+    numero_lote = models.CharField(
+        max_length=60, blank=True, default='',
+        help_text="Número de lote del artículo recibido (un solo lote por línea)."
+    )
+    fecha_vencimiento_lote = models.DateField(
+        null=True, blank=True,
+        help_text="Fecha de vencimiento del lote — opcional, solo si el artículo la requiere en SAP."
+    )
+    fecha_fabricacion_lote = models.DateField(
+        null=True, blank=True,
+        help_text="Fecha de fabricación del lote — opcional, solo si el artículo la requiere en SAP."
+    )
 
     class Meta:
         unique_together = ('entrada', 'po_line')

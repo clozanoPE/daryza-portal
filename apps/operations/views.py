@@ -27,8 +27,12 @@ from xhtml2pdf import pisa
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 from apps.appointments.models import Appointment
 from apps.appointments.services import AppointmentService
-from .models import Ticket, TicketStage, TicketLineInspection, TicketLineCOA
+from .models import (
+    Ticket, TicketStage, TicketLineInspection, TicketLineCOA,
+    EntradaMercaderia, EntradaMercaderiaLinea,
+)
 from .services import OperationsService
+from . import services_entrada as se
 from apps.base.decorators import (
     almacen_required, vigilancia_required, calidad_required,
     compras_required, staff_interno_required, staff_o_proveedor_required,
@@ -509,6 +513,12 @@ def panel_almacen(request):
         'tickets_historial': tickets_historial,
         'periodo':            periodo,
         'motivos_rechazo':    Appointment.MOTIVOS_RECHAZO,
+        # Sesión 99: Entradas de Mercadería en PENDIENTE que le tocan a
+        # Almacén (Ticket ya FINALIZADO, falta completar el LOTE). Almacén
+        # no tenía hasta ahora ninguna cola Ticket-based propia (solo el
+        # Kanban de aprobación de citas de arriba) — esta es nueva y no
+        # toca esa lógica.
+        'entradas_pendientes': se.entradas_pendientes_para(request.user),
     }
     return render(request, 'operations/panel_almacen.html', context)
 
@@ -730,6 +740,9 @@ def panel_materia_prima(request):
         'tickets_pendientes': tickets_pendientes,
         'tickets_historial':  tickets_historial,
         'periodo':            periodo,
+        # Sesión 99: Entradas de Mercadería en PENDIENTE que le tocan a MP
+        # (Ticket ya FINALIZADO, falta completar el LOTE en el Portal).
+        'entradas_pendientes': se.entradas_pendientes_para(request.user),
     }
     return render(request, 'operations/panel_materia_prima.html', context)
 
@@ -747,6 +760,115 @@ def exportar_historial_materia_prima(request, formato: str):
         filename=f'historial_materia_prima_{periodo}',
         titulo=f'Historial de Tickets — Panel Materia Prima ({periodo})',
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTRADA DE MERCADERÍA — paso humano intermedio (LOTE) antes del daemon (sesión 99)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _parse_fecha_opcional(valor):
+    """
+    '' / None -> None (limpiar). 'YYYY-MM-DD' -> date. Cualquier otra cosa
+    -> ValueError (error de parseo, la vista lo traduce a 400).
+    """
+    if valor in (None, ''):
+        return None
+    from datetime import date
+    try:
+        return date.fromisoformat(str(valor))
+    except (TypeError, ValueError):
+        raise ValueError(f'Fecha inválida: {valor!r} (formato esperado AAAA-MM-DD).')
+
+
+@staff_interno_required
+def entrada_mercaderia_detalle(request, entrada_id: int):
+    """
+    GET /operations/entrada-mercaderia/<id>/
+
+    Pantalla de detalle de la Entrada de Mercadería — mismo layout visual
+    que "Copiar de OC" de Factura. Líneas con cantidad real pre-cargada
+    (editable), columna LOTE (obligatoria antes de enviar), columnas de
+    fecha (opcionales), botón "Enviar a SAP B1".
+
+    @staff_interno_required como primer filtro (login + algún grupo
+    interno); adentro se exige que sea el actor de recepción del Ticket
+    (ALMACEN / MATERIA_PRIMA) — mismo patrón que ajax_registrar_inspeccion.
+    """
+    entrada = get_object_or_404(
+        EntradaMercaderia.objects.select_related(
+            'ticket__appointment__slot', 'ticket__appointment__user',
+        ).prefetch_related('lineas__po_line__purchase_order'),
+        id=entrada_id,
+    )
+    if not se.puede_gestionar(entrada, request.user):
+        return redirect('home_router')
+
+    return render(request, 'operations/entrada_mercaderia_detalle.html', {
+        'entrada': entrada,
+        'filas': se.lineas_para_detalle(entrada),
+        'puede_editar': entrada.estado == EntradaMercaderia.ESTADO_PENDIENTE,
+    })
+
+
+@staff_interno_required
+@require_POST
+def entrada_editar_linea_ajax(request, linea_id: int):
+    """POST /operations/api/entrada-mercaderia/linea/<id>/editar/  (JSON)."""
+    linea = get_object_or_404(
+        EntradaMercaderiaLinea.objects.select_related('entrada__ticket', 'po_line'),
+        id=linea_id,
+    )
+    if not se.puede_gestionar(linea.entrada, request.user):
+        return _json_err('No tiene permiso para gestionar esta Entrada de Mercadería.', status=403)
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _json_err('JSON inválido.')
+
+    kwargs = {}
+    if 'cantidad' in data:
+        try:
+            from decimal import Decimal, InvalidOperation
+            kwargs['cantidad'] = Decimal(str(data['cantidad']))
+        except (InvalidOperation, TypeError):
+            return _json_err('Cantidad inválida.')
+    if 'numero_lote' in data:
+        kwargs['numero_lote'] = str(data['numero_lote'] or '')
+    try:
+        if 'fecha_vencimiento_lote' in data:
+            kwargs['fecha_vencimiento_lote'] = _parse_fecha_opcional(data['fecha_vencimiento_lote'])
+        if 'fecha_fabricacion_lote' in data:
+            kwargs['fecha_fabricacion_lote'] = _parse_fecha_opcional(data['fecha_fabricacion_lote'])
+    except ValueError as e:
+        return _json_err(str(e))
+
+    try:
+        se.editar_linea_entrada(linea, request.user, **kwargs)
+    except ValidationError as e:
+        msg = e.messages[0] if hasattr(e, 'messages') else str(e)
+        return _json_err(msg)
+
+    return _json_ok(msg='Línea actualizada.')
+
+
+@staff_interno_required
+@require_POST
+def entrada_enviar_a_sap_ajax(request, entrada_id: int):
+    """POST /operations/api/entrada-mercaderia/<id>/enviar-a-sap/  (JSON)."""
+    entrada = get_object_or_404(
+        EntradaMercaderia.objects.select_related('ticket'), id=entrada_id,
+    )
+    if not se.puede_gestionar(entrada, request.user):
+        return _json_err('No tiene permiso para gestionar esta Entrada de Mercadería.', status=403)
+
+    try:
+        se.enviar_a_sap(entrada, request.user)
+    except ValidationError as e:
+        msg = e.messages[0] if hasattr(e, 'messages') else str(e)
+        return _json_err(msg)
+
+    return _json_ok(msg='Entrada de Mercadería enviada a SAP B1.')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

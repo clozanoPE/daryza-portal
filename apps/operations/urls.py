@@ -77,6 +77,19 @@ urlpatterns = [
          views.exportar_historial_materia_prima,
          name='exportar_historial_materia_prima'),
 
+    # ── Entrada de Mercadería — paso humano del LOTE (sesión 99) ──────────
+    path('entrada-mercaderia/<int:entrada_id>/',
+         views.entrada_mercaderia_detalle,
+         name='entrada_mercaderia_detalle'),
+
+    path('api/entrada-mercaderia/linea/<int:linea_id>/editar/',
+         views.entrada_editar_linea_ajax,
+         name='ajax_entrada_editar_linea'),
+
+    path('api/entrada-mercaderia/<int:entrada_id>/enviar-a-sap/',
+         views.entrada_enviar_a_sap_ajax,
+         name='ajax_entrada_enviar_a_sap'),
+
     # ── Panel Vigilancia ─────────────────────────────────────────────────
     path('vigilancia/',
          views.panel_vigilancia,

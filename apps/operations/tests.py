@@ -38,6 +38,7 @@ from apps.base.models import Sede
 from apps.operations.models import (
     Ticket, TicketLineInspection, EntradaMercaderia, EntradaMercaderiaLinea,
 )
+from apps.operations import services_entrada as se
 from apps.operations.services import OperationsService, TicketEtapaError
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
@@ -1049,22 +1050,21 @@ class NumeracionUnificadaTests(OperationsTestBase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 9. EntradaMercaderia — generación automática al finalizar (sesión 57)
+# 9. EntradaMercaderia — generación automática al finalizar (sesión 57) +
+#    paso humano del LOTE antes del daemon (sesión 99)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class EntradaMercaderiaTests(OperationsTestBase):
     """
-    Cubre lo pedido explícitamente: (1) creación automática al finalizar el
-    Ticket, (2) idempotencia del upsert (get_or_create/update_or_create al
-    reintentar el trigger), (3) EntradaMercaderiaLinea.cantidad = cantidad
-    REAL inspeccionada (TicketLineInspection.cantidad_modificada), nunca
-    PurchaseOrderLine.quantity_sap.
+    Cubre: (1) creación automática al finalizar el Ticket — ahora en estado
+    PENDIENTE / estado_sap='' (sesión 99, antes 'L'), (2) idempotencia del
+    upsert al reintentar el trigger, (3) EntradaMercaderiaLinea.cantidad =
+    cantidad REAL inspeccionada, nunca PurchaseOrderLine.quantity_sap.
 
     Todos los Tickets se construyen con requiere_calidad=False (actor
     ALMACEN cierra su propia inspección y avanza directo a
     VIGILANCIA_SALIDA, sesión 37) — el trigger de EntradaMercaderia no
-    depende de si el ticket pasó por Calidad o no, así que un solo camino
-    basta para probarlo sin acoplar este test a esa otra máquina de estados.
+    depende de si el ticket pasó por Calidad o no.
     """
 
     def _finalizar_ticket(self, cantidad_real=None):
@@ -1095,7 +1095,11 @@ class EntradaMercaderiaTests(OperationsTestBase):
         return ticket, insp.po_line
 
     def test_creacion_automatica_al_finalizar_ticket(self):
-        """No existe EntradaMercaderia antes de FINALIZADO; existe justo después, con estado_sap='L'."""
+        """
+        No existe EntradaMercaderia antes de FINALIZADO; existe justo
+        después, en estado PENDIENTE / estado_sap='' (sesión 99: nace
+        pendiente de que Almacén complete el LOTE, ya NO directo en 'L').
+        """
         ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
         self.assertFalse(EntradaMercaderia.objects.filter(ticket=ticket).exists())
 
@@ -1106,7 +1110,8 @@ class EntradaMercaderiaTests(OperationsTestBase):
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
 
         entrada = EntradaMercaderia.objects.get(ticket=ticket)
-        self.assertEqual(entrada.estado_sap, 'L')
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_PENDIENTE)
+        self.assertEqual(entrada.estado_sap, '')
         self.assertIsNotNone(entrada.fecha_generada)
         self.assertIsNone(entrada.doc_entry_borrador)
         self.assertIsNone(entrada.doc_entry_definitivo)
@@ -1153,7 +1158,9 @@ class EntradaMercaderiaTests(OperationsTestBase):
             data={'ticket_id': ticket.id}, content_type='application/json',
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(EntradaMercaderia.objects.filter(ticket=ticket, estado_sap='L').exists())
+        self.assertTrue(EntradaMercaderia.objects.filter(
+            ticket=ticket, estado=EntradaMercaderia.ESTADO_PENDIENTE, estado_sap='',
+        ).exists())
 
     def test_trazabilidad_ticket_muestra_error_mensaje_junto_al_badge(self):
         """Sesión 58, punto 2: error_mensaje visible en trazabilidad_ticket si no está vacío."""
@@ -1171,6 +1178,107 @@ class EntradaMercaderiaTests(OperationsTestBase):
         html = resp_con_error.content.decode('utf-8')
         self.assertIn('Error SAP', html)
         self.assertIn('SAP rechazó: BaseEntry inválido', html)
+
+
+class EntradaMercaderiaLoteFlowTests(OperationsTestBase):
+    """
+    Sesión 99 — paso humano intermedio del LOTE (apps/operations/
+    services_entrada.py): editar_linea_entrada / enviar_a_sap, y las 3
+    vistas nuevas (detalle + 2 AJAX). El actor de recepción de una OC 'CDL'
+    es ALMACEN.
+    """
+
+    def _entrada_pendiente(self, u_mss_tdb='CDL'):
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, u_mss_tdb, requiere_coa=False)
+        actor = self.u_materia_prima if ticket.es_materia_prima else self.u_almacen
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=actor, resultados=self._resultados_para(ticket),
+        )
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        return EntradaMercaderia.objects.get(ticket_id=ticket.id)
+
+    def test_enviar_a_sap_bloqueado_sin_lote_en_alguna_linea(self):
+        entrada = self._entrada_pendiente()
+        with self.assertRaises(ValidationError):
+            se.enviar_a_sap(entrada, self.u_almacen)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_PENDIENTE)
+        self.assertEqual(entrada.estado_sap, '')
+
+    def test_flujo_completo_lote_y_enviar_a_sap(self):
+        entrada = self._entrada_pendiente()
+        for linea in entrada.lineas.all():
+            se.editar_linea_entrada(
+                linea, self.u_almacen,
+                cantidad=Decimal('9.0000'), numero_lote='L-2026-001',
+                fecha_vencimiento_lote='2027-01-31',
+            )
+        se.enviar_a_sap(entrada, self.u_almacen)
+
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_ENVIADO)
+        self.assertEqual(entrada.estado_sap, 'L')
+        linea = entrada.lineas.first()
+        self.assertEqual(linea.numero_lote, 'L-2026-001')
+        self.assertEqual(linea.cantidad, Decimal('9.0000'))
+        self.assertEqual(str(linea.fecha_vencimiento_lote), '2027-01-31')
+
+    def test_editar_linea_bloqueado_tras_enviar(self):
+        entrada = self._entrada_pendiente()
+        linea = entrada.lineas.first()
+        se.editar_linea_entrada(linea, self.u_almacen, numero_lote='X')
+        se.enviar_a_sap(entrada, self.u_almacen)
+        with self.assertRaises(ValidationError):
+            se.editar_linea_entrada(linea, self.u_almacen, numero_lote='Y')
+
+    def test_permiso_actor_equivocado_rechaza(self):
+        """Una OC 'CDL' la gestiona ALMACEN — MATERIA_PRIMA no puede."""
+        entrada = self._entrada_pendiente()
+        linea = entrada.lineas.first()
+        with self.assertRaises(ValidationError):
+            se.editar_linea_entrada(linea, self.u_materia_prima, numero_lote='X')
+        self.assertFalse(se.puede_gestionar(entrada, self.u_materia_prima))
+        self.assertTrue(se.puede_gestionar(entrada, self.u_almacen))
+
+    def test_vistas_http_detalle_editar_enviar(self):
+        entrada = self._entrada_pendiente()
+        linea = entrada.lineas.first()
+        self.client.force_login(self.u_almacen)
+
+        resp = self.client.get(f'/operations/entrada-mercaderia/{entrada.id}/')
+        self.assertEqual(resp.status_code, 200)
+
+        resp = self.client.post(
+            f'/operations/api/entrada-mercaderia/linea/{linea.id}/editar/',
+            data={'numero_lote': 'L-HTTP-1', 'cantidad': '5.0000'},
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        linea.refresh_from_db()
+        self.assertEqual(linea.numero_lote, 'L-HTTP-1')
+
+        resp = self.client.post(
+            f'/operations/api/entrada-mercaderia/{entrada.id}/enviar-a-sap/',
+            data={}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_ENVIADO)
+
+    def test_vista_detalle_rechaza_actor_equivocado(self):
+        entrada = self._entrada_pendiente()
+        self.client.force_login(self.u_materia_prima)
+        resp = self.client.get(f'/operations/entrada-mercaderia/{entrada.id}/')
+        self.assertEqual(resp.status_code, 302)  # redirect a home_router
+
+    def test_panel_almacen_lista_entradas_por_generar(self):
+        entrada = self._entrada_pendiente()
+        self.client.force_login(self.u_almacen)
+        resp = self.client.get('/operations/almacen/')
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode('utf-8')
+        self.assertIn('Entradas de Mercadería por generar', html)
+        self.assertIn(f'/operations/entrada-mercaderia/{entrada.id}/', html)
 
 
 class EntradaMercaderiaAPITests(OperationsTestBase):
@@ -1192,13 +1300,25 @@ class EntradaMercaderiaAPITests(OperationsTestBase):
         self.api.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
 
     def _finalizar_ticket(self):
+        """
+        Ticket FINALIZADO + Entrada YA enviada al daemon (sesión 99: nace
+        PENDIENTE; acá replicamos el paso humano de Almacén — lote de
+        prueba + enviar_a_sap — para que quede en estado_sap='L', que es
+        lo que estos endpoints del daemon esperan).
+        """
         ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
         OperationsService.registrar_calidad(
             ticket_id=ticket.id, usuario_calidad=self.u_almacen,
             resultados=self._resultados_para(ticket),
         )
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
-        return EntradaMercaderia.objects.get(ticket_id=ticket.id)
+        entrada = EntradaMercaderia.objects.get(ticket_id=ticket.id)
+        for linea in entrada.lineas.all():
+            linea.numero_lote = 'LOTE-TEST'
+            linea.save(update_fields=['numero_lote'])
+        se.enviar_a_sap(entrada, self.u_almacen)
+        entrada.refresh_from_db()
+        return entrada
 
     def test_get_lista_solo_las_pendientes_L(self):
         entrada = self._finalizar_ticket()
@@ -1250,12 +1370,14 @@ class EntradaMercaderiaAPITests(OperationsTestBase):
         )
         resp = self.api.post(
             f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-definitivo/',
-            {'doc_entry_definitivo': 90004}, format='json',
+            {'doc_entry_definitivo': 90004, 'doc_num': 5001}, format='json',
         )
         self.assertEqual(resp.status_code, 200)
         entrada.refresh_from_db()
         self.assertEqual(entrada.estado_sap, 'Y')
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_CREADO_SAP)
         self.assertEqual(entrada.doc_entry_definitivo, 90004)
+        self.assertEqual(entrada.doc_num_sap, '5001')  # sesión 99: DocNum visible del daemon
         self.assertIsNotNone(entrada.fecha_definitivo_confirmado)
 
     def test_confirmar_borrador_sin_doc_entry_devuelve_400(self):

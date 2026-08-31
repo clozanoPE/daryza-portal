@@ -87,6 +87,8 @@
 <div class="tab-content" id="almacenTabsContent">
 <div class="tab-pane fade show active" id="tab-pendientes" role="tabpanel">
 
+{% include "operations/_partials/entradas_por_generar.html" with entradas_pendientes=entradas_pendientes acento="green" %}
+
 {# ── Kanban 3 columnas ────────────────────────────────────────────────────── #}
 <div class="row g-3">
 

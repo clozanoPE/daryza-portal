@@ -535,9 +535,17 @@ class OperationsService:
     @staticmethod
     def _generar_entrada_mercaderia(ticket: Ticket) -> EntradaMercaderia:
         """
-        Crea automáticamente la EntradaMercaderia (borrador de Entrada de
-        Mercadería para SAP) al finalizar el Ticket — mismo trigger que
-        registrar_salida usa para cerrar el ciclo (sesión 57).
+        Crea automáticamente la EntradaMercaderia al finalizar el Ticket —
+        mismo trigger que registrar_salida usa para cerrar el ciclo
+        (sesión 57).
+
+        Sesión 99: la Entrada nace en estado PENDIENTE / estado_sap=''
+        (antes se creaba directo en estado_sap='L'). Ahora hay un paso
+        humano intermedio: Almacén / Materia Prima completa el número de
+        LOTE por línea en el Portal y recién entonces la envía al daemon
+        (services_entrada.enviar_a_sap → estado ENVIADO / estado_sap='L').
+        El daemon (GET /api/v1/entradas-pendientes/) sigue filtrando por
+        estado_sap='L', así que no ve nada hasta ese envío.
 
         Idempotente por diseño (get_or_create por ticket, update_or_create
         por línea): un reintento de este método sobre el mismo Ticket no
@@ -555,7 +563,11 @@ class OperationsService:
         cantidad_sap).
         """
         entrada, created = EntradaMercaderia.objects.get_or_create(
-            ticket=ticket, defaults={'estado_sap': 'L'},
+            ticket=ticket,
+            defaults={
+                'estado': EntradaMercaderia.ESTADO_PENDIENTE,
+                'estado_sap': '',
+            },
         )
         if not created:
             return entrada

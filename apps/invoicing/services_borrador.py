@@ -73,6 +73,7 @@ archivos) de services.py.
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
+from apps.operations.models import EntradaMercaderia
 from apps.sap_sync.models import PurchaseOrder
 
 from . import services_archivos as sa
@@ -133,9 +134,20 @@ def listar_ocs_elegibles(proveedor) -> list[dict]:
     objetos PurchaseOrder sueltos — para que el template pueda mostrar la
     sede de cada OC sin una consulta adicional por fila.
     """
+    # Sesión 99: la Entrada de Mercadería de un Ticket FINALIZADO nace en
+    # estado PENDIENTE (Almacén/MP todavía no completó el LOTE ni la
+    # envió al daemon). Una OC no es facturable hasta que su Entrada fue
+    # efectivamente enviada (ENVIADO) o ya está creada en SAP (CREADO_SAP)
+    # — mismo criterio de "no factures algo que Almacén no cerró". Todo
+    # Ticket FINALIZADO tiene una Entrada (la genera registrar_salida),
+    # así que el __in exige que exista Y no sea PENDIENTE.
     candidatas = PurchaseOrder.objects.filter(
         card_code=proveedor.sap_card_code,
         appointment__ticket__estado='FINALIZADO',
+        appointment__ticket__entrada_mercaderia__estado__in=[
+            EntradaMercaderia.ESTADO_ENVIADO,
+            EntradaMercaderia.ESTADO_CREADO_SAP,
+        ],
     ).exclude(
         id__in=_pos_con_factura_activa()
     ).distinct().order_by('-created_at')
