@@ -93,7 +93,10 @@ Public Class GrpoSyncService
                 .BaseEntry = l.doc_entry_oc,
                 .BaseLine = l.base_line,
                 .Cantidad = l.cantidad,
-                .ItemCode = l.item_code
+                .ItemCode = l.item_code,
+                .NumeroLote = l.numero_lote,
+                .FechaVencimientoLote = l.fecha_vencimiento_lote,
+                .FechaFabricacionLote = l.fecha_fabricacion_lote
             }
         ).ToList()
 
@@ -105,9 +108,9 @@ Public Class GrpoSyncService
             Return
         End If
 
-        Logger.Escribir($"[GRPO-ÉXITO] Entrada #{entrada.id}: GRPO creado en SAP — DocEntry={resultado.DocEntry}.")
+        Logger.Escribir($"[GRPO-ÉXITO] Entrada #{entrada.id}: GRPO creado en SAP — DocEntry={resultado.DocEntry}, DocNum={resultado.DocNum}.")
 
-        Dim borradorOk = Await ConfirmarAsync(entrada.id, "confirmar-borrador", "doc_entry_borrador", resultado.DocEntry.Value)
+        Dim borradorOk = Await ConfirmarAsync(entrada.id, "confirmar-borrador", "doc_entry_borrador", resultado.DocEntry.Value, resultado.DocNum)
         If Not borradorOk Then
             ' El GRPO SÍ se creó en SAP, pero el Portal no pudo
             ' confirmarlo — no se llama a confirmar-definitivo (no
@@ -124,9 +127,9 @@ Public Class GrpoSyncService
             Return
         End If
 
-        Dim definitivoOk = Await ConfirmarAsync(entrada.id, "confirmar-definitivo", "doc_entry_definitivo", resultado.DocEntry.Value)
+        Dim definitivoOk = Await ConfirmarAsync(entrada.id, "confirmar-definitivo", "doc_entry_definitivo", resultado.DocEntry.Value, resultado.DocNum)
         If definitivoOk Then
-            Logger.Escribir($"[GRPO-CONFIRMADO] Entrada #{entrada.id}: borrador y definitivo confirmados en el Portal (DocEntry={resultado.DocEntry}).")
+            Logger.Escribir($"[GRPO-CONFIRMADO] Entrada #{entrada.id}: borrador y definitivo confirmados en el Portal (DocEntry={resultado.DocEntry}, DocNum={resultado.DocNum}).")
         End If
     End Function
 
@@ -139,9 +142,13 @@ Public Class GrpoSyncService
         Return JsonConvert.DeserializeObject(Of List(Of EntradaMercaderiaDTO))(resultado.Contenido)
     End Function
 
-    Private Async Function ConfirmarAsync(entradaId As Integer, accion As String, campo As String, docEntry As Integer) As Task(Of Boolean)
+    Private Async Function ConfirmarAsync(entradaId As Integer, accion As String, campo As String, docEntry As Integer, docNum As Integer?) As Task(Of Boolean)
         Dim url = $"{EntradasPendientesUrl}{entradaId}/{accion}/"
-        Dim body = JsonConvert.SerializeObject(New Dictionary(Of String, Integer) From {{campo, docEntry}})
+        Dim payload As New Dictionary(Of String, Object) From {{campo, docEntry}}
+        ' Sesión 99: doc_num opcional — el Portal lo guarda en doc_num_sap
+        ' (número humano del GRPO). Si SAP no lo devolvió, no se envía.
+        If docNum.HasValue Then payload("doc_num") = docNum.Value
+        Dim body = JsonConvert.SerializeObject(payload)
         Dim resultado = Await EnviarAlPortalConReintentoAsync(
             Function()
                 Dim req = New HttpRequestMessage(HttpMethod.Post, url)

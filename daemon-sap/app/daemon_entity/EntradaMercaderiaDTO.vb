@@ -27,4 +27,14 @@ Public Class EntradaMercaderiaLineaDTO
     Public Property base_line As Integer
     Public Property item_code As String
     Public Property cantidad As Decimal
+
+    ' Sesión 99: LOTE del artículo, completado por Almacén / Materia Prima
+    ' en el Portal antes de que la Entrada quede disponible para el daemon
+    ' (estado_sap='L'). numero_lote llega SIEMPRE poblado en las entradas
+    ' que este endpoint devuelve (el Portal valida que todas las líneas lo
+    ' tengan antes de permitir el envío — services_entrada.enviar_a_sap).
+    ' Las 2 fechas son opcionales (null si el artículo no las requiere).
+    Public Property numero_lote As String
+    Public Property fecha_vencimiento_lote As Date?
+    Public Property fecha_fabricacion_lote As Date?
 End Class
