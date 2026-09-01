@@ -409,6 +409,7 @@
             <span class="badge rounded-pill text-xxs fw-bold
               {% if fila.estado == 'PENDIENTE' %}bg-secondary text-white
               {% elif fila.estado == 'EN_PROCESO' %}bg-warning text-dark
+              {% elif fila.estado == 'DESPACHO_PARCIAL' %}bg-primary text-white
               {% else %}bg-success text-white{% endif %}">
               {{ fila.estado_display }}
             </span>
@@ -421,12 +422,24 @@
           </div>
           {% endif %}
 
+          {% if fila.cantidad_ordenada %}
+          <div class="d-flex align-items-center gap-3 text-xxs text-muted mb-2">
+            <span style="min-width:120px">
+              <i class="bi bi-box-seam me-1"></i>Recibido {{ fila.progreso_despacho }} ({{ fila.pct_recibido }}%)
+            </span>
+            <span>
+              <i class="bi bi-receipt me-1"></i>Facturado {{ fila.progreso_facturacion }} ({{ fila.pct_facturado }}%)
+            </span>
+          </div>
+          {% endif %}
+
           <div class="d-flex align-items-center justify-content-between text-xxs flex-wrap gap-1">
             <span class="text-muted">
               <i class="bi bi-receipt me-1"></i>Facturación:
               <span class="fw-bold
                 {% if fila.estado_facturacion == 'SIN_FACTURAR' %}text-secondary
                 {% elif fila.estado_facturacion == 'FACTURACION_EN_CURSO' %}text-warning
+                {% elif fila.estado_facturacion == 'FACTURACION_PARCIAL' %}text-primary
                 {% else %}text-success{% endif %}">
                 {{ fila.estado_facturacion_display }}
               </span>

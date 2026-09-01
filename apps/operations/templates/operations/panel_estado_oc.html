@@ -73,22 +73,38 @@
           </td>
           <td class="text-xs text-muted">{{ fila.sede_nombre|default:"—" }}</td>
           <td class="text-xs text-muted">{{ fila.fecha_cita|date:"d/m/Y"|default:"—" }}</td>
-          <td class="text-center">
+          <td class="text-center" style="min-width:140px">
             {% if fila.estado == 'PENDIENTE' %}
               <span class="badge bg-secondary text-xxs">PENDIENTE</span>
             {% elif fila.estado == 'EN_PROCESO' %}
               <span class="badge bg-warning text-dark text-xxs">EN PROCESO</span>
+            {% elif fila.estado == 'DESPACHO_PARCIAL' %}
+              <span class="badge bg-primary-subtle text-primary border border-primary-subtle text-xxs">DESPACHO PARCIAL</span>
             {% elif fila.estado == 'DESPACHADA' %}
               <span class="badge bg-success text-xxs">DESPACHADA</span>
             {% endif %}
+            {% if fila.cantidad_ordenada %}
+            <div class="progress mt-1" style="height:5px" title="Recibido {{ fila.progreso_despacho }}">
+              <div class="progress-bar bg-success" style="width: {{ fila.pct_recibido }}%"></div>
+            </div>
+            <span class="text-xxs text-muted">{{ fila.progreso_despacho }} · {{ fila.pct_recibido }}%</span>
+            {% endif %}
           </td>
-          <td class="text-center">
+          <td class="text-center" style="min-width:140px">
             {% if fila.estado_facturacion == 'SIN_FACTURAR' %}
               <span class="badge bg-secondary text-xxs">SIN FACTURAR</span>
+            {% elif fila.estado_facturacion == 'FACTURACION_PARCIAL' %}
+              <span class="badge bg-primary-subtle text-primary border border-primary-subtle text-xxs">FACT. PARCIAL</span>
             {% elif fila.estado_facturacion == 'FACTURACION_EN_CURSO' %}
               <span class="badge bg-warning text-dark text-xxs">EN CURSO</span>
             {% elif fila.estado_facturacion == 'FACTURADA' %}
               <span class="badge bg-success text-xxs">FACTURADA</span>
+            {% endif %}
+            {% if fila.cantidad_ordenada %}
+            <div class="progress mt-1" style="height:5px" title="Facturado {{ fila.progreso_facturacion }}">
+              <div class="progress-bar bg-success" style="width: {{ fila.pct_facturado }}%"></div>
+            </div>
+            <span class="text-xxs text-muted">{{ fila.progreso_facturacion }} · {{ fila.pct_facturado }}%</span>
             {% endif %}
             {% if fila.factura_id %}
             <a href="{% url 'invoicing:factura_detalle_compras' fila.factura_id %}" class="d-block text-xxs mt-1">
