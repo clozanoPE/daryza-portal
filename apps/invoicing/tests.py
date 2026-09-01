@@ -300,15 +300,13 @@ class InvoicingTestBase(OperationsTestBase):
 
         # Sesión 99: la EntradaMercaderia nace PENDIENTE (Almacén/MP debe
         # completar el LOTE antes de enviarla). Para los tests de
-        # Facturación necesitamos la OC facturable — replicamos ese paso
-        # humano: lote de prueba + enviar_a_sap. NO es lógica de negocio
-        # nueva, es el equivalente en test de lo que hace un usuario real
-        # de Almacén/MP en la pantalla de detalle de la Entrada.
+        # Facturación necesitamos la OC facturable — replicamos el paso
+        # humano de "Enviar a SAP B1". NO es lógica de negocio nueva.
+        # Sesión 99b: la línea de estos tests no está gestionada por lote
+        # (PurchaseOrderLine.gestionado_por_lote=False por default), así
+        # que enviar_a_sap no exige ningún numero_lote.
         from apps.operations import services_entrada as _se
         entrada = EntradaMercaderia.objects.get(ticket=ticket)
-        for _linea in entrada.lineas.all():
-            _linea.numero_lote = 'LOTE-TEST'
-            _linea.save(update_fields=['numero_lote'])
         _actor = self.u_materia_prima if ticket.es_materia_prima else self.u_almacen
         _se.enviar_a_sap(entrada, _actor)
         return ticket

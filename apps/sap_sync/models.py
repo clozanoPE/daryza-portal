@@ -105,6 +105,18 @@ class PurchaseOrderLine(models.Model):
     # inspecciones registradas. Ver PurchaseOrderSerializer.create.
     activa = models.BooleanField(default=True)
 
+    # Sesión 99b: `OITM.ManBtchNum` de SAP — indica si el artículo se
+    # gestiona por LOTE. Si es True, la pantalla de Entrada de Mercadería
+    # exige el número de lote de esta línea antes de enviarla al daemon
+    # (services_entrada.enviar_a_sap); si es False, no se pide ni se envía.
+    # `default=False` transitorio: las líneas ya sincronizadas antes de
+    # este campo se auto-corrigen en el próximo resync real desde SAP
+    # (mismo criterio que `activa` / `precio_unitario`, sesión 49/92).
+    gestionado_por_lote = models.BooleanField(
+        default=False,
+        help_text="ManBtchNum de SAP: True si el artículo se gestiona por lote.",
+    )
+
     class Meta:
         unique_together = ('purchase_order', 'line_num')
 

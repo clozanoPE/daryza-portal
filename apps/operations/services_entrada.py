@@ -177,11 +177,18 @@ def enviar_a_sap(entrada: EntradaMercaderia, usuario) -> EntradaMercaderia:
     if not lineas:
         raise ValidationError("La Entrada de Mercadería no tiene ninguna línea.")
 
-    sin_lote = [l.po_line.item_code for l in lineas if not (l.numero_lote or '').strip()]
+    # Sesión 99b: el lote es obligatorio SOLO para los ítems que SAP
+    # gestiona por lote (PurchaseOrderLine.gestionado_por_lote). Una línea
+    # que no lo requiere puede quedar sin numero_lote sin bloquear el
+    # envío — y el daemon tampoco le mandará BatchNumbers.
+    sin_lote = [
+        l.po_line.item_code for l in lineas
+        if l.po_line.gestionado_por_lote and not (l.numero_lote or '').strip()
+    ]
     if sin_lote:
         raise ValidationError(
-            "Complete el número de lote de todas las líneas antes de enviar a SAP B1. "
-            f"Falta(n): {', '.join(sin_lote)}."
+            "Complete el número de lote de las líneas gestionadas por lote antes de "
+            f"enviar a SAP B1. Falta(n): {', '.join(sin_lote)}."
         )
 
     entrada.estado = EntradaMercaderia.ESTADO_ENVIADO

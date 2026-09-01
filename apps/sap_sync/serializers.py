@@ -20,12 +20,16 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
         # default transitorio (0/'IGV'), no un 400 claro.
         fields = [
             'doc_num', 'line_num', 'item_code', 'description', 'quantity_sap', 'und_medida',
-            'precio_unitario', 'precio_total_linea', 'tax_code',
+            'precio_unitario', 'precio_total_linea', 'tax_code', 'gestionado_por_lote',
         ]
         extra_kwargs = {
             'precio_unitario': {'required': True},
             'precio_total_linea': {'required': True},
             'tax_code': {'required': True},
+            # Sesión 99b: mismo criterio — el modelo le da default=False, así
+            # que sin este required=True explícito DRF lo infiere opcional y
+            # un daemon desactualizado que lo omitiera pasaría silencioso.
+            'gestionado_por_lote': {'required': True},
         }
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):

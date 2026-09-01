@@ -75,6 +75,11 @@ class SyncOCUpsertLineaPorLineaTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
 
     def _payload_base(self, lines):
+        # Sesión 99b: gestionado_por_lote es obligatorio en el serializer
+        # (required=True). Los tests que no lo especifican reciben False
+        # por defecto acá para no tener que repetirlo en cada línea inline.
+        for l in lines:
+            l.setdefault('gestionado_por_lote', False)
         return {
             'doc_entry': self.po.doc_entry,
             'doc_num': self.po.doc_num,
@@ -155,6 +160,42 @@ class SyncOCUpsertLineaPorLineaTests(TestCase):
         ])
         response = self.client.post(self.url, payload, format='json')
         self.assertEqual(response.status_code, 400)
+
+    def test_gestionado_por_lote_se_sincroniza_y_es_obligatorio(self):
+        """
+        Sesión 99b: gestionado_por_lote (OITM.ManBtchNum) llega por línea
+        y se persiste tal cual. Omitirlo -> 400 (required=True, mismo
+        criterio que precio_unitario/tax_code).
+        """
+        payload = self._payload_base([
+            {'line_num': 0, 'item_code': 'ITEM-A', 'description': 'Linea A',
+             'quantity_sap': '100.0000', 'und_medida': 'KG',
+             'precio_unitario': '10.0000', 'precio_total_linea': '1000.0000', 'tax_code': 'IGV',
+             'gestionado_por_lote': True},
+            {'line_num': 1, 'item_code': 'ITEM-B', 'description': 'Linea B',
+             'quantity_sap': '50.0000', 'und_medida': 'KG',
+             'precio_unitario': '20.0000', 'precio_total_linea': '1000.0000', 'tax_code': 'IGV',
+             'gestionado_por_lote': False},
+        ])
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+
+        self.linea_a.refresh_from_db()
+        self.linea_b.refresh_from_db()
+        self.assertTrue(self.linea_a.gestionado_por_lote)
+        self.assertFalse(self.linea_b.gestionado_por_lote)
+
+        # Omitir el campo en una línea -> 400.
+        payload_incompleto = self._payload_base([
+            {'line_num': 0, 'item_code': 'ITEM-A', 'description': 'Linea A',
+             'quantity_sap': '100.0000', 'und_medida': 'KG',
+             'precio_unitario': '10.0000', 'precio_total_linea': '1000.0000', 'tax_code': 'IGV'},
+        ])
+        # _payload_base ya inyectó gestionado_por_lote=False por el setdefault;
+        # lo quitamos para simular un daemon desactualizado.
+        del payload_incompleto['lines'][0]['gestionado_por_lote']
+        response_2 = self.client.post(self.url, payload_incompleto, format='json')
+        self.assertEqual(response_2.status_code, 400)
 
     def test_resync_de_oc_con_ticket_e_inspecciones_no_rompe_fk(self):
         """
@@ -296,7 +337,8 @@ class SyncOCCreaSupplierProfileTests(TestCase):
             'lines': [
                 {'line_num': 0, 'item_code': 'ITEM-SP', 'description': 'Item',
                  'quantity_sap': '10.0000', 'und_medida': 'UND',
-                 'precio_unitario': '5.0000', 'precio_total_linea': '50.0000', 'tax_code': 'IGV'},
+                 'precio_unitario': '5.0000', 'precio_total_linea': '50.0000', 'tax_code': 'IGV',
+                 'gestionado_por_lote': False},
             ],
         }
 

@@ -38,11 +38,13 @@ async function enviarEntradaASap(entradaId) {
   const { showToast, btnLoading } = DzUI;
   const btn = document.getElementById('btn-enviar-entrada');
 
-  // Validación client-side: todas las líneas deben tener lote.
+  // Validación client-side: solo las líneas gestionadas por lote tienen
+  // un `.inp-lote` (las demás muestran un campo deshabilitado sin esa
+  // clase), así que este selector ya cubre exactamente las obligatorias.
   const sinLote = [...document.querySelectorAll('.inp-lote')]
     .filter(inp => !inp.value.trim());
   if (sinLote.length) {
-    showToast('Complete el número de lote de todas las líneas antes de enviar a SAP B1.', 'warning');
+    showToast('Complete el número de lote de las líneas gestionadas por lote antes de enviar a SAP B1.', 'warning');
     sinLote[0].focus();
     return;
   }

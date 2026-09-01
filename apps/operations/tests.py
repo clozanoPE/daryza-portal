@@ -1186,13 +1186,42 @@ class EntradaMercaderiaLoteFlowTests(OperationsTestBase):
     services_entrada.py): editar_linea_entrada / enviar_a_sap, y las 3
     vistas nuevas (detalle + 2 AJAX). El actor de recepción de una OC 'CDL'
     es ALMACEN.
+
+    Sesión 99b: el lote es obligatorio SOLO para las líneas cuyo
+    PurchaseOrderLine.gestionado_por_lote=True (OITM.ManBtchNum de SAP).
+    _entrada_pendiente marca la línea como gestionada por lote por default
+    para que los tests de "bloquea sin lote" sigan teniendo sentido.
     """
 
-    def _entrada_pendiente(self, u_mss_tdb='CDL'):
+    def _entrada_pendiente(self, u_mss_tdb='CDL', gestionado_por_lote=True):
         ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, u_mss_tdb, requiere_coa=False)
+        if gestionado_por_lote:
+            ticket.appointment.purchase_orders.first().lines.update(gestionado_por_lote=True)
         actor = self.u_materia_prima if ticket.es_materia_prima else self.u_almacen
         OperationsService.registrar_calidad(
             ticket_id=ticket.id, usuario_calidad=actor, resultados=self._resultados_para(ticket),
+        )
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        return EntradaMercaderia.objects.get(ticket_id=ticket.id)
+
+    def _entrada_mixta(self):
+        """
+        OC 'CDL' con 2 líneas: la 1ra gestionada por lote (obligatoria),
+        la 2da no (no debe pedir ni exigir lote). Ticket -> FINALIZADO.
+        """
+        ticket = self._crear_cita_confirmada('CDL', requiere_coa=False)
+        po = ticket.appointment.purchase_orders.first()
+        po.lines.filter(line_num=1).update(gestionado_por_lote=True)
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_num=2, item_code='ITEM-NOLOTE',
+            description='Articulo sin lote', quantity_sap=Decimal('8'),
+            und_medida='UND', gestionado_por_lote=False,
+        )
+        ticket = self._avanzar_a_vigilancia_ingreso(ticket)
+        ticket = self._avanzar_a_almacen(ticket)
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen,
+            resultados=self._resultados_para(ticket),
         )
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
         return EntradaMercaderia.objects.get(ticket_id=ticket.id)
@@ -1280,6 +1309,56 @@ class EntradaMercaderiaLoteFlowTests(OperationsTestBase):
         self.assertIn('Entradas de Mercadería por generar', html)
         self.assertIn(f'/operations/entrada-mercaderia/{entrada.id}/', html)
 
+    def test_linea_no_gestionada_por_lote_no_exige_lote(self):
+        """Sesión 99b: una OC cuya única línea NO se gestiona por lote se envía sin lote."""
+        entrada = self._entrada_pendiente(gestionado_por_lote=False)
+        se.enviar_a_sap(entrada, self.u_almacen)  # no debe lanzar
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_ENVIADO)
+        self.assertEqual(entrada.estado_sap, 'L')
+        self.assertEqual(entrada.lineas.first().numero_lote, '')
+
+    def test_lote_obligatorio_solo_para_gestionado_por_lote(self):
+        """
+        Sesión 99b — OC con líneas mixtas: enviar_a_sap exige lote solo en
+        la línea gestionada por lote; la otra puede quedar sin ese dato.
+        """
+        entrada = self._entrada_mixta()
+        l_lote = entrada.lineas.get(po_line__line_num=1)
+        l_sin = entrada.lineas.get(po_line__line_num=2)
+        self.assertTrue(l_lote.po_line.gestionado_por_lote)
+        self.assertFalse(l_sin.po_line.gestionado_por_lote)
+
+        # Sin ningún lote -> bloquea, y el mensaje nombra SOLO la línea gestionada por lote.
+        with self.assertRaises(ValidationError) as ctx:
+            se.enviar_a_sap(entrada, self.u_almacen)
+        msg = '; '.join(ctx.exception.messages)
+        self.assertIn(l_lote.po_line.item_code, msg)
+        self.assertNotIn('ITEM-NOLOTE', msg)
+
+        # Lote SOLO en la línea gestionada por lote -> envía OK.
+        se.editar_linea_entrada(l_lote, self.u_almacen, numero_lote='L-MIX-1')
+        se.enviar_a_sap(entrada, self.u_almacen)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_ENVIADO)
+
+        # El payload al daemon refleja gestionado_por_lote por línea, y la
+        # línea no gestionada queda con numero_lote vacío.
+        from apps.operations.serializers import EntradaMercaderiaSerializer
+        data = EntradaMercaderiaSerializer(entrada).data
+        por_item = {ln['item_code']: ln for ln in data['lineas']}
+        self.assertEqual(por_item[l_lote.po_line.item_code]['numero_lote'], 'L-MIX-1')
+        self.assertEqual(por_item['ITEM-NOLOTE']['numero_lote'], '')
+
+    def test_detalle_html_deshabilita_lote_en_linea_no_gestionada(self):
+        entrada = self._entrada_mixta()
+        self.client.force_login(self.u_almacen)
+        resp = self.client.get(f'/operations/entrada-mercaderia/{entrada.id}/')
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode('utf-8')
+        self.assertIn('No gestionado por lote', html)   # la línea line_num=2
+        self.assertIn('data-requiere-lote="1"', html)    # la línea line_num=1
+
 
 class EntradaMercaderiaAPITests(OperationsTestBase):
     """
@@ -1302,9 +1381,10 @@ class EntradaMercaderiaAPITests(OperationsTestBase):
     def _finalizar_ticket(self):
         """
         Ticket FINALIZADO + Entrada YA enviada al daemon (sesión 99: nace
-        PENDIENTE; acá replicamos el paso humano de Almacén — lote de
-        prueba + enviar_a_sap — para que quede en estado_sap='L', que es
-        lo que estos endpoints del daemon esperan).
+        PENDIENTE; acá replicamos el paso humano de "Enviar a SAP B1" para
+        que quede en estado_sap='L', que es lo que estos endpoints del
+        daemon esperan). La línea 'CDL' no está gestionada por lote
+        (sesión 99b), así que enviar_a_sap no exige ningún numero_lote.
         """
         ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'CDL', requiere_coa=False)
         OperationsService.registrar_calidad(
@@ -1313,9 +1393,6 @@ class EntradaMercaderiaAPITests(OperationsTestBase):
         )
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
         entrada = EntradaMercaderia.objects.get(ticket_id=ticket.id)
-        for linea in entrada.lineas.all():
-            linea.numero_lote = 'LOTE-TEST'
-            linea.save(update_fields=['numero_lote'])
         se.enviar_a_sap(entrada, self.u_almacen)
         entrada.refresh_from_db()
         return entrada
