@@ -1736,3 +1736,125 @@ class EntradaMercaderiaAPITests(OperationsTestBase):
         entrada.refresh_from_db()
         self.assertEqual(entrada.error_mensaje, '')
         self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_CREADO_SAP)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sesión 100 — Obs 4: la vista consolidada NO colapsa filas por (línea, etapa)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EstadoConsolidadoNoColapsaTests(OperationsTestBase):
+    """
+    Regresión del bug de Obs 4 (sesión 100): OperationsService.
+    get_estado_actual_por_oc hacía setdefault() por po_line_id y se
+    quedaba con la fila MÁS RECIENTE — así, en cuanto Calidad registraba
+    su inspección (fila etapa='CALIDAD', independiente), su fila tapaba la
+    de Almacén/Materia Prima en detalle_ticket / trazabilidad_ticket. La
+    observación de Almacén seguía en BD pero dejaba de verse.
+
+    A nivel de escritura NUNCA hubo bug: unique_together=('ticket',
+    'po_line', 'etapa') garantiza filas separadas; _registrar_inspeccion_
+    calidad crea una fila NUEVA sin tocar la de ALMACEN (sesión 37). El
+    bug era 100% de la LECTURA consolidada.
+    """
+
+    def _resultados_con_comentario(self, ticket, comentario, estado='CONFORME', cantidad=None):
+        return [
+            {
+                'inspeccion_id': insp.id,
+                'estado': estado,
+                'cantidad_modificada': str(cantidad if cantidad is not None else insp.cantidad_sap),
+                'comentario': comentario,
+            }
+            for insp in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+
+    def _ticket_con_inspeccion_almacen_y_calidad(self):
+        """
+        Ticket MP con requiere_calidad=True llevado hasta que AMBOS
+        registraron su propia inspección (etapa='ALMACEN' del actor +
+        etapa='CALIDAD' de Calidad), con observaciones y estados
+        deliberadamente distintos.
+        """
+        ticket = self._crear_ticket_en_etapa(Ticket.ETAPA_ALMACEN, 'MP')
+        self.assertTrue(ticket.requiere_calidad)
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_materia_prima,
+            resultados=self._resultados_con_comentario(
+                ticket, 'Bulto danado - recibido parcial', estado='RECHAZADO', cantidad='6.0000',
+            ),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_CALIDAD)
+
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_calidad,
+            resultados=self._resultados_con_comentario(
+                ticket, 'Verificado por Calidad tras reconteo', estado='CONFORME', cantidad='8.0000',
+            ),
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.etapa_actual, Ticket.ETAPA_VIGILANCIA_SALIDA)
+        return ticket
+
+    def test_devuelve_ambas_filas_almacen_y_calidad_para_la_misma_linea(self):
+        ticket = self._ticket_con_inspeccion_almacen_y_calidad()
+
+        agrupado = OperationsService.get_estado_actual_por_oc(ticket.id)
+        self.assertEqual(len(agrupado), 1)  # una OC
+        lineas = next(iter(agrupado.values()))['lineas']
+
+        por_etapa = {}
+        for l in lineas:
+            por_etapa.setdefault(l['etapa'], []).append(l)
+
+        # La fila de Almacén/Materia Prima NO se perdió pese a que Calidad
+        # registró después.
+        self.assertIn('ALMACEN', por_etapa)
+        self.assertIn('CALIDAD', por_etapa)
+        self.assertEqual(len(por_etapa['ALMACEN']), 1)
+        self.assertEqual(len(por_etapa['CALIDAD']), 1)
+
+        alm = por_etapa['ALMACEN'][0]
+        cal = por_etapa['CALIDAD'][0]
+        self.assertEqual(alm['comentario'], 'Bulto danado - recibido parcial')
+        self.assertEqual(alm['estado'], 'RECHAZADO')
+        self.assertEqual(str(alm['cantidad_modificada']), '6.0000')
+        self.assertEqual(cal['comentario'], 'Verificado por Calidad tras reconteo')
+        self.assertEqual(cal['estado'], 'CONFORME')
+        self.assertEqual(str(cal['cantidad_modificada']), '8.0000')
+
+    def test_orden_contiguo_por_linea_y_fecha(self):
+        """
+        Todas las filas de una misma línea llegan juntas y en orden
+        cronológico (fecha_registro): la de recepción antes que la de
+        Calidad, nunca al revés.
+        """
+        ticket = self._ticket_con_inspeccion_almacen_y_calidad()
+        lineas = next(iter(OperationsService.get_estado_actual_por_oc(ticket.id).values()))['lineas']
+
+        etapas = [l['etapa'] for l in lineas]
+        self.assertIn('ALMACEN', etapas)
+        self.assertIn('CALIDAD', etapas)
+        self.assertLess(etapas.index('ALMACEN'), etapas.index('CALIDAD'))
+
+    def test_trazabilidad_ticket_muestra_ambas_observaciones(self):
+        """Camino HTTP real: la observación de Almacén y la de Calidad aparecen las 2."""
+        ticket = self._ticket_con_inspeccion_almacen_y_calidad()
+
+        self.client.force_login(self.u_compras)
+        resp = self.client.get(f'/operations/ticket/{ticket.id}/trazabilidad/')
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode('utf-8')
+        self.assertIn('Bulto danado - recibido parcial', html)
+        self.assertIn('Verificado por Calidad tras reconteo', html)
+
+    def test_detalle_ticket_estado_actual_muestra_ambas_observaciones(self):
+        ticket = self._ticket_con_inspeccion_almacen_y_calidad()
+
+        self.client.force_login(self.u_compras)
+        resp = self.client.get(f'/operations/ticket/{ticket.id}/')
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode('utf-8')
+        self.assertIn('Bulto danado - recibido parcial', html)
+        self.assertIn('Verificado por Calidad tras reconteo', html)

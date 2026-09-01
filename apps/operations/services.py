@@ -742,34 +742,46 @@ class OperationsService:
     @staticmethod
     def get_estado_actual_por_oc(ticket_id: int) -> dict:
         """
-        Agrupa por OC la fila MÁS RECIENTE (por fecha_registro) de
-        TicketLineInspection por línea, considerando TODAS las etapas ya
-        ejecutadas (VIGILANCIA/ALMACEN/CALIDAD) — no solo ALMACEN. Siempre
-        de solo lectura.
+        Agrupa por OC TODAS las filas de TicketLineInspection ya ejecutadas
+        para el ticket — una por (línea, etapa), SIN colapsar. Siempre de
+        solo lectura.
 
-        Corrige el bug de visibilidad diagnosticado: detalle_ticket.html
-        solo leía la etapa ALMACEN (el registro base, previo a Calidad), así
-        que un RECHAZADO o una cantidad ajustada por Calidad (etapa='CALIDAD',
-        fila aparte por diseño — ver registrar_calidad) quedaba guardado en
-        BD pero nunca se veía en la UI. Esta consulta siempre toma la fila
-        con fecha_registro más reciente por línea, sea cual sea su etapa.
+        Sesión 100 (Obs 4): antes esta función hacía
+        `setdefault(insp.po_line_id, insp)` y se quedaba con UNA sola fila
+        por línea (la más reciente por fecha_registro), descartando el
+        resto. En cuanto Calidad registraba su inspección (fila
+        etapa='CALIDAD', una fila NUEVA e independiente por diseño — ver
+        OperationsService.registrar_calidad), su fila tapaba por completo
+        la de Almacén/Materia Prima en detalle_ticket.html y
+        trazabilidad_ticket.html: la observación / el estado / la cantidad
+        de Almacén seguían en BD, intactos, pero dejaban de verse. Misma
+        familia de bug ya corregida para coa_url (sesiones 9 y 24); nunca
+        se había corregido para comentario / estado / cantidad_modificada.
 
-        El campo coa_url se lee de TicketLineCOA (fuente única desde la Fase 1),
-        NO de TicketLineInspection.coa_url: ese campo es solo una foto tomada
-        una vez, al momento del ingreso (ver iniciar_ingreso_planta), que nunca
-        se sincroniza en las filas posteriores de ALMACEN/CALIDAD (quedan en
-        None/''). Como esta función toma la fila más reciente por línea, una
-        vez que Calidad actúa, esa fila más reciente casi siempre tiene el COA
-        vacío aunque el proveedor sí lo haya cargado — bug confirmado con
-        datos reales (Ticket #11, línea MP00000041).
+        Ahora devuelve las 2 (o 3) filas de una línea que pasó por
+        Vigilancia + Almacén/MP + Calidad como filas contiguas
+        independientes, cada una con su propio estado / cantidad /
+        observación, ordenadas por (línea, fecha_registro). El template
+        _partials/tabla_inspeccion.html ya lo soporta vía la columna
+        "Etapa" (mostrar_etapa=True) — sin cambios de plantilla.
+
+        Un registro de un rol/etapa NUNCA se colapsa ni se sobrescribe en
+        la lectura — regla permanente del proyecto (ver "Reglas de esta
+        sesión en adelante" en CLAUDE.md). Antes de escribir cualquier
+        función nueva de "estado consolidado", verificar si puede haber
+        más de una fila legítima por la misma clave.
+
+        El campo coa_url se lee de TicketLineCOA (fuente única desde la
+        Fase 1), NO de TicketLineInspection.coa_url: ese campo es solo una
+        foto tomada una vez, al momento del ingreso (ver
+        iniciar_ingreso_planta), que nunca se sincroniza en las filas
+        posteriores de ALMACEN/CALIDAD (quedan en None/'') — sesión 9.
         """
-        inspecciones = TicketLineInspection.objects.filter(
-            ticket_id=ticket_id
-        ).select_related('po_line__purchase_order').order_by('po_line_id', '-fecha_registro')
-
-        mas_reciente_por_linea = {}
-        for insp in inspecciones:
-            mas_reciente_por_linea.setdefault(insp.po_line_id, insp)
+        inspecciones = list(
+            TicketLineInspection.objects.filter(ticket_id=ticket_id)
+            .select_related('po_line__purchase_order')
+            .order_by('po_line_id', 'fecha_registro')
+        )
 
         coas_cargados = {
             coa.po_line_id: coa.coa_url
@@ -782,7 +794,7 @@ class OperationsService:
             'lineas': []
         })
 
-        for insp in mas_reciente_por_linea.values():
+        for insp in inspecciones:
             oc = insp.po_line.purchase_order
             oc_num = oc.doc_num
             grouped[oc_num]['oc_num'] = oc_num
@@ -797,6 +809,7 @@ class OperationsService:
                 'requiere_coa': insp.requiere_coa,
                 'coa_url': coas_cargados.get(insp.po_line_id, ''),
                 'comentario': insp.comentario or '',
+                'etapa': insp.etapa,
                 'etapa_display': insp.get_etapa_display(),
             })
 
