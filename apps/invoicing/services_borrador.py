@@ -81,9 +81,20 @@ from .models import Factura, FacturaLinea, FacturaOrdenCompra
 from .services import InvoicingService
 
 
-def _pos_con_factura_activa():
-    return FacturaOrdenCompra.objects.exclude(
-        factura__estado='CANCELADO'
+def _pos_con_factura_en_vuelo():
+    """
+    IDs de PurchaseOrder que tienen una Factura EN VUELO (BORRADOR /
+    EN_REVISION_COMPRAS / OBSERVADA) — se excluyen de "Nueva factura desde
+    OC(s)" para no armar 2 borradores simultáneos sobre el mismo saldo.
+
+    Sesión 99c: antes excluía cualquier OC con Factura no cancelada
+    (incluida una APROBADA_COMPRAS ya cerrada), lo que impedía facturar la
+    2da/3ra entrega de una OC abierta con despachos parciales. Una OC
+    totalmente facturada igual desaparece del listado — pero por vía del
+    saldo (lineas_disponibles_de_oc filtra saldo > 0), no por este filtro.
+    """
+    return FacturaOrdenCompra.objects.filter(
+        factura__estado__in=InvoicingService.FACTURA_ESTADOS_EN_VUELO
     ).values_list('purchase_order_id', flat=True)
 
 
@@ -147,7 +158,7 @@ def listar_ocs_elegibles(proveedor) -> list[dict]:
         appointment__ticket__estado='FINALIZADO',
         appointment__ticket__entrada_mercaderia__estado=EntradaMercaderia.ESTADO_CREADO_SAP,
     ).exclude(
-        id__in=_pos_con_factura_activa()
+        id__in=_pos_con_factura_en_vuelo()
     ).distinct().order_by('-created_at')
 
     elegibles = []

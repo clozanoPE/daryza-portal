@@ -49,7 +49,7 @@ from django.db import transaction
 from django.db.models import Max
 
 from apps.base.decorators import en_grupo
-from apps.operations.models import EntradaMercaderiaLinea
+from apps.operations.models import EntradaMercaderia, EntradaMercaderiaLinea
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 from . import services_validacion as sv
@@ -76,44 +76,65 @@ class InvoicingService:
     @staticmethod
     def saldo_disponible(po_line, excluir_factura=None):
         """
-        Cantidad de po_line todavía disponible para facturar:
+        Cantidad de po_line todavía disponible para facturar EN ESTE MOMENTO
+        ("la fotografía actual", sesión 99c — OC abierta con N despachos
+        parciales):
 
-            EntradaMercaderiaLinea.cantidad (lo REAL recibido, la fuente ya
-            establecida por OperationsService.get_estado_actual_por_oc /
-            EntradaMercaderiaLinea, sesión 6/9/57 — nunca
-            PurchaseOrderLine.quantity_sap)
-            − Sum(FacturaLinea.cantidad de toda Factura con estado != CANCELADO
-              que referencia esa línea)
+            Σ(EntradaMercaderiaLinea.cantidad de TODAS las rondas de esa
+              línea cuya Entrada ya está en estado='CREADO_SAP')
+              — "lo real recibido Y confirmado en SAP"; una ronda ENVIADO
+              que SAP todavía no creó (o rechazó) NO cuenta acá, mismo
+              criterio del punto (c) de la sesión 99c: no facturar contra
+              un GRPO que aún no existe.
+            − Σ(FacturaLinea.cantidad de toda Factura con estado != CANCELADO
+              que referencia esa línea) — "lo ya facturado".
+
+        Antes (Sub-fase 3.1) esto usaba `EntradaMercaderiaLinea.objects.get(
+        po_line=...)` — un `.get()` SINGULAR que asumía una sola ronda de
+        recepción por línea. Con entregas parciales (2+ Tickets sobre la
+        misma OC), esa línea lanzaba `MultipleObjectsReturned`. Ahora suma
+        todas las rondas.
 
         `excluir_factura` permite recalcular el saldo "como si" la propia
         Factura que se está editando no existiera todavía — evita contar
         dos veces su propia línea al validar una edición sobre una Factura
         ya existente.
 
-        Lanza ValidationError si la línea todavía no tiene ninguna Entrada
-        de Mercancía registrada — no se puede facturar sin una recepción
-        física confirmada.
+        Lanza ValidationError si la línea todavía no tiene NINGUNA Entrada
+        de Mercancía registrada (ni una sola ronda) — no se puede facturar
+        sin una recepción física. Si tiene rondas pero ninguna llegó a
+        CREADO_SAP todavía, devuelve 0 (no lanza): hay recepción, solo no
+        está confirmada en SAP; `lineas_disponibles_de_oc` la omite igual
+        que a un saldo <= 0.
 
         NOTA de implementación (select_for_update + exclude cross-tabla):
         NO se usa `FacturaLinea.objects.select_for_update().exclude(
         factura__estado='CANCELADO')` — verificado que Django puede resolver
         un exclude() a través de una relación FK como un LEFT OUTER JOIN, y
         Postgres rechaza "SELECT ... FOR UPDATE" sobre el lado nullable de
-        un outer join (`FOR UPDATE cannot be applied to the nullable side
-        of an outer join`). En su lugar, se bloquean las filas con
-        select_for_update()+select_related('factura') (INNER JOIN, porque
-        FacturaLinea.factura es NOT NULL) y el filtro por estado se aplica
-        en Python sobre filas ya cargadas — sin ningún exclude() cruzando
-        tablas bajo FOR UPDATE.
+        un outer join. Mismo criterio para las EntradaMercaderiaLinea: se
+        bloquean con select_for_update()+select_related('entrada') (INNER
+        JOIN, entrada es NOT NULL) y el filtro por estado se aplica en
+        Python sobre las filas ya cargadas.
         """
-        try:
-            entrada_linea = EntradaMercaderiaLinea.objects.select_for_update().get(po_line=po_line)
-        except EntradaMercaderiaLinea.DoesNotExist:
+        entrada_lineas = list(
+            EntradaMercaderiaLinea.objects
+            .select_for_update()
+            .select_related('entrada')
+            .filter(po_line=po_line)
+        )
+        if not entrada_lineas:
             raise ValidationError(
                 f"La línea {po_line.item_code} (OC {po_line.purchase_order.doc_num}) "
-                "todavía no tiene una Entrada de Mercancía registrada — no se puede "
+                "todavía no tiene ninguna Entrada de Mercancía registrada — no se puede "
                 "facturar sin una recepción física confirmada."
             )
+
+        recibido_confirmado = sum(
+            (el.cantidad for el in entrada_lineas
+             if el.entrada.estado == EntradaMercaderia.ESTADO_CREADO_SAP),
+            Decimal('0'),
+        )
 
         lineas_qs = FacturaLinea.objects.select_for_update().select_related('factura').filter(
             po_line=po_line,
@@ -126,16 +147,31 @@ class InvoicingService:
             Decimal('0'),
         )
 
-        return entrada_linea.cantidad - ya_facturado
+        return recibido_confirmado - ya_facturado
+
+    # Estados de Factura en los que la Factura todavía se está armando/
+    # revisando (no terminal) — una OC no puede tener 2 de estas a la vez
+    # (ver validar_oc_disponible). APROBADA_COMPRAS y CANCELADO NO están
+    # acá: una OC abierta con despachos parciales se factura en varias
+    # Facturas APROBADA_COMPRAS a lo largo del tiempo (sesión 99c).
+    FACTURA_ESTADOS_EN_VUELO = ('BORRADOR', 'EN_REVISION_COMPRAS', 'OBSERVADA')
 
     @staticmethod
     def validar_oc_disponible(purchase_order, excluir_factura=None):
         """
-        Candado de unicidad de OC: bloquea que una misma OC quede vinculada
-        a más de una Factura activa (estado != CANCELADO) a la vez — ver
-        docstring de apps/invoicing/models.py para la justificación
-        completa de por qué esto vive aquí (select_for_update) y no como
-        UniqueConstraint de Postgres.
+        Candado: una OC no puede tener 2 Facturas EN VUELO (BORRADOR /
+        EN_REVISION_COMPRAS / OBSERVADA) a la vez — evita armar 2 borradores
+        simultáneos sobre el mismo saldo. Ver docstring de apps/invoicing/
+        models.py para la justificación de por qué esto vive aquí
+        (select_for_update) y no como UniqueConstraint de Postgres.
+
+        Sesión 99c (OC abierta con N despachos parciales): antes bloqueaba
+        con CUALQUIER Factura no cancelada — incluida una APROBADA_COMPRAS
+        ya cerrada. Eso impedía facturar la 2da/3ra entrega de una misma
+        OC. Ahora solo bloquean las Facturas en vuelo; una APROBADA_COMPRAS
+        NO bloquea una nueva. El "ya no queda nada por facturar" es
+        emergente: `saldo_disponible` da 0 en cada línea y
+        `_crear_factura_y_lineas` rechaza `cantidad > saldo`.
 
         `excluir_factura` permite validar una edición sobre una Factura ya
         existente sin que se bloquee a sí misma.
@@ -171,7 +207,8 @@ class InvoicingService:
 
         facturas_bloqueando = Factura.objects.select_for_update().filter(
             ordenes_compra__purchase_order=purchase_order,
-        ).exclude(estado='CANCELADO')
+            estado__in=InvoicingService.FACTURA_ESTADOS_EN_VUELO,
+        )
 
         if excluir_factura is not None:
             facturas_bloqueando = facturas_bloqueando.exclude(
@@ -180,8 +217,9 @@ class InvoicingService:
 
         if facturas_bloqueando.exists():
             raise ValidationError(
-                f"La OC {purchase_order.doc_num} ya está vinculada a otra Factura "
-                "activa. Cancele esa Factura antes de crear una nueva para la misma OC."
+                f"La OC {purchase_order.doc_num} ya tiene una Factura en curso "
+                "(borrador / en revisión / observada). Termine o cancele esa Factura "
+                "antes de crear otra para la misma OC."
             )
 
     @staticmethod
