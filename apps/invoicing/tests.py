@@ -440,19 +440,27 @@ class ValidarOcDisponibleTests(InvoicingTestBase):
         with self.assertRaises(ValidationError):
             InvoicingService.validar_oc_disponible(po)
 
-    def test_oc_ya_usada_rechaza_sin_importar_el_estado_no_cancelado(self):
-        """BORRADOR/EN_REVISION_COMPRAS/OBSERVADA/APROBADA_COMPRAS bloquean por igual."""
+    def test_solo_las_facturas_en_vuelo_bloquean(self):
+        """
+        Sesión 99c (OC abierta con N despachos parciales): BORRADOR /
+        EN_REVISION_COMPRAS / OBSERVADA bloquean (una Factura en vuelo a la
+        vez por OC). APROBADA_COMPRAS NO bloquea — una OC abierta se
+        factura en varias APROBADA_COMPRAS parciales a lo largo del tiempo.
+        """
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
         po = ticket.appointment.purchase_orders.first()
 
-        for estado in ('BORRADOR', 'EN_REVISION_COMPRAS', 'OBSERVADA', 'APROBADA_COMPRAS'):
+        for estado in ('BORRADOR', 'EN_REVISION_COMPRAS', 'OBSERVADA'):
             with self.subTest(estado=estado):
                 factura = self._crear_factura(estado=estado)
                 FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
                 with self.assertRaises(ValidationError):
                     InvoicingService.validar_oc_disponible(po)
-                # Limpieza para el siguiente estado del mismo subTest.
                 factura.delete()
+
+        factura_aprobada = self._crear_factura(estado='APROBADA_COMPRAS')
+        FacturaOrdenCompra.objects.create(factura=factura_aprobada, purchase_order=po)
+        InvoicingService.validar_oc_disponible(po)  # NO debe lanzar
 
     def test_cancelar_factura_libera_el_candado_de_oc(self):
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
@@ -3449,7 +3457,7 @@ class EstadoFacturacionOCTests(InvoicingTestBase):
         ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
         po = self._po_line_de(ticket).purchase_order
 
-        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        estado, factura_id, _ = oc_status.calcular_estado_facturacion(po)
 
         self.assertEqual(estado, oc_status.ESTADO_FACT_SIN_FACTURAR)
         self.assertIsNone(factura_id)
@@ -3467,19 +3475,19 @@ class EstadoFacturacionOCTests(InvoicingTestBase):
 
     def test_factura_en_borrador_es_facturacion_en_curso(self):
         po, factura = self._oc_con_factura('BORRADOR')
-        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        estado, factura_id, _ = oc_status.calcular_estado_facturacion(po)
         self.assertEqual(estado, oc_status.ESTADO_FACT_EN_CURSO)
         self.assertEqual(factura_id, factura.id)
 
     def test_factura_en_revision_compras_es_facturacion_en_curso(self):
         po, factura = self._oc_con_factura('EN_REVISION_COMPRAS')
-        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        estado, factura_id, _ = oc_status.calcular_estado_facturacion(po)
         self.assertEqual(estado, oc_status.ESTADO_FACT_EN_CURSO)
         self.assertEqual(factura_id, factura.id)
 
     def test_factura_observada_es_facturacion_en_curso(self):
         po, factura = self._oc_con_factura('OBSERVADA')
-        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        estado, factura_id, _ = oc_status.calcular_estado_facturacion(po)
         self.assertEqual(estado, oc_status.ESTADO_FACT_EN_CURSO)
         self.assertEqual(factura_id, factura.id)
 
@@ -3499,7 +3507,7 @@ class EstadoFacturacionOCTests(InvoicingTestBase):
         factura.refresh_from_db()
         self.assertEqual(factura.estado, 'APROBADA_COMPRAS')  # precondición del test
 
-        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        estado, factura_id, _ = oc_status.calcular_estado_facturacion(po)
 
         self.assertEqual(estado, oc_status.ESTADO_FACT_FACTURADA)
         self.assertEqual(factura_id, factura.id)
@@ -3515,7 +3523,7 @@ class EstadoFacturacionOCTests(InvoicingTestBase):
         factura.estado = 'CANCELADO'
         factura.save(update_fields=['estado'])
 
-        estado, factura_id = oc_status.calcular_estado_facturacion(po)
+        estado, factura_id, _ = oc_status.calcular_estado_facturacion(po)
 
         self.assertEqual(estado, oc_status.ESTADO_FACT_SIN_FACTURAR)
         self.assertIsNone(factura_id)
@@ -3641,9 +3649,10 @@ class ConstruirFilasEstadoOcSinN1Tests(InvoicingTestBase):
             f"({len(ctx_5.captured_queries)} -> {len(ctx_15.captured_queries)}) — indicio de N+1.",
         )
         self.assertLessEqual(
-            len(ctx_5.captured_queries), 4,
-            "Más de las 4 queries esperadas (1 principal + 3 prefetch: "
-            "appointment_set/lines/facturas_oc).",
+            len(ctx_5.captured_queries), 6,
+            "Más de las 6 queries esperadas (1 principal + 3 prefetch "
+            "appointment_set/lines/facturas_oc + 2 de agregación "
+            "recibido/facturado por línea, sesión 99c).",
         )
 
     def test_query_count_no_crece_con_una_factura_real_presente(self):
@@ -3677,6 +3686,174 @@ class ConstruirFilasEstadoOcSinN1Tests(InvoicingTestBase):
         self.assertEqual(por_oc[po_facturada.id].estado_facturacion, oc_status.ESTADO_FACT_FACTURADA)
         self.assertEqual(por_oc[po_facturada.id].factura_id, factura.id)
         self.assertLessEqual(
-            len(ctx.captured_queries), 4,
-            "El prefetch de facturas_oc generó una query extra por fila con datos reales presentes.",
+            len(ctx.captured_queries), 6,
+            "El prefetch de facturas_oc (o una agregación) generó una query extra por fila con datos reales presentes.",
         )
+
+
+class OcParcialTests(InvoicingTestBase):
+    """
+    Sesión 99c — OC abierta con N despachos parciales:
+      - saldo_disponible suma TODAS las rondas CREADO_SAP (antes un .get()
+        singular que reventaba con MultipleObjectsReturned).
+      - solicitar_cita_borrador permite una 2da cita mientras quede saldo,
+        bloquea si hay un ciclo en curso o si la OC ya está completa.
+      - validar_oc_disponible / _pos_con_factura_en_vuelo dejan facturar
+        varias veces la misma OC (una APROBADA_COMPRAS no bloquea).
+      - construir_filas_estado_oc devuelve DESPACHO_PARCIAL /
+        FACTURACION_PARCIAL + cantidades.
+    """
+
+    def _po_de(self, ticket):
+        return ticket.appointment.purchase_orders.first()
+
+    def _segunda_ronda(self, po, cantidad_real, creado_sap=True):
+        """
+        Nueva cita para la MISMA `po` -> Ticket FINALIZADO -> 2da
+        EntradaMercaderia (via el flujo real de servicios). `po` es
+        comercial ('CDL', actor ALMACEN, sin COA/calidad).
+        """
+        slot = self._slot_futuro()
+        appt = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+        )
+        ticket = AppointmentService.confirmar_cita(
+            appointment_id=appt.id, usuario_almacen=self.u_compras, base_url='http://testserver/',
+        )
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
+        ticket.refresh_from_db()
+        resultados = [
+            {'inspeccion_id': i.id, 'estado': 'CONFORME', 'cantidad_modificada': str(cantidad_real)}
+            for i in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen, resultados=resultados,
+        )
+        ticket.refresh_from_db()
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+        ticket.refresh_from_db()
+
+        from apps.operations import services_entrada as _se
+        entrada = EntradaMercaderia.objects.get(ticket=ticket)
+        _se.enviar_a_sap(entrada, self.u_almacen)
+        if creado_sap:
+            entrada.refresh_from_db()
+            entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+            entrada.estado_sap = 'Y'
+            entrada.save(update_fields=['estado', 'estado_sap'])
+        return ticket
+
+    # ── saldo_disponible ──────────────────────────────────────────────
+
+    def test_saldo_disponible_suma_dos_rondas_creado_sap(self):
+        """OC de 10: ronda 1 recibe 6, ronda 2 recibe 4 -> saldo 10."""
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po_line = self._po_line_de(ticket)
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('6.0000'))
+
+        self._segunda_ronda(po_line.purchase_order, Decimal('4.0000'))
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('10.0000'))
+
+    def test_saldo_disponible_ignora_ronda_no_creado_sap(self):
+        """Una 2da ronda ENVIADO (no CREADO_SAP) NO suma al saldo facturable."""
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po_line = self._po_line_de(ticket)
+        self._segunda_ronda(po_line.purchase_order, Decimal('4.0000'), creado_sap=False)
+        self.assertEqual(InvoicingService.saldo_disponible(po_line), Decimal('6.0000'))
+
+    # ── solicitar_cita_borrador ───────────────────────────────────────
+
+    def test_segunda_cita_permitida_con_saldo_pendiente(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po = self._po_de(ticket)
+        slot = self._slot_futuro()
+        appt = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+        )  # NO debe lanzar
+        self.assertIsNotNone(appt.id)
+
+    def test_segunda_cita_bloqueada_si_oc_totalmente_recibida(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po = self._po_de(ticket)
+        self._segunda_ronda(po, Decimal('4.0000'))  # total 10 == quantity_sap
+        slot = self._slot_futuro()
+        with self.assertRaises(ValidationError) as ctx:
+            AppointmentService.solicitar_cita_borrador(
+                user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+            )
+        self.assertIn('recibidas completamente', '; '.join(ctx.exception.messages))
+
+    def test_segunda_cita_bloqueada_si_ciclo_en_curso(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po = self._po_de(ticket)
+        slot1 = self._slot_futuro()
+        AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot1.id, oc_ids=[po.id],
+        )
+        slot2 = self._slot_futuro()
+        with self.assertRaises(ValidationError) as ctx:
+            AppointmentService.solicitar_cita_borrador(
+                user=self.proveedor, slot_id=slot2.id, oc_ids=[po.id],
+            )
+        self.assertIn('cita en curso', '; '.join(ctx.exception.messages))
+
+    # ── validar_oc_disponible ─────────────────────────────────────────
+
+    def test_factura_aprobada_no_bloquea_una_nueva_para_la_misma_oc(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        po = po_line.purchase_order
+
+        f_aprobada = self._crear_factura(estado='APROBADA_COMPRAS')
+        FacturaOrdenCompra.objects.create(factura=f_aprobada, purchase_order=po)
+        self._crear_factura_linea(f_aprobada, po_line, cantidad=Decimal('4.0000'))
+
+        InvoicingService.validar_oc_disponible(po)  # NO debe lanzar
+        self.assertNotIn(po.id, list(sb._pos_con_factura_en_vuelo()))
+
+        f_borrador = self._crear_factura(estado='BORRADOR')
+        FacturaOrdenCompra.objects.create(factura=f_borrador, purchase_order=po)
+        with self.assertRaises(ValidationError):
+            InvoicingService.validar_oc_disponible(po)
+
+    # ── oc_status: estados PARCIAL + cantidades ───────────────────────
+
+    def test_despacho_parcial_con_progreso_cuantitativo(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po = self._po_de(ticket)  # 6 de 10, sin cita en curso
+
+        filas = oc_status.construir_filas_estado_oc(PurchaseOrder.objects.filter(id=po.id))
+        self.assertEqual(len(filas), 1)
+        fila = filas[0]
+        self.assertEqual(fila.estado, oc_status.ESTADO_DESPACHO_PARCIAL)
+        self.assertEqual(fila.cantidad_ordenada, Decimal('10.0000'))
+        self.assertEqual(fila.cantidad_recibida, Decimal('6.0000'))
+        self.assertEqual(fila.pct_recibido, 60)
+        self.assertEqual(fila.progreso_despacho, '6 / 10')
+
+    def test_despachada_cuando_todas_las_rondas_completan(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po = self._po_de(ticket)
+        self._segunda_ronda(po, Decimal('4.0000'))
+
+        fila = oc_status.construir_filas_estado_oc(PurchaseOrder.objects.filter(id=po.id))[0]
+        self.assertEqual(fila.estado, oc_status.ESTADO_DESPACHADA)
+        self.assertEqual(fila.cantidad_recibida, Decimal('10.0000'))
+        self.assertEqual(fila.pct_recibido, 100)
+
+    def test_facturacion_parcial_con_aprobada_que_no_cubre_todo(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('10.0000'))
+        po_line = self._po_line_de(ticket)
+        po = po_line.purchase_order
+
+        f = self._crear_factura(estado='APROBADA_COMPRAS')
+        FacturaOrdenCompra.objects.create(factura=f, purchase_order=po)
+        self._crear_factura_linea(f, po_line, cantidad=Decimal('4.0000'))
+
+        fila = oc_status.construir_filas_estado_oc(PurchaseOrder.objects.filter(id=po.id))[0]
+        self.assertEqual(fila.estado_facturacion, oc_status.ESTADO_FACT_PARCIAL)
+        self.assertEqual(fila.cantidad_facturada, Decimal('4.0000'))
+        self.assertEqual(fila.pct_facturado, 40)
