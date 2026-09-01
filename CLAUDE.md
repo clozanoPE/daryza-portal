@@ -593,6 +593,77 @@ Durante la primera prueba manual del flujo LOTE→GRPO (OCs reales `79001197/198
 
 **Alcance si se aprueba**: 2 cambios de servicio acotados (`solicitar_cita_borrador` y `saldo_disponible`), sin ningún modelo/migración nuevo — toda la estructura de datos necesaria (`EntradaMercaderiaLinea` por ronda, GRPOs múltiples en SAP) ya existe y ya fue validada hoy con datos reales. El punto 3 (Panel de Consulta de OC) es la única pieza que sí implica una decisión de diseño visual antes de tocar código. Nada implementado todavía.
 
+### Escenario 3 — generalización a "OC abierta con N despachos parciales durante ~2 meses" + facturación sobre la fotografía actual
+
+El usuario aclaró que el caso real NO es "2 rondas" — es una **OC abierta** que se despacha en **N entregas parciales** a lo largo de semanas/meses; el saldo de la OC se va acotando con cada despacho, y al facturar se factura sobre **la fotografía actual** de lo realmente recibido de la(s) OC(s) que participaron en esa inspección. Pidió que esta parte quede sin dudas.
+
+**El modelo, enunciado como UNA invariante que vale para 1 o N rondas y 1 o N Facturas — esto es lo que no se debe dudar:**
+
+Por cada `PurchaseOrderLine` **activa** (`activa=True`):
+
+```
+Σ(FacturaLinea.cantidad de Facturas NO canceladas de esa línea)   ["ya facturado"]
+  ≤  Σ(EntradaMercaderiaLinea.cantidad de rondas con estado='CREADO_SAP')   ["recibido y confirmado en SAP" = la FOTOGRAFÍA]
+  ≤  PurchaseOrderLine.quantity_sap   ["lo ordenado", fijo, espejo de SAP]
+```
+
+- **La fotografía** (término del medio) = suma corriente de lo recibido y confirmado en SAP. Sube hacia `quantity_sap` con cada despacho. Es un valor **dinámico, recalculado cada vez** que se abre la pantalla de facturar — nunca un snapshot congelado.
+- **`saldo_disponible(po_line)` = fotografía − ya_facturado.** Es lo que se puede facturar EN ESE MOMENTO. Hoy `saldo_disponible` calcula el término del medio con un `.get()` (una sola ronda) — ahí está el bug; pasa a ser un `Sum()`. El término "ya_facturado" **ya es** un `Σ` sobre queryset (`saldo_disponible` líneas 124-127) — esa mitad ya escala a N Facturas sin tocar nada.
+- **OC-línea "totalmente recibida"** ⟺ fotografía == `quantity_sap` → no se puede agendar otra cita para esa línea.
+- **OC-línea "totalmente facturada"** ⟺ ya_facturado == fotografía == `quantity_sap` → la OC se puede dar por cerrada del lado del Portal.
+- **Nivel OC (para el panel)** = suma de los 3 términos sobre todas sus líneas activas. **Nivel línea (para "Copiar de OC")** = la invariante por línea. Misma fórmula, 2 granularidades.
+- **`FacturaLinea.cantidad_oc`** sigue siendo el snapshot de `quantity_sap` (lo ordenado, inmutable) — la "referencia de lo pedido". `FacturaLinea.cantidad` es "lo que cubre ESTA Factura". La fotografía es dinámica; el snapshot es el total ordenado. Ambos ya modelados.
+
+**Consecuencia de scope que el caso de 2 rondas escondía — hay 2 candados de facturación MÁS que asumen "1 Factura por OC, para siempre" y también deben cambiar** (encontrados al trazar "OC abierta 2 meses = varias Facturas parciales"):
+
+- **`services_borrador._pos_con_factura_activa()`** (filtro de "Nueva factura desde OC(s)") = `FacturaOrdenCompra.objects.exclude(factura__estado='CANCELADO')` — hoy, **cualquier** Factura no cancelada (incluida una `APROBADA_COMPRAS` ya cerrada) saca la OC de la lista de elegibles. Tras facturar la ronda 1, la OC desaparece de "Nueva factura" aunque queden rondas por facturar.
+- **`InvoicingService.validar_oc_disponible`** (`services.py:174`) — mismo criterio, bloquea crear una 2da Factura contra la OC si existe cualquiera no cancelada.
+
+Ambos deben pasar de "existe una Factura → bloqueá" a: **bloqueá solo si (a) hay una Factura de esa OC en estado NO terminal (`BORRADOR`/`EN_REVISION_COMPRAS`/`OBSERVADA` — una factura en vuelo a la vez por OC, para no armar 2 borradores simultáneos sobre el mismo saldo), o (b) ya no queda nada por facturar (`ya_facturado == fotografía` en todas las líneas).** Una Factura `APROBADA_COMPRAS` NO bloquea una nueva — ese es justamente el punto de la facturación parcial. El `select_for_update` sobre `PurchaseOrder` (candado de concurrencia, sesiones 70/71) **se mantiene** — solo cambia la *decisión* adentro, no el mecanismo de lock.
+
+**Recomendación para el PUNTO 3 (representación en el Panel de Consulta de OC) — decisión, no menú:**
+
+Con la realidad de "OC abierta N meses, N despachos, N Facturas parciales", los 3 estados discretos actuales (`PENDIENTE`/`EN_PROCESO`/`DESPACHADA` y `SIN_FACTURAR`/`FACTURACION_EN_CURSO`/`FACTURADA`) son demasiado gruesos — no pueden expresar "70% recibido, 40% facturado, sigue abierta". **Recomiendo: progreso CUANTITATIVO + un solo estado nuevo por dimensión.**
+
+- **Despacho**: mostrar `recibido / ordenado` + % (ej. "140 / 200 · 70%") con una barrita de progreso, y la etiqueta derivada:
+  - `PENDIENTE` — 0 recibido, sin cita activa
+  - `EN_PROCESO` — cita activa ahora (alguien lo está trabajando)
+  - **`DESPACHO_PARCIAL`** *(nuevo)* — recibido > 0 y < ordenado, sin cita activa ("esperando más entregas")
+  - `DESPACHADA` — recibido == ordenado
+- **Facturación**: mostrar `facturado / ordenado` + % con estado:
+  - `SIN_FACTURAR` — 0 facturado
+  - **`FACTURACION_PARCIAL`** *(nuevo, o el `FACTURACION_EN_CURSO` actual con este matiz)* — facturado > 0 y < fotografía
+  - `FACTURADA` — facturado == ordenado (todo facturado, OC cerrable)
+
+Por qué así y no de otra forma:
+- **Lo cuantitativo (fracción/%) es lo único que dice "cuán abierta está" de un vistazo** — imprescindible para gestionar una OC abierta 2 meses. Sin la fracción, "parcial" no informa nada útil.
+- **Un solo estado nuevo por dimensión** (no muchos micro-estados) porque operaciones filtra y escanea por etiqueta, y "parcial, esperando más" es una situación operativa genuinamente distinta de "en proceso ahora" y de "terminado" — 3→4 es un aumento acotado; ir a "muchos estados" sería ruido.
+- **Cero datos nuevos**: las 3 cantidades salen de los mismos `Σ` que ya necesita `saldo_disponible`. Se agregan como campos `Decimal` al mismo `EstadoDespachoOC` (`cantidad_ordenada`/`cantidad_recibida`/`cantidad_facturada`), sin dataclass paralelo — coherente con la decisión ya documentada en `oc_status.py` ("un dataclass por fila, no combinar 2 resultados por fila").
+- Toca 2 templates (`panel_estado_oc.html` de Compras + pestaña "Mis OC" de `portal_proveedor.html`) — un cambio visual acotado, no estructural.
+
+**Casos borde, clavados (para "no dudar"):**
+1. **Sobre-recepción**: SAP rechaza un GRPO que exceda `RemainingOpenQuantity` — backstop duro del lado SAP. El Portal puede avisar antes (nice-to-have), pero la invariante `Σ recibido ≤ quantity_sap` la garantiza SAP.
+2. **Sobre-facturación**: `_crear_factura_y_lineas`/`editar_linea_factura` ya validan `cantidad > saldo → ValidationError`. Escala solo cuando `saldo_disponible` suma bien.
+3. **Ronda rechazada por SAP** (`reportar-error`, sigue `ENVIADO`): su `cantidad` cuenta para "no dejes agendar otra cita de más" pero **NO** para facturable (solo `CREADO_SAP` cuenta ahí) — coherente con la regla del punto (c) de esta sesión.
+4. **Cita/Ticket cancelado antes de FINALIZAR** (no genera `EntradaMercaderia`): no suma a ningún término. Si sigue `SOLICITADO`/`CONFIRMADA`, bloquea una 2da cita concurrente de esa OC hasta resolverse.
+5. **Factura cancelada**: su `FacturaLinea.cantidad` deja de contar en "ya_facturado" (ya lo hace, filtro `estado != 'CANCELADO'`). Libera esa cantidad para re-facturar.
+6. **Línea de OC cancelada en SAP** (`activa=False`, sesión 49/50): excluida del chequeo "¿totalmente recibida?" — solo cuentan las líneas activas (patrón ya establecido, sesión 51).
+
+**Lo que NO cambia (para confianza):**
+- **Ningún modelo, ninguna migración.** `EntradaMercaderiaLinea` (FK a `po_line`, una por ronda) y `FacturaLinea` (FK a `po_line`, una por línea de Factura) ya soportan N.
+- **El daemon: cero cambios.** Cada `EntradaMercaderia` → su propio GRPO. SAP maneja N GRPOs por línea de OC de forma nativa (confirmado hoy con datos reales).
+- **`ya_facturado`** en `saldo_disponible` ya es un `Σ` sobre queryset — ya escala a N Facturas.
+- El candado de concurrencia de `validar_oc_disponible` (sesiones 70/71) — el mecanismo de lock se mantiene, solo cambia la decisión.
+
+**Delta de código concreto para una sesión futura (chico y localizado):**
+1. `saldo_disponible`: `.get(po_line=…)` → `.filter(po_line=…, entrada__estado='CREADO_SAP').aggregate(Sum('cantidad'))`. El resto de la función igual.
+2. `solicitar_cita_borrador`: la regla de 2 partes (ciclo en curso **o** OC totalmente recibida, sumando TODAS las rondas sin importar `estado_sap`).
+3. `_pos_con_factura_activa()` **y** `validar_oc_disponible`: de "existe una Factura no cancelada" a "hay una Factura en vuelo (no terminal) **o** ya no queda saldo facturable".
+4. `oc_status.py`: 3 campos `Decimal` nuevos en `EstadoDespachoOC` + estados `DESPACHO_PARCIAL`/`FACTURACION_PARCIAL` + barra de progreso en los 2 templates.
+5. Nice-to-have: hint del saldo pendiente de recepción en la pantalla de inspección de Almacén/MP de una ronda 2+ (mismo patrón que `max={{ saldo }}` en "Cantidad a Facturar").
+
+Nada implementado — pendiente de que el usuario confirme el enfoque (en particular el punto 3 recomendado: cuantitativo + `DESPACHO_PARCIAL`/`FACTURACION_PARCIAL`).
+
 ## Reglas de esta sesión en adelante (sesión 26)
 
 - **Las notas de implementación NUNCA van como comentario dentro de un `.html` de template** — ni `{# ... #}`, ni `{% comment %}...{% endcomment %}`, ni ninguna otra forma. Ese contenido vive únicamente en `CLAUDE.md` (historial de sesiones) o en el resumen entregado en el chat. Motivo: el patrón `{# ... #}` escrito en varias líneas ya causó texto de implementación visible en pantalla **dos veces** (sesión 20, reincidencia en la sesión 25) — el tokenizer de Django (`django/template/base.py::tag_re = re.compile(r"({%.*?%}|{{.*?}}|{#.*?#})")`, sin la flag `re.DOTALL`) no reconoce un comentario `{# #}` cuyo contenido cruza un salto de línea: en vez de descartarlo, lo trata como texto literal y lo renderiza tal cual. La única forma segura de anotar código con contexto de sesión sin este riesgo es no ponerlo en el `.html` en absoluto.
