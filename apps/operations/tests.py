@@ -1705,3 +1705,34 @@ class EntradaMercaderiaAPITests(OperationsTestBase):
         self.assertEqual(resp.status_code, 400)
         entrada.refresh_from_db()
         self.assertEqual(entrada.error_mensaje, '')
+
+    def test_confirmar_borrador_limpia_error_mensaje_de_un_rechazo_previo(self):
+        """
+        Sesión 99c: el daemon rechazó una vez (reportar-error deja el
+        -4014), después reintentó con éxito (confirmar-borrador). El
+        error obsoleto se limpia — no debe quedar una alerta roja en la
+        trazabilidad de una Entrada que en realidad se creó bien.
+        """
+        entrada = self._finalizar_ticket()
+        self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/reportar-error/',
+            {'error_mensaje': 'SAP: -4014 batch incompleto'}, format='json',
+        )
+        entrada.refresh_from_db()
+        self.assertNotEqual(entrada.error_mensaje, '')
+
+        self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-borrador/',
+            {'doc_entry_borrador': 90010, 'doc_num': 5010}, format='json',
+        )
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.error_mensaje, '')
+        self.assertEqual(entrada.estado_sap, 'B')
+
+        self.api.post(
+            f'/api/v1/entradas-pendientes/{entrada.id}/confirmar-definitivo/',
+            {'doc_entry_definitivo': 90010, 'doc_num': 5010}, format='json',
+        )
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.error_mensaje, '')
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_CREADO_SAP)

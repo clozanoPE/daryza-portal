@@ -72,9 +72,14 @@ class EntradaMercaderiaViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         # ENVIADO — se fija explícito por si el daemon confirmara sobre
         # una entrada en un estado inesperado.
         entrada.estado = EntradaMercaderia.ESTADO_ENVIADO
+        # SAP aceptó el documento -> cualquier error_mensaje de un
+        # rechazo previo (ej. un -4014 de un intento anterior que el
+        # daemon reintentó con éxito) queda obsoleto: se limpia.
+        entrada.error_mensaje = ''
         entrada.fecha_borrador_confirmado = timezone.now()
         update_fields = [
-            'doc_entry_borrador', 'estado', 'estado_sap', 'fecha_borrador_confirmado',
+            'doc_entry_borrador', 'estado', 'estado_sap', 'error_mensaje',
+            'fecha_borrador_confirmado',
         ]
         doc_num = request.data.get('doc_num')
         if doc_num not in (None, ''):
@@ -104,9 +109,11 @@ class EntradaMercaderiaViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         entrada.doc_entry_definitivo = doc_entry
         entrada.estado_sap = 'Y'
         entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        entrada.error_mensaje = ''  # documento creado -> error previo obsoleto (ver confirmar-borrador)
         entrada.fecha_definitivo_confirmado = timezone.now()
         update_fields = [
-            'doc_entry_definitivo', 'estado', 'estado_sap', 'fecha_definitivo_confirmado',
+            'doc_entry_definitivo', 'estado', 'estado_sap', 'error_mensaje',
+            'fecha_definitivo_confirmado',
         ]
         doc_num = request.data.get('doc_num')
         if doc_num not in (None, ''):
