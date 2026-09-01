@@ -125,20 +125,44 @@ class AppointmentService:
             slot = SlotService.validar_disponibilidad(slot_id)
             sede = slot.sede
 
-            # 2. VALIDACIÓN DE OCs DUPLICADAS (No perder esta lógica)
-            # Buscamos si alguna de las OCs ya pertenece a una cita que no sea rechazada/cancelada
+            # 2. VALIDACIÓN DE SALDO PENDIENTE DE LA OC (sesión 99c — OC
+            # abierta con N despachos parciales).
+            #
+            # Antes: bloqueaba si la OC tenía CUALQUIER Appointment en
+            # {SOLICITADO, CONFIRMADA, FINALIZADA} — sin mirar saldo. Una
+            # OC que recibió una sola parte y su Ticket llegó a FINALIZADA
+            # quedaba bloqueada PARA SIEMPRE, aunque quedara saldo por
+            # entregar. Ahora se distinguen 2 preguntas:
+            #   (a) ¿Hay un ciclo EN CURSO ahora mismo? (SOLICITADO/
+            #       CONFIRMADA) — nunca 2 ciclos simultáneos sobre la misma
+            #       OC (ambigüedad de qué Ticket es cuál).
+            #   (b) ¿La OC ya está COMPLETAMENTE recibida? (suma de todas
+            #       las rondas ≥ lo ordenado, en todas las líneas activas).
+            # Si ninguna aplica, se permite agendar sobre el saldo.
             if oc_ids:
-                ocs_en_uso = PurchaseOrder.objects.filter(
-                    id__in=oc_ids,
-                    appointment__status__in=['SOLICITADO', 'CONFIRMADA', 'FINALIZADA']
-                ).values_list('doc_num', flat=True).distinct()
+                from apps.base.oc_status import oc_totalmente_recibida
 
-                if ocs_en_uso.exists():
-                    # Mantenemos el mensaje detallado para el usuario
-                    lista_docs = ", ".join([str(doc) for doc in ocs_en_uso])
+                en_curso = PurchaseOrder.objects.filter(
+                    id__in=oc_ids,
+                    appointment__status__in=['SOLICITADO', 'CONFIRMADA'],
+                ).values_list('doc_num', flat=True).distinct()
+                if en_curso.exists():
+                    lista = ", ".join(str(d) for d in en_curso)
                     raise ValidationError(
-                        f"Las siguientes OCs ya tienen una solicitud activa: {lista_docs}. "
-                        "Revise su historial de citas."
+                        f"Las siguientes OCs ya tienen una cita en curso: {lista}. "
+                        "Espere a que ese ciclo termine antes de agendar otra."
+                    )
+
+                completas = [
+                    po.doc_num
+                    for po in PurchaseOrder.objects.filter(id__in=oc_ids).prefetch_related('lines')
+                    if oc_totalmente_recibida(po)
+                ]
+                if completas:
+                    lista = ", ".join(str(d) for d in completas)
+                    raise ValidationError(
+                        f"Las siguientes OCs ya fueron recibidas completamente: {lista}. "
+                        "No queda saldo pendiente por entregar."
                     )
 
                 # 2b. VALIDACIÓN: no mezclar OC Materia Prima con OC comerciales
