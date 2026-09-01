@@ -298,17 +298,22 @@ class InvoicingTestBase(OperationsTestBase):
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
         ticket.refresh_from_db()
 
-        # Sesión 99: la EntradaMercaderia nace PENDIENTE (Almacén/MP debe
-        # completar el LOTE antes de enviarla). Para los tests de
-        # Facturación necesitamos la OC facturable — replicamos el paso
-        # humano de "Enviar a SAP B1". NO es lógica de negocio nueva.
-        # Sesión 99b: la línea de estos tests no está gestionada por lote
-        # (PurchaseOrderLine.gestionado_por_lote=False por default), así
-        # que enviar_a_sap no exige ningún numero_lote.
+        # Sesión 99/99b: la EntradaMercaderia nace PENDIENTE; Almacén/MP la
+        # envía ("Enviar a SAP B1"). Sesión 99c: para que la OC sea
+        # facturable (listar_ocs_elegibles) hace falta además que el
+        # daemon YA haya creado el GRPO en SAP (estado=CREADO_SAP). Acá se
+        # simula ese paso del daemon fijando el estado directo — mismo
+        # atajo que _factura_aprobada_con_grpo (Sub-fase 3.6).
         from apps.operations import services_entrada as _se
         entrada = EntradaMercaderia.objects.get(ticket=ticket)
         _actor = self.u_materia_prima if ticket.es_materia_prima else self.u_almacen
         _se.enviar_a_sap(entrada, _actor)
+        entrada.refresh_from_db()
+        entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        entrada.estado_sap = 'Y'
+        entrada.doc_entry_definitivo = 900000 + entrada.id
+        entrada.doc_num_sap = str(500000 + entrada.id)
+        entrada.save(update_fields=['estado', 'estado_sap', 'doc_entry_definitivo', 'doc_num_sap'])
         return ticket
 
     def _po_line_de(self, ticket: Ticket):
@@ -1582,10 +1587,7 @@ class NuevaFacturaTestBase(InvoicingTestBase):
             purchase_order=po, line_num=1, item_code='ITEM-TEST-2', description='Item de prueba 2',
             quantity_sap=10, und_medida='KG', requiere_coa=False,
         )
-        slot = AppointmentSlot.objects.create(
-            sede=Sede.objects.get(codigo='LURIN'),
-            date='2026-09-02', start_time='08:00', dock='TEST', max_capacity=5,
-        )
+        slot = self._slot_futuro()
         appointment = AppointmentService.solicitar_cita_borrador(
             user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
         )

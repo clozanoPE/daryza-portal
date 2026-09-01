@@ -134,20 +134,18 @@ def listar_ocs_elegibles(proveedor) -> list[dict]:
     objetos PurchaseOrder sueltos — para que el template pueda mostrar la
     sede de cada OC sin una consulta adicional por fila.
     """
-    # Sesión 99: la Entrada de Mercadería de un Ticket FINALIZADO nace en
-    # estado PENDIENTE (Almacén/MP todavía no completó el LOTE ni la
-    # envió al daemon). Una OC no es facturable hasta que su Entrada fue
-    # efectivamente enviada (ENVIADO) o ya está creada en SAP (CREADO_SAP)
-    # — mismo criterio de "no factures algo que Almacén no cerró". Todo
-    # Ticket FINALIZADO tiene una Entrada (la genera registrar_salida),
-    # así que el __in exige que exista Y no sea PENDIENTE.
+    # Sesión 99c: una OC no es facturable hasta que su Entrada de
+    # Mercadería (GRPO) fue **realmente creada en SAP** (estado=CREADO_SAP,
+    # el daemon confirmó doc_entry/doc_num). Antes (sesión 99) bastaba con
+    # ENVIADO, pero una Entrada ENVIADO puede terminar rechazada por SAP
+    # (ej. -4014 por lote incompleto) — no se debe poder facturar contra
+    # un GRPO que no existe. Todo Ticket FINALIZADO tiene una Entrada (la
+    # genera registrar_salida), así que el filtro exige que exista Y esté
+    # en CREADO_SAP.
     candidatas = PurchaseOrder.objects.filter(
         card_code=proveedor.sap_card_code,
         appointment__ticket__estado='FINALIZADO',
-        appointment__ticket__entrada_mercaderia__estado__in=[
-            EntradaMercaderia.ESTADO_ENVIADO,
-            EntradaMercaderia.ESTADO_CREADO_SAP,
-        ],
+        appointment__ticket__entrada_mercaderia__estado=EntradaMercaderia.ESTADO_CREADO_SAP,
     ).exclude(
         id__in=_pos_con_factura_activa()
     ).distinct().order_by('-created_at')
