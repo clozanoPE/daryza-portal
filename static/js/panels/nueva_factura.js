@@ -25,9 +25,27 @@ function toggleDocRequerido(checkbox, tipo) {
   if (fileInput) fileInput.required = checkbox.checked;
 }
 
+/**
+ * Sesión 99c — recalcula "Total Línea" (cantidad × precio unitario, neto)
+ * en la Pantalla de Copia cada vez que cambia la cantidad a facturar.
+ * @param {HTMLInputElement} input  el .inp-cant-facturar
+ */
+function recalcTotalLinea(input) {
+  const poLine = input.dataset.poLine;
+  const precio = parseFloat(input.dataset.precio) || 0;
+  const cant = parseFloat(input.value) || 0;
+  const cel = document.getElementById(`total-linea-${poLine}`);
+  if (cel) cel.textContent = (cant * precio).toFixed(2);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('btn-crear-factura');
   if (btn) btn.addEventListener('click', crearFactura);
+
+  document.querySelectorAll('.inp-cant-facturar').forEach(inp => {
+    recalcTotalLinea(inp);                       // valor inicial
+    inp.addEventListener('input', () => recalcTotalLinea(inp));
+  });
 });
 
 async function crearFactura() {

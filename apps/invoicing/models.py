@@ -449,6 +449,20 @@ class FacturaLinea(models.Model):
     documento_detraccion = models.URLField(max_length=500, blank=True, default='')
     hash_documento_detraccion = models.CharField(max_length=128, blank=True, default='')
 
+    @property
+    def unidad_medida(self) -> str:
+        """UM de la línea — dato real de SAP (PurchaseOrderLine.und_medida)."""
+        return self.po_line.und_medida
+
+    @property
+    def total_linea(self):
+        """
+        Total NETO de la línea = cantidad × precio unitario (sin IGV) —
+        equivalente al LineTotal de SAP. Sesión 99c: se muestra en el
+        detalle de la Factura y en la Pantalla de Copia.
+        """
+        return self.cantidad * self.precio
+
     def save(self, *args, **kwargs):
         # Sesión 92: precio ya no participa de esta comparación — precio/
         # precio_oc son siempre iguales por construcción (ver docstring
