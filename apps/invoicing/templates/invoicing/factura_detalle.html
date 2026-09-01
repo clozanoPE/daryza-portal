@@ -262,6 +262,24 @@
               {% if linea.tax_code == 'IGV_EXE' %}IGV Exonerado{% else %}IGV{% endif %}
             </div>
           </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label text-xxs fw-bold" data-bs-toggle="tooltip"
+                   title="Total recibido y confirmado en SAP B1 de esta línea, sumando todas las entregas de la OC.">
+              Cant. Atendida (OC) <i class="bi bi-info-circle text-muted"></i>
+            </label>
+            <div class="form-control form-control-sm rounded-3 bg-light text-xs">
+              {% if linea.cant_atendida is not None %}{{ linea.cant_atendida|stringformat:".4f" }}{% else %}—{% endif %}
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label text-xxs fw-bold" data-bs-toggle="tooltip"
+                   title="Lo que falta para completar la OC: Cantidad SAP − Cantidad Atendida. No descuenta lo ya facturado.">
+              Disponible en OC <i class="bi bi-info-circle text-muted"></i>
+            </label>
+            <div class="form-control form-control-sm rounded-3 bg-light text-xs">
+              {% if linea.cant_disponible is not None %}{{ linea.cant_disponible|stringformat:".4f" }}{% else %}—{% endif %}
+            </div>
+          </div>
         </div>
         <div class="d-flex justify-content-end mt-2">
           <span class="text-xs">Total Línea (neto): <strong>{{ linea.total_linea|stringformat:".2f" }} {{ factura.doc_cur }}</strong></span>

@@ -726,6 +726,16 @@ class SaldoDisponibleConcurrenciaTests(TransactionTestCase):
         ticket.refresh_from_db()
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=u_vigilancia)
 
+        # Sesión 99c: saldo_disponible solo cuenta rondas CREADO_SAP. Este
+        # setUp quedó sin actualizar cuando se hizo ese cambio (helper de
+        # test — no producción); se simula el paso del daemon para que
+        # saldo=100 al arrancar el test, mismo atajo que
+        # InvoicingTestBase._finalizar_ticket.
+        _e = EntradaMercaderia.objects.get(ticket=ticket)
+        _e.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        _e.estado_sap = 'Y'
+        _e.save(update_fields=['estado', 'estado_sap'])
+
     def test_dos_intentos_concurrentes_de_facturar_60_contra_saldo_100_no_sobrefacturan(self):
         resultados = {}
 
@@ -1619,6 +1629,17 @@ class NuevaFacturaTestBase(InvoicingTestBase):
         ticket.refresh_from_db()
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
         ticket.refresh_from_db()
+
+        # Sesión 99c: para que la OC sea facturable / tenga saldo, la
+        # EntradaMercaderia debe llegar a CREADO_SAP (mismo atajo que
+        # _finalizar_ticket — este helper quedó sin actualizar cuando se
+        # hizo ese cambio).
+        _e = EntradaMercaderia.objects.get(ticket=ticket)
+        _e.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        _e.estado_sap = 'Y'
+        _e.doc_entry_definitivo = 900000 + _e.id
+        _e.doc_num_sap = str(500000 + _e.id)
+        _e.save(update_fields=['estado', 'estado_sap', 'doc_entry_definitivo', 'doc_num_sap'])
         return ticket
 
     @staticmethod
@@ -2431,6 +2452,13 @@ class CrearFacturaDesdeOCsConcurrenciaTests(TransactionTestCase):
         )
         ticket.refresh_from_db()
         OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=u_vigilancia)
+
+        # Sesión 99c: saldo_disponible solo cuenta rondas CREADO_SAP —
+        # ver nota en SaldoDisponibleConcurrenciaTests.setUp.
+        _e = EntradaMercaderia.objects.get(ticket=ticket)
+        _e.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        _e.estado_sap = 'Y'
+        _e.save(update_fields=['estado', 'estado_sap'])
 
     @staticmethod
     def _cabecera_minima():
@@ -3857,3 +3885,143 @@ class OcParcialTests(InvoicingTestBase):
         self.assertEqual(fila.estado_facturacion, oc_status.ESTADO_FACT_PARCIAL)
         self.assertEqual(fila.cantidad_facturada, Decimal('4.0000'))
         self.assertEqual(fila.pct_facturado, 40)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sesión 100 — Obs 2: cantidades consolidadas por LÍNEA (oc_status)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CantidadesConsolidadasPorLineaTests(NuevaFacturaTestBase):
+    """
+    oc_status.cantidades_consolidadas_por_linea: {po_line_id: {ordenada,
+    atendida, disponible}} — las 2 lecturas (solo_confirmado True/False),
+    el clamp de 'disponible' a 0 en sobre-recepción, y que NO es N+1.
+    """
+
+    def _segunda_ronda(self, po, cantidad_real, creado_sap=True):
+        """Nueva cita para la MISMA `po` ('CDL', actor ALMACEN) → 2da
+        EntradaMercaderia vía el flujo real de servicios (calco de
+        OcParcialTests._segunda_ronda, sin heredar esa clase para no
+        re-correr sus ~20 tests)."""
+        slot = self._slot_futuro()
+        appt = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+        )
+        ticket = AppointmentService.confirmar_cita(
+            appointment_id=appt.id, usuario_almacen=self.u_compras, base_url='http://testserver/',
+        )
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
+        ticket.refresh_from_db()
+        resultados = [
+            {'inspeccion_id': i.id, 'estado': 'CONFORME', 'cantidad_modificada': str(cantidad_real)}
+            for i in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen, resultados=resultados,
+        )
+        ticket.refresh_from_db()
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+
+        from apps.operations import services_entrada as _se
+        entrada = EntradaMercaderia.objects.get(ticket=ticket)
+        _se.enviar_a_sap(entrada, self.u_almacen)
+        if creado_sap:
+            entrada.refresh_from_db()
+            entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+            entrada.estado_sap = 'Y'
+            entrada.save(update_fields=['estado', 'estado_sap'])
+        return ticket
+
+    def test_lectura_facturacion_vs_recepcion(self):
+        """
+        OC de 10: ronda 1 = 6 (CREADO_SAP), ronda 2 = 4 (solo ENVIADO).
+          solo_confirmado=True  → atendida 6, disponible 4 (solo la confirmada).
+          solo_confirmado=False → atendida 10, disponible 0 (todo lo físico).
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po_line = self._po_line_de(ticket)
+        po = po_line.purchase_order
+        self._segunda_ronda(po, Decimal('4.0000'), creado_sap=False)
+
+        confirmada = oc_status.cantidades_consolidadas_por_linea([po], solo_confirmado=True)
+        fisica = oc_status.cantidades_consolidadas_por_linea([po], solo_confirmado=False)
+
+        self.assertEqual(confirmada[po_line.id]['ordenada'], Decimal('10.0000'))
+        self.assertEqual(confirmada[po_line.id]['atendida'], Decimal('6.0000'))
+        self.assertEqual(confirmada[po_line.id]['disponible'], Decimal('4.0000'))
+
+        self.assertEqual(fisica[po_line.id]['atendida'], Decimal('10.0000'))
+        self.assertEqual(fisica[po_line.id]['disponible'], Decimal('0.0000'))
+
+    def test_disponible_no_baja_de_cero_en_sobre_recepcion(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('13.0000'))  # OC de 10
+        po_line = self._po_line_de(ticket)
+        po = po_line.purchase_order
+
+        c = oc_status.cantidades_consolidadas_por_linea([po], solo_confirmado=True)
+        self.assertEqual(c[po_line.id]['atendida'], Decimal('13.0000'))
+        self.assertEqual(c[po_line.id]['disponible'], Decimal('0'))
+
+    def test_pos_vacio_devuelve_dict_vacio(self):
+        self.assertEqual(oc_status.cantidades_consolidadas_por_linea([], solo_confirmado=True), {})
+
+    def test_no_es_n1_conteo_constante_de_queries(self):
+        """2 queries constantes (recibido_por_linea + PurchaseOrderLine),
+        sin importar cuántas OC — no escala con el número de OC."""
+        t1 = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po1 = self._po_line_de(t1).purchase_order
+        t2 = self._finalizar_segundo_ticket(Decimal('5.0000'))
+        po2 = t2.appointment.purchase_orders.first()
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            oc_status.cantidades_consolidadas_por_linea([po1], solo_confirmado=False)
+        with CaptureQueriesContext(connection) as ctx_2:
+            oc_status.cantidades_consolidadas_por_linea([po1, po2], solo_confirmado=False)
+
+        self.assertEqual(len(ctx_1), 2)
+        self.assertEqual(len(ctx_2), 2)
+
+    # ── Propagación a get_estado_actual_por_oc ────────────────────────────
+
+    def test_get_estado_actual_por_oc_incluye_cantidad_atendida_y_disponible(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po_line = self._po_line_de(ticket)
+
+        lineas = next(iter(OperationsService.get_estado_actual_por_oc(ticket.id).values()))['lineas']
+        # Ticket ya FINALIZADO → 1 ronda CREADO_SAP de 6 sobre una OC de 10.
+        for l in lineas:
+            if l['id'] and l['etapa'] == 'ALMACEN':
+                self.assertEqual(l['cantidad_atendida'], Decimal('6.0000'))
+                self.assertEqual(l['cantidad_disponible'], Decimal('4.0000'))
+
+    # ── Propagación a las plantillas ─────────────────────────────────────
+
+    def test_copiar_oc_muestra_columna_atendida(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        self._perfil_oc()
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.get('/invoicing/nueva/copiar/', {'oc_ids': [po.id]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Atendida')
+        self.assertContains(resp, '6.0000')   # atendida de la línea
+
+    def test_factura_detalle_muestra_cantidad_atendida(self):
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po_line = self._po_line_de(ticket)
+        po = po_line.purchase_order
+        self._perfil_oc()
+
+        factura = self._crear_factura(estado='BORRADOR', proveedor=self._perfil_oc())
+        FacturaOrdenCompra.objects.create(factura=factura, purchase_order=po)
+        self._crear_factura_linea(factura, po_line, cantidad=Decimal('4.0000'))
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.get(f'/invoicing/factura/{factura.id}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Cant. Atendida (OC)')
+        self.assertContains(resp, '6.0000')

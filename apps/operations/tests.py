@@ -1858,3 +1858,20 @@ class EstadoConsolidadoNoColapsaTests(OperationsTestBase):
         html = resp.content.decode('utf-8')
         self.assertIn('Bulto danado - recibido parcial', html)
         self.assertIn('Verificado por Calidad tras reconteo', html)
+
+    def test_estado_actual_expone_cantidad_atendida_y_disponible_por_linea(self):
+        """Sesión 100, Obs 2: get_estado_actual_por_oc anota las cantidades
+        consolidadas (lectura de recepción). Ticket EN_PLANTA sin ninguna
+        ronda todavía → atendida 0, disponible = quantity_sap (10)."""
+        ticket = self._ticket_con_inspeccion_almacen_y_calidad()
+
+        lineas = next(iter(OperationsService.get_estado_actual_por_oc(ticket.id).values()))['lineas']
+        for l in lineas:
+            self.assertEqual(l['cantidad_atendida'], Decimal('0'))
+            self.assertEqual(l['cantidad_disponible'], Decimal('10.0000'))
+
+        self.client.force_login(self.u_compras)
+        html = self.client.get(
+            f'/operations/ticket/{ticket.id}/trazabilidad/'
+        ).content.decode('utf-8')
+        self.assertIn('Atendida', html)  # encabezado de la columna nueva

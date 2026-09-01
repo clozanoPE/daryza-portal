@@ -117,7 +117,18 @@
             <th class="text-xxs fw-bold text-muted">Ítem</th>
             <th class="text-xxs fw-bold text-muted">Descripción</th>
             <th class="text-xxs fw-bold text-muted text-end">Cant. SAP</th>
-            <th class="text-xxs fw-bold text-muted text-end">Cant. Real</th>
+            <th class="text-xxs fw-bold text-muted text-end" data-bs-toggle="tooltip"
+                title="Cantidad de esta inspección puntual. Es un valor transitorio: al finalizar el ciclo se consolida en la Cantidad Atendida de la OC.">
+              Cant. Real <i class="bi bi-info-circle text-muted"></i>
+            </th>
+            <th class="text-xxs fw-bold text-muted text-end" data-bs-toggle="tooltip"
+                title="Cantidad Atendida: total recibido de esta línea sumando TODAS las entregas de la OC (recepción física).">
+              Atendida <i class="bi bi-info-circle text-muted"></i>
+            </th>
+            <th class="text-xxs fw-bold text-muted text-end" data-bs-toggle="tooltip"
+                title="Cantidad Disponible: lo que falta para completar la OC (Cant. SAP − Atendida).">
+              Disp. <i class="bi bi-info-circle text-muted"></i>
+            </th>
             <th class="text-xxs fw-bold text-muted text-center">Estado</th>
             <th class="text-xxs fw-bold text-muted">Observación</th>
             <th class="text-xxs fw-bold text-muted text-center">COA</th>
@@ -137,6 +148,12 @@
                      class="form-control form-control-sm text-end insp-cantidad"
                      value="{{ insp.cantidad_modificada|stringformat:'.4f' }}"
                      style="min-width:80px">
+            </td>
+            <td class="text-xs text-end text-muted">
+              {% if insp.cant_atendida is not None %}{{ insp.cant_atendida|stringformat:'.4f' }}{% else %}—{% endif %}
+            </td>
+            <td class="text-xs text-end text-muted">
+              {% if insp.cant_disponible is not None %}{{ insp.cant_disponible|stringformat:'.4f' }}{% else %}—{% endif %}
             </td>
             <td class="text-center" style="min-width:120px">
               <select class="form-select form-select-sm insp-estado text-xs">

@@ -184,6 +184,15 @@ def lineas_para_copiar(purchase_orders) -> list[dict]:
     cada línea), solo lectura; `_crear_factura_y_lineas` es quien
     efectivamente los asigna al crear el registro.
     """
+    # Cantidad Atendida por línea (sesión 100, Obs 2) — lectura de
+    # FACTURACIÓN: Σ solo de rondas CREADO_SAP (solo_confirmado=True), la
+    # fracción realmente confirmada en SAP. `saldo` (de
+    # lineas_disponibles_de_oc → InvoicingService.saldo_disponible) sigue
+    # siendo la Cantidad Disponible PARA FACTURAR (Atendida − ya facturado),
+    # que es lo que se pre-carga como `max`/`value` del input.
+    from apps.base.oc_status import cantidades_consolidadas_por_linea
+    cant = cantidades_consolidadas_por_linea(list(purchase_orders), solo_confirmado=True)
+
     grupos = []
     for po in purchase_orders:
         lineas = lineas_disponibles_de_oc(po)
@@ -196,6 +205,7 @@ def lineas_para_copiar(purchase_orders) -> list[dict]:
                     'po_line': item['po_line'],
                     'saldo': item['saldo'],
                     'cantidad_oc': item['po_line'].quantity_sap,
+                    'cantidad_atendida': cant.get(item['po_line'].id, {}).get('atendida'),
                 }
                 for item in lineas
             ],

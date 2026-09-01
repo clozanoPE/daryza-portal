@@ -110,9 +110,10 @@
         <thead class="table-light">
           <tr>
             <th class="text-xxs">Ítem</th>
-            <th class="text-end text-xxs">Cant. OC</th>
+            <th class="text-end text-xxs" data-bs-toggle="tooltip" title="Cantidad SAP: lo ordenado en la OC.">Cant. OC</th>
             <th class="text-xxs">Unid.</th>
-            <th class="text-end text-xxs">Saldo Disp.</th>
+            <th class="text-end text-xxs" data-bs-toggle="tooltip" title="Cantidad Atendida: total recibido y confirmado en SAP B1 de esta línea, sumando todas las entregas de la OC.">Atendida</th>
+            <th class="text-end text-xxs" data-bs-toggle="tooltip" title="Saldo Disponible para facturar: Atendida menos lo ya facturado en Facturas activas.">Saldo Disp.</th>
             <th class="text-xxs" style="min-width:140px">Cantidad a Facturar</th>
             <th class="text-xxs" style="min-width:110px">Precio Unit.</th>
             <th class="text-xxs">Impuesto</th>
@@ -130,6 +131,9 @@
             </td>
             <td class="text-end text-xs">{{ linea.cantidad_oc|stringformat:".4f" }}</td>
             <td class="text-xs">{{ linea.po_line.und_medida|default:"—" }}</td>
+            <td class="text-end text-xs text-muted">
+              {% if linea.cantidad_atendida is not None %}{{ linea.cantidad_atendida|stringformat:".4f" }}{% else %}—{% endif %}
+            </td>
             <td class="text-end text-xs fw-bold text-success">{{ linea.saldo|stringformat:".4f" }}</td>
             <td>
               <input type="number" step="0.0001" min="0" max="{{ linea.saldo|stringformat:'.4f' }}"

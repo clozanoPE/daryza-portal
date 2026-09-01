@@ -81,6 +81,23 @@ def _mensaje_de(e: ValidationError) -> str:
     return '; '.join(e.messages) if hasattr(e, 'messages') else str(e)
 
 
+def _anotar_cantidades_consolidadas(factura) -> None:
+    """
+    Anota cada FacturaLinea prefetcheada con `cant_atendida` /
+    `cant_disponible` (sesión 100, Obs 2) — lectura de FACTURACIÓN
+    (solo_confirmado=True: Σ rondas CREADO_SAP). No persiste nada. 2
+    queries constantes vía oc_status.cantidades_consolidadas_por_linea.
+    """
+    from apps.base.oc_status import cantidades_consolidadas_por_linea
+
+    pos = [foc.purchase_order for foc in factura.ordenes_compra.all()]
+    cant = cantidades_consolidadas_por_linea(pos, solo_confirmado=True)
+    for linea in factura.lineas.all():
+        c = cant.get(linea.po_line_id, {})
+        linea.cant_atendida = c.get('atendida')
+        linea.cant_disponible = c.get('disponible')
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. Carga de archivos (Sub-fase 3.2, sin cambios de esta sesión)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -368,6 +385,7 @@ def factura_detalle(request, factura_id: int):
         id=factura_id, proveedor__user=request.user,
     )
     puede_editar = factura.estado in sa.ESTADOS_CARGA_PERMITIDA
+    _anotar_cantidades_consolidadas(factura)
 
     return render(request, 'invoicing/factura_detalle.html', {
         'factura': factura,
@@ -544,6 +562,7 @@ def factura_detalle_compras(request, factura_id: int):
         ),
         id=factura_id,
     )
+    _anotar_cantidades_consolidadas(factura)
 
     return render(request, 'invoicing/factura_detalle.html', {
         'factura': factura,

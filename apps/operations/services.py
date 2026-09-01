@@ -788,6 +788,13 @@ class OperationsService:
             for coa in TicketLineCOA.objects.filter(ticket_id=ticket_id)
         }
 
+        # Cantidades consolidadas por línea (sesión 100, Obs 2) — lectura de
+        # RECEPCIÓN: Σ de TODAS las rondas, sin importar estado_sap
+        # (solo_confirmado=False). Ver oc_status.cantidades_consolidadas_por_linea.
+        from apps.base.oc_status import cantidades_consolidadas_por_linea
+        pos = list({insp.po_line.purchase_order for insp in inspecciones})
+        cant_por_linea = cantidades_consolidadas_por_linea(pos, solo_confirmado=False)
+
         grouped = defaultdict(lambda: {
             'oc_num': None,
             'card_name': '',
@@ -797,6 +804,7 @@ class OperationsService:
         for insp in inspecciones:
             oc = insp.po_line.purchase_order
             oc_num = oc.doc_num
+            c = cant_por_linea.get(insp.po_line_id, {})
             grouped[oc_num]['oc_num'] = oc_num
             grouped[oc_num]['card_name'] = oc.card_name
             grouped[oc_num]['lineas'].append({
@@ -805,6 +813,8 @@ class OperationsService:
                 'descripcion': insp.po_line.description,
                 'cantidad_sap': insp.cantidad_sap,
                 'cantidad_modificada': insp.cantidad_modificada,
+                'cantidad_atendida': c.get('atendida'),
+                'cantidad_disponible': c.get('disponible'),
                 'estado': insp.estado,
                 'requiere_coa': insp.requiere_coa,
                 'coa_url': coas_cargados.get(insp.po_line_id, ''),

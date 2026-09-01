@@ -195,6 +195,61 @@ def facturado_por_linea(pos) -> dict:
     return _clave_por_linea(qs)
 
 
+def cantidades_consolidadas_por_linea(pos, *, solo_confirmado: bool) -> dict:
+    """
+    {po_line_id: {'ordenada', 'atendida', 'disponible'}} por línea ACTIVA
+    de las OC dadas — el panorama consolidado de cantidades de una OC a
+    nivel de línea (sesión 100, Obs 2). Calculado en vivo, NUNCA
+    persistido. 2 queries constantes (recibido_por_linea + 1 sobre
+    PurchaseOrderLine), sin N+1 — sirve para 1 OC o para un lote.
+
+      'ordenada'   = PurchaseOrderLine.quantity_sap  (Cantidad SAP)
+      'atendida'   = Σ EntradaMercaderiaLinea.cantidad de las rondas de
+                     recepción de esa línea  (Cantidad Atendida / Despachada)
+      'disponible' = max(0, ordenada − atendida)  (Cantidad Disponible)
+
+    LAS 2 LECTURAS de 'atendida'/'disponible' (Obs 2, punto 8 — NO
+    mezclarlas bajo el mismo nombre en la UI sin dejar claro cuál es):
+
+      solo_confirmado=False  → Σ de TODAS las rondas, sin importar
+                               estado_sap. Lo físicamente RECIBIDO (la
+                               cantidad ya es real desde que Vigilancia
+                               registró la salida). Es la lectura para el
+                               contexto de RECEPCIÓN / agendamiento —
+                               pantallas de inspección, trazabilidad.
+      solo_confirmado=True   → Σ solo de rondas con Entrada en CREADO_SAP.
+                               La fracción realmente confirmada en SAP B1
+                               — base de comparación en el contexto de
+                               FACTURACIÓN (mismo criterio que
+                               InvoicingService.saldo_disponible). OJO:
+                               'disponible' acá NO resta lo ya facturado
+                               — eso lo hace saldo_disponible, que además
+                               bloquea con select_for_update. Este helper
+                               es solo para MOSTRAR el panorama.
+
+    `pos` = un PurchaseOrder o un iterable de ellos.
+    """
+    from apps.sap_sync.models import PurchaseOrderLine
+
+    po_ids = [pos.pk] if hasattr(pos, 'pk') else [p.pk for p in pos]
+    if not po_ids:
+        return {}
+    recibido = recibido_por_linea(pos, solo_confirmado=solo_confirmado)
+    resultado = {}
+    for l in PurchaseOrderLine.objects.filter(purchase_order_id__in=po_ids, activa=True):
+        ordenada = l.quantity_sap or Decimal('0')
+        atendida = recibido.get((l.purchase_order_id, l.pk), Decimal('0'))
+        disponible = ordenada - atendida
+        if disponible < 0:
+            disponible = Decimal('0')
+        resultado[l.pk] = {
+            'ordenada': ordenada,
+            'atendida': atendida,
+            'disponible': disponible,
+        }
+    return resultado
+
+
 def oc_totalmente_recibida(po) -> bool:
     """
     True si TODA línea ACTIVA de la OC ya recibió (sumando TODAS las

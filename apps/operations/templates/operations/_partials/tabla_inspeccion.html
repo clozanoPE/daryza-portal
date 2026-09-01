@@ -32,7 +32,20 @@ Parámetros esperados en el contexto del {% include %}:
             <th class="text-xxs fw-bold text-muted">Ítem</th>
             <th class="text-xxs fw-bold text-muted">Descripción</th>
             <th class="text-xxs fw-bold text-muted text-end">Cant. SAP</th>
-            <th class="text-xxs fw-bold text-muted text-end">Cant. Real</th>
+            <th class="text-xxs fw-bold text-muted text-end" data-bs-toggle="tooltip"
+                title="Cantidad de esta inspección puntual. Es un valor transitorio: al finalizar el ciclo se consolida en la Cantidad Atendida de la OC.">
+              Cant. Real <i class="bi bi-info-circle text-muted"></i>
+            </th>
+            {% if mostrar_etapa %}
+            <th class="text-xxs fw-bold text-muted text-end" data-bs-toggle="tooltip"
+                title="Cantidad Atendida: total recibido de esta línea sumando TODAS las entregas de la OC (recepción física).">
+              Atendida <i class="bi bi-info-circle text-muted"></i>
+            </th>
+            <th class="text-xxs fw-bold text-muted text-end" data-bs-toggle="tooltip"
+                title="Cantidad Disponible: lo que falta para completar la OC (Cant. SAP − Atendida).">
+              Disp. <i class="bi bi-info-circle text-muted"></i>
+            </th>
+            {% endif %}
             <th class="text-xxs fw-bold text-muted text-center">Estado</th>
             <th class="text-xxs fw-bold text-muted">Observación</th>
             <th class="text-xxs fw-bold text-muted text-center">COA</th>
@@ -55,6 +68,14 @@ Parámetros esperados en el contexto del {% include %}:
                 <span class="fw-bold">{{ linea.cantidad_modificada }}</span>
               {% endif %}
             </td>
+            {% if mostrar_etapa %}
+            <td class="text-xs text-end text-muted">
+              {% if linea.cantidad_atendida is not None %}{{ linea.cantidad_atendida|stringformat:'.4f' }}{% else %}—{% endif %}
+            </td>
+            <td class="text-xs text-end text-muted">
+              {% if linea.cantidad_disponible is not None %}{{ linea.cantidad_disponible|stringformat:'.4f' }}{% else %}—{% endif %}
+            </td>
+            {% endif %}
             <td class="text-center">
               {% if editable %}
               <select class="form-select form-select-sm text-xs insp-estado">

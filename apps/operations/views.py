@@ -1149,6 +1149,8 @@ def panel_calidad(request):
         'stages',
     )
 
+    from apps.base.oc_status import cantidades_consolidadas_por_linea
+
     for ticket in tickets_para_calidad:
         entrada = next(
             (s for s in ticket.stages.all() if s.etapa == 'VIGILANCIA_ENTRADA'),
@@ -1160,8 +1162,15 @@ def panel_calidad(request):
             coa.po_line_id: coa.coa_url
             for coa in TicketLineCOA.objects.filter(ticket=ticket)
         }
+        # Cantidades consolidadas por línea (sesión 100, Obs 2) — lectura de
+        # RECEPCIÓN (solo_confirmado=False: todas las rondas físicas).
+        pos_ticket = {insp.po_line.purchase_order for insp in ticket.inspections.all()}
+        cant_por_linea = cantidades_consolidadas_por_linea(list(pos_ticket), solo_confirmado=False)
         for insp in ticket.inspections.all():
             insp.coa_url_real = coas_por_linea.get(insp.po_line_id, '')
+            c = cant_por_linea.get(insp.po_line_id, {})
+            insp.cant_atendida = c.get('atendida')
+            insp.cant_disponible = c.get('disponible')
 
     # ── Historial (Fase 11): todos los tickets, acotados al período (Fase 10) ──
     tickets_historial, periodo = _historial_por_periodo_qs(request)
