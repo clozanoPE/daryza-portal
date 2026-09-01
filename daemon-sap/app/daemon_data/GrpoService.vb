@@ -30,10 +30,17 @@ Public Class GrpoLineaEntrada
     Public Property ItemCode As String
 
     ' Sesión 99: LOTE. Si NumeroLote no está vacío, la línea del payload
-    ' lleva BatchNumbers=[{BatchNumber, Quantity, ExpiryDate?,
-    ' ManufactureDate?}]. Si está vacío, NO se agrega BatchNumbers (un
-    ' ítem NO gestionado por lote con BatchNumbers también hace que SAP
-    ' rechace el documento).
+    ' lleva BatchNumbers=[{BatchNumber, Quantity, ExpiryDate?}]. Si está
+    ' vacío, NO se agrega BatchNumbers (un ítem NO gestionado por lote
+    ' con BatchNumbers también hace que SAP rechace el documento).
+    '
+    ' Sesión 99c: ManufactureDate NO se envía — la config de lotes de
+    ' BK_1808261700 no tiene "Fecha de fabricación" como atributo de
+    ' lote habilitado, así que cualquier BatchNumbers que incluya
+    ' ManufactureDate lo rechaza con -4014 ("Cannot add row without
+    ' complete selection of batch/serial numbers"). ExpiryDate SÍ se
+    ' acepta. FechaFabricacionLote se sigue recibiendo del Portal (para
+    ' no romper el mapeo del DTO) pero se ignora al armar el payload.
     Public Property NumeroLote As String
     Public Property FechaVencimientoLote As Date?
     Public Property FechaFabricacionLote As Date?
@@ -78,6 +85,11 @@ Public Class GrpoService
             ' Sesión 99: BatchNumbers SOLO si la línea trae lote — un ítem
             ' NO gestionado por lote con BatchNumbers también hace que SAP
             ' rechace el documento (ya documentado en ARQUITECTURA_SAP.md).
+            '
+            ' Sesión 99c: se envía BatchNumber + Quantity (+ ExpiryDate si
+            ' hay). ManufactureDate NO se envía — BK_1808261700 lo rechaza
+            ' con -4014 (ver docstring de GrpoLineaEntrada). El dato sigue
+            ' guardado en el Portal, solo no se propaga a SAP.
             If Not String.IsNullOrWhiteSpace(l.NumeroLote) Then
                 Dim lote As New Dictionary(Of String, Object) From {
                     {"BatchNumber", l.NumeroLote},
@@ -85,9 +97,6 @@ Public Class GrpoService
                 }
                 If l.FechaVencimientoLote.HasValue Then
                     lote("ExpiryDate") = l.FechaVencimientoLote.Value.ToString("yyyy-MM-dd")
-                End If
-                If l.FechaFabricacionLote.HasValue Then
-                    lote("ManufactureDate") = l.FechaFabricacionLote.Value.ToString("yyyy-MM-dd")
                 End If
                 linea("BatchNumbers") = New List(Of Object) From {lote}
             End If
