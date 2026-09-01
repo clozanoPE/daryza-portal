@@ -95,12 +95,12 @@
       <form id="form-cabecera" class="row g-3">
         <div class="col-6">
           <label class="form-label text-xs fw-bold">Serie</label>
-          <input type="text" name="serie_comprobante" class="form-control form-control-sm rounded-3"
+          <input type="text" name="serie_comprobante" id="det-serie" class="form-control form-control-sm rounded-3 js-serie-num"
                  value="{{ factura.serie_comprobante|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
         </div>
         <div class="col-6">
           <label class="form-label text-xs fw-bold">Número</label>
-          <input type="text" name="numero_comprobante" class="form-control form-control-sm rounded-3"
+          <input type="text" name="numero_comprobante" id="det-numero" class="form-control form-control-sm rounded-3 js-serie-num"
                  value="{{ factura.numero_comprobante|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
         </div>
         <div class="col-6">
@@ -109,8 +109,9 @@
         </div>
         <div class="col-6">
           <label class="form-label text-xs fw-bold">N° Doc. Proveedor</label>
-          <input type="text" name="num_at_card" class="form-control form-control-sm rounded-3"
-                 value="{{ factura.num_at_card|default:'' }}" {% if not puede_editar %}disabled{% endif %}>
+          <input type="text" name="num_at_card" id="det-num-at-card" class="form-control form-control-sm rounded-3 bg-light"
+                 value="{{ factura.num_at_card|default:'' }}" readonly>
+          <small class="text-muted text-xxs">Se arma solo con la Serie y el Número.</small>
         </div>
         <div class="col-6">
           <label class="form-label text-xs fw-bold">Fecha de Documento</label>
@@ -168,7 +169,7 @@
         {% if puede_editar %}
         <input type="file" id="file-{{ tipo }}" class="form-control form-control-sm rounded-3" style="max-width:180px"
                accept="{% if tipo == 'pdf' %}.pdf{% else %}.xml{% endif %}">
-        <button class="btn btn-outline-success btn-sm rounded-3" onclick="subirArchivoFactura('{{ tipo }}', {{ factura.id }})">
+        <button class="btn btn-outline-success btn-sm rounded-3" onclick="subirArchivoFactura('{{ tipo }}', {{ factura.id }}, this)">
           <i class="bi bi-upload"></i>
         </button>
         {% endif %}
@@ -291,7 +292,7 @@
               {% endif %}
               {% if puede_editar %}
               <input type="file" class="form-control form-control-sm rounded-3 mt-1" id="file-retencion-{{ linea.id }}" accept=".pdf">
-              <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'retencion')">
+              <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'retencion', this)">
                 <i class="bi bi-upload me-1"></i>{% if linea.documento_retencion %}Reemplazar{% else %}Subir{% endif %}
               </button>
               {% endif %}
@@ -317,7 +318,7 @@
               {% endif %}
               {% if puede_editar %}
               <input type="file" class="form-control form-control-sm rounded-3 mt-1" id="file-detraccion-{{ linea.id }}" accept=".pdf">
-              <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'detraccion')">
+              <button class="btn btn-outline-success btn-sm rounded-3 mt-1 w-100" onclick="subirDocLinea({{ linea.id }}, 'detraccion', this)">
                 <i class="bi bi-upload me-1"></i>{% if linea.documento_detraccion %}Reemplazar{% else %}Subir{% endif %}
               </button>
               {% endif %}
@@ -337,5 +338,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.2"></script>
+<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.3"></script>
 {% endblock %}

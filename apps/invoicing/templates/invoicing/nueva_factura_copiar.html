@@ -56,11 +56,11 @@
     <div class="row g-3">
       <div class="col-6 col-md-3">
         <label class="form-label text-xs fw-bold">Serie</label>
-        <input type="text" name="serie_comprobante" class="form-control form-control-sm rounded-3" placeholder="F001">
+        <input type="text" name="serie_comprobante" id="inp-serie" class="form-control form-control-sm rounded-3 js-serie-num" placeholder="F012">
       </div>
       <div class="col-6 col-md-3">
         <label class="form-label text-xs fw-bold">Número</label>
-        <input type="text" name="numero_comprobante" class="form-control form-control-sm rounded-3" placeholder="123">
+        <input type="text" name="numero_comprobante" id="inp-numero" class="form-control form-control-sm rounded-3 js-serie-num" placeholder="25987">
       </div>
       <div class="col-6 col-md-3">
         <label class="form-label text-xs fw-bold">Moneda (de la OC)</label>
@@ -68,7 +68,8 @@
       </div>
       <div class="col-6 col-md-3">
         <label class="form-label text-xs fw-bold">N° Documento Proveedor</label>
-        <input type="text" name="num_at_card" class="form-control form-control-sm rounded-3" placeholder="F001-85541">
+        <input type="text" name="num_at_card" id="inp-num-at-card" class="form-control form-control-sm rounded-3 bg-light" placeholder="F012-00025987" readonly>
+        <small class="text-muted text-xxs">Se arma solo con la Serie y el Número.</small>
       </div>
       <div class="col-6 col-md-3">
         <label class="form-label text-xs fw-bold">Fecha de Documento</label>
@@ -180,5 +181,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/nueva_factura.js' %}?v=1.0"></script>
+<script src="{% static 'js/panels/nueva_factura.js' %}?v=1.1"></script>
 {% endblock %}

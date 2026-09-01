@@ -26,6 +26,21 @@ function toggleDocRequerido(checkbox, tipo) {
 }
 
 /**
+ * Sesión 99c — "N° Documento Proveedor" (num_at_card) se arma solo con
+ * Serie + Número, formato SUNAT: SERIE-NNNNNNNN (número correlativo con
+ * ceros a la izquierda hasta 8 dígitos). El input es de solo lectura.
+ */
+function syncNumAtCard() {
+  const serie = (document.getElementById('inp-serie')?.value || '').trim().toUpperCase();
+  const numeroRaw = (document.getElementById('inp-numero')?.value || '').trim();
+  const dest = document.getElementById('inp-num-at-card');
+  if (!dest) return;
+  if (!serie && !numeroRaw) { dest.value = ''; return; }
+  const numero = /^\d+$/.test(numeroRaw) ? numeroRaw.padStart(8, '0') : numeroRaw;
+  dest.value = serie && numero ? `${serie}-${numero}` : (serie || numero);
+}
+
+/**
  * Sesión 99c — recalcula "Total Línea" (cantidad × precio unitario, neto)
  * en la Pantalla de Copia cada vez que cambia la cantidad a facturar.
  * @param {HTMLInputElement} input  el .inp-cant-facturar
@@ -46,6 +61,11 @@ document.addEventListener('DOMContentLoaded', () => {
     recalcTotalLinea(inp);                       // valor inicial
     inp.addEventListener('input', () => recalcTotalLinea(inp));
   });
+
+  document.querySelectorAll('.js-serie-num').forEach(inp => {
+    inp.addEventListener('input', syncNumAtCard);
+  });
+  syncNumAtCard();                               // valor inicial
 });
 
 async function crearFactura() {

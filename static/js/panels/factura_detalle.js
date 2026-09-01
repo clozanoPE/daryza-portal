@@ -40,11 +40,15 @@ async function guardarCabecera(facturaId) {
   }
 }
 
-async function subirArchivoFactura(tipo, facturaId) {
-  const { showToast } = DzUI;
+async function subirArchivoFactura(tipo, facturaId, btn) {
+  const { showToast, btnLoading } = DzUI;
   const fileInput = document.getElementById(`file-${tipo}`);
   if (!fileInput || !fileInput.files.length) { showToast('Selecciona un archivo.', 'warning'); return; }
 
+  // Sesión 99c: feedback visible mientras sube (la subida real a OneDrive
+  // tarda 1-3s; sin esto el botón parece congelado). El spinner se deja
+  // puesto en el camino de éxito — la página recarga a continuación.
+  const restoreBtn = btn ? btnLoading(btn, 'Cargando…') : () => {};
   const formData = new FormData();
   formData.append('archivo', fileInput.files[0]);
   try {
@@ -54,6 +58,7 @@ async function subirArchivoFactura(tipo, facturaId) {
     setTimeout(() => window.location.reload(), 900);
   } catch (err) {
     showToast(err.message, 'error');
+    restoreBtn();
   }
 }
 
@@ -93,11 +98,12 @@ async function toggleFlagLinea(checkbox, tipo) {
   }
 }
 
-async function subirDocLinea(lineaId, tipo) {
-  const { showToast } = DzUI;
+async function subirDocLinea(lineaId, tipo, btn) {
+  const { showToast, btnLoading } = DzUI;
   const fileInput = document.getElementById(`file-${tipo}-${lineaId}`);
   if (!fileInput || !fileInput.files.length) { showToast('Selecciona un archivo.', 'warning'); return; }
 
+  const restoreBtn = btn ? btnLoading(btn, 'Cargando…') : () => {};
   const formData = new FormData();
   formData.append('archivo', fileInput.files[0]);
   try {
@@ -107,8 +113,30 @@ async function subirDocLinea(lineaId, tipo) {
     setTimeout(() => window.location.reload(), 900);
   } catch (err) {
     showToast(err.message, 'error');
+    restoreBtn();
   }
 }
+
+/**
+ * Sesión 99c — "N° Doc. Proveedor" (num_at_card) se arma solo con Serie +
+ * Número: SERIE-NNNNNNNN (correlativo con ceros a la izquierda hasta 8
+ * dígitos). Input de solo lectura. Mismo criterio que la Pantalla de Copia.
+ */
+function syncNumAtCard() {
+  const serie = (document.getElementById('det-serie')?.value || '').trim().toUpperCase();
+  const numeroRaw = (document.getElementById('det-numero')?.value || '').trim();
+  const dest = document.getElementById('det-num-at-card');
+  if (!dest) return;
+  if (!serie && !numeroRaw) { dest.value = ''; return; }
+  const numero = /^\d+$/.test(numeroRaw) ? numeroRaw.padStart(8, '0') : numeroRaw;
+  dest.value = serie && numero ? `${serie}-${numero}` : (serie || numero);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.js-serie-num').forEach(inp => {
+    inp.addEventListener('input', syncNumAtCard);
+  });
+});
 
 async function enviarARevision(facturaId) {
   const { showToast, confirmDialog } = DzUI;
