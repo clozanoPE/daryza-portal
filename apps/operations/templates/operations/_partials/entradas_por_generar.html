@@ -8,9 +8,15 @@ Sesión 99c — segunda sección "Entradas rechazadas por SAP": Entradas
 ENVIADO que SAP rechazó (error_mensaje) — el actor las reabre, corrige y
 reenvía.
 
+Sesión 99c (seguimiento) — tercera sección "Entradas enviadas a SAP B1":
+consulta de solo lectura de las Entradas ya ENVIADO (sin error) y
+CREADO_SAP — antes desaparecían de la vista tras pulsar "Enviar a SAP B1".
+Muestra el estado y el código SAP devuelto (DocNum / DocEntry).
+
 Parámetros:
   entradas_pendientes : lista de EntradaMercaderia PENDIENTE (se.entradas_pendientes_para)
   entradas_rechazadas : lista de EntradaMercaderia ENVIADO+error (se.entradas_rechazadas_para)
+  entradas_en_curso   : lista de EntradaMercaderia ENVIADO(sin error)+CREADO_SAP (se.entradas_en_curso_para)
   acento              : "green" (Almacén) | "pink" (Materia Prima)
 {% endcomment %}
 {% if entradas_rechazadas %}
@@ -97,6 +103,60 @@ Parámetros:
             <a href="{% url 'operations:entrada_mercaderia_detalle' entrada.id %}"
                class="btn {% if acento == 'pink' %}btn-materia-prima{% else %}btn-success{% endif %} btn-sm rounded-3 text-xs">
               <i class="bi bi-pencil-square me-1"></i>Completar lote
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% if entradas_en_curso %}
+<div class="dz-card p-4 mb-4">
+  <h6 class="fw-bold mb-3">
+    <i class="bi bi-send-check {% if acento == 'pink' %}text-materia-prima{% else %}text-success{% endif %} me-2"></i>
+    Entradas de Mercadería enviadas a SAP B1
+    <span class="badge rounded-pill ms-1 text-xxs bg-light text-dark border">{{ entradas_en_curso|length }}</span>
+  </h6>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th class="text-xxs">Ticket</th>
+          <th class="text-xxs">Proveedor</th>
+          <th class="text-xxs">OC(s)</th>
+          <th class="text-xxs">Estado</th>
+          <th class="text-xxs">DocNum SAP</th>
+          <th class="text-xxs">DocEntry</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entrada in entradas_en_curso %}
+        <tr>
+          <td class="fw-bold text-xs">#{{ entrada.ticket.appointment.id }}</td>
+          <td class="text-xs">{{ entrada.ticket.appointment.user.get_full_name|default:entrada.ticket.appointment.user.username }}</td>
+          <td>
+            <div class="d-flex flex-wrap gap-1">
+              {% for po in entrada.ticket.appointment.purchase_orders.all %}
+              <span class="badge text-xxs bg-light text-dark border">OC {{ po.doc_num }}</span>
+              {% endfor %}
+            </div>
+          </td>
+          <td>
+            <span class="badge text-xxs
+              {% if entrada.estado == 'CREADO_SAP' %}bg-success-subtle text-success border border-success-subtle
+              {% else %}bg-primary-subtle text-primary border border-primary-subtle{% endif %}">
+              {{ entrada.get_estado_display }}
+            </span>
+          </td>
+          <td class="text-xs">{{ entrada.doc_num_sap|default:"—" }}</td>
+          <td class="text-xs text-muted">{{ entrada.doc_entry_definitivo|default:entrada.doc_entry_borrador|default:"—" }}</td>
+          <td class="text-end">
+            <a href="{% url 'operations:entrada_mercaderia_detalle' entrada.id %}"
+               class="btn btn-outline-secondary btn-sm rounded-3 text-xs">
+              <i class="bi bi-eye me-1"></i>Ver
             </a>
           </td>
         </tr>

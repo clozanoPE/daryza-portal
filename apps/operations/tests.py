@@ -1502,6 +1502,65 @@ class EntradaMercaderiaReabrirTests(EntradaMercaderiaLoteFlowTests):
         self.assertIn(f'/operations/entrada-mercaderia/{rech.id}/', html)
 
 
+class EntradaMercaderiaEnCursoTests(EntradaMercaderiaReabrirTests):
+    """
+    Sesión 99c (seguimiento) — entradas_en_curso_para + sección de consulta
+    "Entradas de Mercadería enviadas a SAP B1" en el panel: una Entrada ya
+    ENVIADO (sin error) o CREADO_SAP no desaparece de la vista; muestra su
+    estado y el código SAP devuelto (DocNum / DocEntry). Hereda _entrada_
+    pendiente / _entrada_rechazada.
+    """
+
+    def _entrada_enviada(self):
+        entrada = self._entrada_pendiente()
+        se.editar_linea_entrada(entrada.lineas.first(), self.u_almacen, numero_lote='L-ENV-1')
+        se.enviar_a_sap(entrada, self.u_almacen)
+        entrada.refresh_from_db()
+        return entrada
+
+    def test_en_curso_incluye_enviado_sin_error(self):
+        entrada = self._entrada_enviada()
+        ids = [e.id for e in se.entradas_en_curso_para(self.u_almacen)]
+        self.assertIn(entrada.id, ids)
+
+    def test_en_curso_incluye_creado_sap(self):
+        entrada = self._entrada_enviada()
+        entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        entrada.estado_sap = 'Y'
+        entrada.doc_num_sap = '500123'
+        entrada.doc_entry_definitivo = 900123
+        entrada.save(update_fields=['estado', 'estado_sap', 'doc_num_sap', 'doc_entry_definitivo'])
+        ids = [e.id for e in se.entradas_en_curso_para(self.u_almacen)]
+        self.assertIn(entrada.id, ids)
+
+    def test_en_curso_excluye_pendiente_y_rechazada(self):
+        pend = self._entrada_pendiente()
+        rech = self._entrada_rechazada()
+        ids = [e.id for e in se.entradas_en_curso_para(self.u_almacen)]
+        self.assertNotIn(pend.id, ids)
+        self.assertNotIn(rech.id, ids)
+
+    def test_en_curso_filtra_por_actor(self):
+        entrada = self._entrada_enviada()  # OC 'CDL' -> actor ALMACEN
+        self.assertNotIn(entrada.id, [e.id for e in se.entradas_en_curso_para(self.u_materia_prima)])
+        self.assertIn(entrada.id, [e.id for e in se.entradas_en_curso_para(self.u_almacen)])
+
+    def test_panel_muestra_seccion_con_estado_y_docnum(self):
+        entrada = self._entrada_enviada()
+        entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        entrada.estado_sap = 'Y'
+        entrada.doc_num_sap = '500777'
+        entrada.doc_entry_definitivo = 900777
+        entrada.save(update_fields=['estado', 'estado_sap', 'doc_num_sap', 'doc_entry_definitivo'])
+
+        self.client.force_login(self.u_almacen)
+        html = self.client.get('/operations/almacen/').content.decode()
+        self.assertIn('enviadas a SAP B1', html)
+        self.assertIn('500777', html)
+        self.assertIn('900777', html)
+        self.assertIn(f'/operations/entrada-mercaderia/{entrada.id}/', html)
+
+
 class EntradaMercaderiaAPITests(OperationsTestBase):
     """
     Endpoints del daemon (api/entrada_mercaderia_api.py) — mismo criterio de

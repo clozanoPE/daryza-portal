@@ -120,6 +120,43 @@ def entradas_rechazadas_para(usuario) -> list[EntradaMercaderia]:
     return [e for e in qs if _grupo_actor(e) in grupos]
 
 
+def entradas_en_curso_para(usuario) -> list[EntradaMercaderia]:
+    """
+    EntradaMercaderia ya ENVIADA a SAP B1 — para consulta, NO para acción.
+    Cubre el hueco de la sesión 99c: una vez que el actor pulsa "Enviar a
+    SAP B1", la Entrada sale de "por generar" y (si SAP no la rechaza)
+    tampoco entra en "rechazadas" — quedaba invisible hasta que el daemon
+    la creara. Esta sección la mantiene a la vista con su estado y el
+    código SAP devuelto (DocNum / DocEntry).
+
+    Incluye:
+      - ENVIADO sin error_mensaje (esperando al daemon / creándose),
+      - CREADO_SAP (GRPO real ya creado — doc_num_sap / doc_entry_definitivo).
+    NO incluye ENVIADO+error (esas van en entradas_rechazadas_para, con
+    botón de reabrir).
+
+    Mismo filtrado por actor (ALMACEN / MATERIA_PRIMA) que las otras dos
+    listas; un superusuario ve todas. Más recientes primero.
+    """
+    qs = EntradaMercaderia.objects.filter(
+        estado__in=[EntradaMercaderia.ESTADO_ENVIADO, EntradaMercaderia.ESTADO_CREADO_SAP],
+    ).select_related(
+        'ticket__appointment__slot', 'ticket__appointment__user',
+    ).prefetch_related(
+        'lineas__po_line__purchase_order',
+        'ticket__appointment__purchase_orders',
+    ).order_by('-fecha_generada')
+
+    # ENVIADO + error va en "rechazadas", no acá.
+    qs = [e for e in qs if not (e.estado == EntradaMercaderia.ESTADO_ENVIADO and (e.error_mensaje or '').strip())]
+
+    if usuario.is_superuser:
+        return list(qs)
+
+    grupos = set(usuario.groups.values_list('name', flat=True))
+    return [e for e in qs if _grupo_actor(e) in grupos]
+
+
 def lineas_para_detalle(entrada: EntradaMercaderia) -> list[dict]:
     """
     Filas para la pantalla de detalle — cantidad real ya inspeccionada

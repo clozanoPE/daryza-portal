@@ -43,7 +43,7 @@ Repetir para **79001197** (`P20102021836`), **79001199** (`P20612579751`) y **79
 | 1.7 | **`uvigilancia`** | Detalle del Ticket → **Registrar Salida** → Ticket **FINALIZADO**. El Portal genera la **EntradaMercadería en PENDIENTE** (`estado_sap=''`). |
 | 1.8 | Actor de recepción | `/operations/materia-prima/` o `/operations/almacen/` → sección **"Entradas de Mercadería por generar"** → **"Completar lote"** → `/operations/entrada-mercaderia/<id>/`. |
 | 1.9 | mismo | La columna **LOTE** solo pide dato en las líneas `gestionado_por_lote=True`. <br>• `79001197` / `79001199`: cargar nº de lote (opcional venc. / fab.). <br>• `79001198`: todas "No gestionado por lote" (deshabilitado). <br>Ajustar Cantidad Real si hace falta. |
-| 1.10 | mismo | **"Enviar a SAP B1"**. Valida que toda línea de lote tenga nº. Transición: `PENDIENTE → ENVIADO`, `estado_sap '' → 'L'`. |
+| 1.10 | mismo | **"Enviar a SAP B1"**. Valida que toda línea de lote tenga nº. Transición: `PENDIENTE → ENVIADO`, `estado_sap '' → 'L'`. La Entrada sale de "por generar" y pasa a la sección **"Entradas de Mercadería enviadas a SAP B1"** del mismo panel (consulta: estado + DocNum + DocEntry + "Ver"). |
 | 1.11 | Daemon | `cd daemon-sap/app/app/bin/Debug && ./app.exe --sync-grpo`. Log esperado: `[GRPO-ÉXITO] Entrada #<id>: ... DocEntry=..., DocNum=...` → `[GRPO-CONFIRMADO]`. |
 | 1.12 | Verificar | **Portal:** `EntradaMercaderia` queda `estado='CREADO_SAP'`, `estado_sap='Y'`, `doc_num_sap` poblado (badge "Entrada Mercadería: Creado en SAP B1 · GRPO <nro>" en `/operations/ticket/<id>/trazabilidad/`). **SAP:** buscar el `OPDN` por ese DocNum → cantidad real; `79001197`/`79001199` con `BatchNumber`; `79001198` sin lote. |
 

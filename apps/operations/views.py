@@ -520,6 +520,7 @@ def panel_almacen(request):
         # toca esa lógica.
         'entradas_pendientes': se.entradas_pendientes_para(request.user),
         'entradas_rechazadas': se.entradas_rechazadas_para(request.user),
+        'entradas_en_curso':   se.entradas_en_curso_para(request.user),
     }
     return render(request, 'operations/panel_almacen.html', context)
 
@@ -745,6 +746,7 @@ def panel_materia_prima(request):
         # (Ticket ya FINALIZADO, falta completar el LOTE en el Portal).
         'entradas_pendientes': se.entradas_pendientes_para(request.user),
         'entradas_rechazadas': se.entradas_rechazadas_para(request.user),
+        'entradas_en_curso':   se.entradas_en_curso_para(request.user),
     }
     return render(request, 'operations/panel_materia_prima.html', context)
 
