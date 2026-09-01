@@ -35,18 +35,17 @@ OperationsService._grupo_actor_recepcion, pero evaluado sobre el Ticket
 ya FINALIZADO (grupo_requerido_por_etapa ya no aplica ahí).
 
 Si SAP rechaza el documento después del envío (ej. un lote inválido para
-un ítem específico), el daemon llama a reportar-error tal como hoy: se
-guarda error_mensaje SIN tocar estado/estado_sap (la Entrada sigue en
-ENVIADO / 'L'). enviar_a_sap ya exige que todas las líneas tengan lote,
-así que el caso "falta el lote" no debería llegar a SAP; un rechazo por
-otro motivo queda visible en trazabilidad_ticket para que un humano lo
-resuelva (no hay un flujo de "reabrir a PENDIENTE" en esta etapa — no fue
-pedido).
+un ítem específico), el daemon llama a reportar-error: se guarda
+error_mensaje SIN tocar estado/estado_sap (la Entrada sigue en ENVIADO /
+'L'). Para no dejarla atascada en un loop de reintento, el actor de
+recepción puede REABRIRLA a PENDIENTE (reabrir_para_correccion) desde el
+panel — sección "Entradas rechazadas por SAP" — o desde la propia
+pantalla de detalle; corrige el lote/cantidad y la reenvía.
 """
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from .models import EntradaMercaderia, EntradaMercaderiaLinea
+from .models import EntradaMercaderia, EntradaMercaderiaEvento, EntradaMercaderiaLinea
 
 # Centinela para editar_linea_entrada: distingue "el caller no pasó esta
 # fecha" de "el caller pasó None a propósito para limpiarla".
@@ -85,6 +84,29 @@ def entradas_pendientes_para(usuario) -> list[EntradaMercaderia]:
     qs = EntradaMercaderia.objects.filter(
         estado=EntradaMercaderia.ESTADO_PENDIENTE,
     ).select_related(
+        'ticket__appointment__slot', 'ticket__appointment__user',
+    ).prefetch_related(
+        'lineas__po_line__purchase_order',
+        'ticket__appointment__purchase_orders',
+    ).order_by('fecha_generada')
+
+    if usuario.is_superuser:
+        return list(qs)
+
+    grupos = set(usuario.groups.values_list('name', flat=True))
+    return [e for e in qs if _grupo_actor(e) in grupos]
+
+
+def entradas_rechazadas_para(usuario) -> list[EntradaMercaderia]:
+    """
+    EntradaMercaderia en estado ENVIADO con error_mensaje no vacío (SAP la
+    rechazó y el daemon la reintenta sin éxito) que le corresponden a
+    `usuario` — para que las reabra, corrija y reenvíe. Mismo filtrado por
+    actor que entradas_pendientes_para.
+    """
+    qs = EntradaMercaderia.objects.filter(
+        estado=EntradaMercaderia.ESTADO_ENVIADO,
+    ).exclude(error_mensaje='').select_related(
         'ticket__appointment__slot', 'ticket__appointment__user',
     ).prefetch_related(
         'lineas__po_line__purchase_order',
@@ -193,6 +215,45 @@ def enviar_a_sap(entrada: EntradaMercaderia, usuario) -> EntradaMercaderia:
 
     entrada.estado = EntradaMercaderia.ESTADO_ENVIADO
     entrada.estado_sap = 'L'
+    entrada.error_mensaje = ''
+    entrada.save(update_fields=['estado', 'estado_sap', 'error_mensaje'])
+    return entrada
+
+
+@transaction.atomic
+def reabrir_para_correccion(entrada: EntradaMercaderia, usuario) -> EntradaMercaderia:
+    """
+    Vuelve una Entrada ENVIADO que SAP rechazó (error_mensaje no vacío) a
+    PENDIENTE (+ estado_sap='L' → '', error_mensaje → '') para que el actor
+    de recepción corrija el lote/cantidad y la reenvíe.
+
+    NO se puede reabrir una Entrada ya CREADO_SAP (el GRPO real existe en
+    SAP — reabrir ahí sería incorrecto).
+
+    Deja RASTRO: crea un EntradaMercaderiaEvento(tipo=REABIERTA) con el
+    error de SAP que se estaba corrigiendo + quién y cuándo — así aunque
+    el error_mensaje se limpie, no se pierde de vista que falló una vez.
+    """
+    entrada = EntradaMercaderia.objects.select_for_update().get(pk=entrada.pk)
+    _validar_permiso(entrada, usuario)
+    if entrada.estado == EntradaMercaderia.ESTADO_CREADO_SAP:
+        raise ValidationError(
+            "El GRPO ya fue creado en SAP B1 — esta Entrada no se puede reabrir."
+        )
+    if entrada.estado != EntradaMercaderia.ESTADO_ENVIADO or not (entrada.error_mensaje or '').strip():
+        raise ValidationError(
+            "Solo se puede reabrir una Entrada que SAP haya rechazado."
+        )
+
+    EntradaMercaderiaEvento.objects.create(
+        entrada=entrada,
+        tipo=EntradaMercaderiaEvento.TIPO_REABIERTA,
+        mensaje=entrada.error_mensaje,
+        usuario=usuario,
+    )
+
+    entrada.estado = EntradaMercaderia.ESTADO_PENDIENTE
+    entrada.estado_sap = ''
     entrada.error_mensaje = ''
     entrada.save(update_fields=['estado', 'estado_sap', 'error_mensaje'])
     return entrada

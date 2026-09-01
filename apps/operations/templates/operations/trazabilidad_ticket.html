@@ -44,6 +44,14 @@
       <span><strong>Error SAP:</strong> {{ ticket.entrada_mercaderia.error_mensaje }}</span>
     </div>
     {% endif %}
+    {% with n_reaperturas=ticket.entrada_mercaderia.eventos.count %}
+    {% if n_reaperturas %}
+    <div class="text-xxs text-warning mb-1">
+      <i class="bi bi-arrow-counterclockwise me-1"></i>
+      Entrada reabierta {{ n_reaperturas }} vez(ces) tras rechazo de SAP.
+    </div>
+    {% endif %}
+    {% endwith %}
     <p class="page-header__subtitle">
       Creado el {{ ticket.fecha_creacion|date:"d/m/Y H:i" }}
       &nbsp;·&nbsp;

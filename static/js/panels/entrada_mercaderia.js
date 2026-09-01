@@ -34,6 +34,20 @@ async function guardarLineaEntrada(lineaId) {
   }
 }
 
+async function reabrirEntrada(entradaId) {
+  const { showToast } = DzUI;
+  try {
+    const data = await DzApi.postJSON(
+      `/operations/api/entrada-mercaderia/${entradaId}/reabrir/`, {},
+    );
+    if (data.status !== 'success') throw new Error(data.msg);
+    showToast(data.msg || 'Entrada reabierta.', 'success');
+    setTimeout(() => window.location.reload(), 800);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 async function enviarEntradaASap(entradaId) {
   const { showToast, btnLoading } = DzUI;
   const btn = document.getElementById('btn-enviar-entrada');

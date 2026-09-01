@@ -36,10 +36,39 @@
 </div>
 {% endif %}
 
-{% if not puede_editar %}
+{% if puede_reabrir %}
+<div class="alert alert-warning d-flex flex-wrap align-items-center justify-content-between gap-2">
+  <span>
+    <i class="bi bi-arrow-counterclockwise me-1"></i>
+    SAP rechazó esta Entrada. Reábrala para corregir el lote / la cantidad y volver a enviarla.
+  </span>
+  <button type="button" class="btn btn-warning btn-sm rounded-3 fw-bold"
+          onclick="reabrirEntrada({{ entrada.id }})">
+    <i class="bi bi-arrow-counterclockwise me-1"></i>Reabrir para corregir
+  </button>
+</div>
+{% elif not puede_editar %}
 <div class="alert alert-info">
   <i class="bi bi-info-circle me-1"></i>
   Esta Entrada de Mercadería ya fue enviada a SAP B1 — sus datos son de solo lectura.
+</div>
+{% endif %}
+
+{% if eventos %}
+<div class="dz-card p-3 mb-4">
+  <h6 class="fw-bold text-xs mb-2">
+    <i class="bi bi-clock-history me-1"></i>Historial de reaperturas
+    <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle text-xxs ms-1">{{ eventos|length }}</span>
+  </h6>
+  <ul class="list-unstyled mb-0 small">
+    {% for ev in eventos %}
+    <li class="border-start border-2 border-warning ps-2 mb-2">
+      <span class="text-muted text-xxs">{{ ev.fecha|date:"d/m/Y H:i" }} · {{ ev.usuario.get_full_name|default:ev.usuario.username }}</span>
+      <div class="text-xxs">Reabierta tras rechazo de SAP:</div>
+      <div class="text-xxs text-danger" style="white-space:pre-line">{{ ev.mensaje|truncatechars:200 }}</div>
+    </li>
+    {% endfor %}
+  </ul>
 </div>
 {% endif %}
 
@@ -120,5 +149,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/entrada_mercaderia.js' %}?v=1.0"></script>
+<script src="{% static 'js/panels/entrada_mercaderia.js' %}?v=1.1"></script>
 {% endblock %}

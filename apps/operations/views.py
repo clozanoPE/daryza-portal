@@ -519,6 +519,7 @@ def panel_almacen(request):
         # Kanban de aprobación de citas de arriba) — esta es nueva y no
         # toca esa lógica.
         'entradas_pendientes': se.entradas_pendientes_para(request.user),
+        'entradas_rechazadas': se.entradas_rechazadas_para(request.user),
     }
     return render(request, 'operations/panel_almacen.html', context)
 
@@ -743,6 +744,7 @@ def panel_materia_prima(request):
         # Sesión 99: Entradas de Mercadería en PENDIENTE que le tocan a MP
         # (Ticket ya FINALIZADO, falta completar el LOTE en el Portal).
         'entradas_pendientes': se.entradas_pendientes_para(request.user),
+        'entradas_rechazadas': se.entradas_rechazadas_para(request.user),
     }
     return render(request, 'operations/panel_materia_prima.html', context)
 
@@ -797,7 +799,7 @@ def entrada_mercaderia_detalle(request, entrada_id: int):
     entrada = get_object_or_404(
         EntradaMercaderia.objects.select_related(
             'ticket__appointment__slot', 'ticket__appointment__user',
-        ).prefetch_related('lineas__po_line__purchase_order'),
+        ).prefetch_related('lineas__po_line__purchase_order', 'eventos__usuario'),
         id=entrada_id,
     )
     if not se.puede_gestionar(entrada, request.user):
@@ -807,6 +809,13 @@ def entrada_mercaderia_detalle(request, entrada_id: int):
         'entrada': entrada,
         'filas': se.lineas_para_detalle(entrada),
         'puede_editar': entrada.estado == EntradaMercaderia.ESTADO_PENDIENTE,
+        # Sesión 99c: la Entrada fue enviada, SAP la rechazó (error_mensaje) y
+        # todavía no se creó el GRPO -> el actor puede reabrirla para corregir.
+        'puede_reabrir': (
+            entrada.estado == EntradaMercaderia.ESTADO_ENVIADO
+            and bool((entrada.error_mensaje or '').strip())
+        ),
+        'eventos': list(entrada.eventos.all()),
     })
 
 
@@ -869,6 +878,25 @@ def entrada_enviar_a_sap_ajax(request, entrada_id: int):
         return _json_err(msg)
 
     return _json_ok(msg='Entrada de Mercadería enviada a SAP B1.')
+
+
+@staff_interno_required
+@require_POST
+def entrada_reabrir_ajax(request, entrada_id: int):
+    """POST /operations/api/entrada-mercaderia/<id>/reabrir/  (JSON) — sesión 99c."""
+    entrada = get_object_or_404(
+        EntradaMercaderia.objects.select_related('ticket'), id=entrada_id,
+    )
+    if not se.puede_gestionar(entrada, request.user):
+        return _json_err('No tiene permiso para gestionar esta Entrada de Mercadería.', status=403)
+
+    try:
+        se.reabrir_para_correccion(entrada, request.user)
+    except ValidationError as e:
+        msg = e.messages[0] if hasattr(e, 'messages') else str(e)
+        return _json_err(msg)
+
+    return _json_ok(msg='Entrada reabierta — corrija el lote/cantidad y vuelva a enviar.')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

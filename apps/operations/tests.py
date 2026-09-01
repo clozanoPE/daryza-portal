@@ -23,12 +23,14 @@ de OperationsService/AppointmentService (nunca escribiendo etapa_actual/
 requiere_calidad directamente sobre el modelo) — así cualquier regresión
 en el propio flujo de construcción también haría fallar la suite.
 """
+import datetime
 import itertools
 from decimal import Decimal
 
 from django.contrib.auth.models import User, Group
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
@@ -48,6 +50,14 @@ from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 # real en la base de datos, solo evita reutilizar el mismo literal a mano
 # en decenas de tests (como hacía la suite anterior con 555001, 555002...).
 _doc_num_counter = itertools.count(700001)
+
+# Contador para _slot_futuro(): cada llamada produce un AppointmentSlot con
+# fecha + hora únicas y SIEMPRE futuras — evita "horario ya pasó" (Slot
+# Service.validar_disponibilidad, sesión 39) cuando "hoy" avanza, y las
+# colisiones de AppointmentSlot.unique_together=(sede,date,start_time)
+# cuando un test crea varias citas. Antes varias fechas iban hardcodeadas
+# ('2026-09-01', ...) — una bomba de tiempo que estalló al llegar esa fecha.
+_slot_seq_counter = itertools.count(0)
 
 
 class OperationsTestBase(TestCase):
@@ -84,6 +94,24 @@ class OperationsTestBase(TestCase):
 
     # ── Construcción de Tickets reales, paso a paso ─────────────────────────
 
+    @staticmethod
+    def _slot_futuro(**kwargs) -> AppointmentSlot:
+        """
+        AppointmentSlot en fecha + hora SIEMPRE futuras y únicas por
+        llamada — ver _slot_seq_counter. Reemplaza los `date='2026-09-0X'`
+        hardcodeados que antes se repartían por la suite.
+        """
+        n = next(_slot_seq_counter)
+        base = dict(
+            sede=Sede.objects.get(codigo='LURIN'),
+            date=timezone.localdate() + datetime.timedelta(days=30 + n // 200),
+            start_time=(datetime.datetime(2000, 1, 1, 6, 0)
+                        + datetime.timedelta(minutes=(n % 200) * 5)).time(),
+            dock='TEST', max_capacity=5,
+        )
+        base.update(kwargs)
+        return AppointmentSlot.objects.create(**base)
+
     def _crear_cita_confirmada(self, u_mss_tdb: str, requiere_coa: bool = True) -> Ticket:
         """OC -> solicitud -> confirmación. Ticket queda en PENDIENTE_INGRESO."""
         doc_num = next(_doc_num_counter)
@@ -95,10 +123,7 @@ class OperationsTestBase(TestCase):
             purchase_order=po, line_num=1, item_code='ITEM-TEST', description='Item de prueba',
             quantity_sap=10, und_medida='KG', requiere_coa=(requiere_coa and u_mss_tdb == 'MP'),
         )
-        slot = AppointmentSlot.objects.create(
-            sede=Sede.objects.get(codigo='LURIN'),
-            date='2026-09-01', start_time='08:00', dock='TEST', max_capacity=5
-        )
+        slot = self._slot_futuro()
         appointment = AppointmentService.solicitar_cita_borrador(
             user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
         )
@@ -967,10 +992,7 @@ class NumeracionUnificadaTests(OperationsTestBase):
             purchase_order=po, line_num=1, item_code='ITEM-DESCARTABLE',
             description='x', quantity_sap=1, und_medida='UND',
         )
-        slot = AppointmentSlot.objects.create(
-            sede=Sede.objects.get(codigo='LURIN'),
-            date='2026-09-02', start_time='08:00', dock='TEST', max_capacity=5,
-        )
+        slot = self._slot_futuro()
         appointment = AppointmentService.solicitar_cita_borrador(
             user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
         )
@@ -1029,10 +1051,7 @@ class NumeracionUnificadaTests(OperationsTestBase):
             purchase_order=po, line_num=1, item_code='ITEM-TEST', description='x',
             quantity_sap=1, und_medida='UND',
         )
-        slot = AppointmentSlot.objects.create(
-            sede=Sede.objects.get(codigo='LURIN'),
-            date='2026-09-03', start_time='08:00', dock='TEST', max_capacity=5,
-        )
+        slot = self._slot_futuro()
         appointment = AppointmentService.solicitar_cita_borrador(
             user=self.proveedor, slot_id=slot.id, oc_ids=[po.id]
         )
@@ -1358,6 +1377,129 @@ class EntradaMercaderiaLoteFlowTests(OperationsTestBase):
         html = resp.content.decode('utf-8')
         self.assertIn('No gestionado por lote', html)   # la línea line_num=2
         self.assertIn('data-requiere-lote="1"', html)    # la línea line_num=1
+
+
+class EntradaMercaderiaReabrirTests(EntradaMercaderiaLoteFlowTests):
+    """
+    Sesión 99c — reabrir_para_correccion: una Entrada ENVIADO que SAP
+    rechazó (error_mensaje) vuelve a PENDIENTE para que el actor de
+    recepción corrija el lote/cantidad y la reenvíe, dejando rastro
+    (EntradaMercaderiaEvento). Hereda los helpers de la clase de lote.
+    """
+
+    def _entrada_rechazada(self, item_error="POST 'PurchaseDeliveryNotes' rechazado: -4014 batch incompleto"):
+        entrada = self._entrada_pendiente()  # línea gestionada por lote
+        linea = entrada.lineas.first()
+        se.editar_linea_entrada(linea, self.u_almacen, numero_lote='L-INICIAL')
+        se.enviar_a_sap(entrada, self.u_almacen)
+        entrada.refresh_from_db()
+        # Simula lo que hace el endpoint reportar-error del daemon.
+        entrada.error_mensaje = item_error
+        entrada.save(update_fields=['error_mensaje'])
+        return entrada
+
+    def test_reabrir_vuelve_a_pendiente_limpia_error_y_deja_evento(self):
+        from apps.operations.models import EntradaMercaderiaEvento
+        entrada = self._entrada_rechazada(item_error='ERR-SAP-XYZ')
+
+        se.reabrir_para_correccion(entrada, self.u_almacen)
+
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_PENDIENTE)
+        self.assertEqual(entrada.estado_sap, '')
+        self.assertEqual(entrada.error_mensaje, '')
+
+        eventos = list(entrada.eventos.all())
+        self.assertEqual(len(eventos), 1)
+        self.assertEqual(eventos[0].tipo, EntradaMercaderiaEvento.TIPO_REABIERTA)
+        self.assertEqual(eventos[0].mensaje, 'ERR-SAP-XYZ')  # se conserva el error corregido
+        self.assertEqual(eventos[0].usuario_id, self.u_almacen.id)
+
+    def test_tras_reabrir_se_puede_editar_y_reenviar(self):
+        entrada = self._entrada_rechazada()
+        se.reabrir_para_correccion(entrada, self.u_almacen)
+
+        linea = entrada.lineas.first()
+        se.editar_linea_entrada(linea, self.u_almacen, numero_lote='L-CORREGIDO')
+        se.enviar_a_sap(entrada, self.u_almacen)
+
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_ENVIADO)
+        self.assertEqual(entrada.lineas.first().numero_lote, 'L-CORREGIDO')
+        self.assertEqual(entrada.eventos.count(), 1)  # el rastro persiste
+
+    def test_no_se_puede_reabrir_pendiente_sin_error(self):
+        entrada = self._entrada_pendiente()
+        with self.assertRaises(ValidationError):
+            se.reabrir_para_correccion(entrada, self.u_almacen)
+
+    def test_no_se_puede_reabrir_enviado_sin_error(self):
+        entrada = self._entrada_pendiente()
+        se.editar_linea_entrada(entrada.lineas.first(), self.u_almacen, numero_lote='L-1')
+        se.enviar_a_sap(entrada, self.u_almacen)  # ENVIADO, sin error
+        with self.assertRaises(ValidationError):
+            se.reabrir_para_correccion(entrada, self.u_almacen)
+
+    def test_no_se_puede_reabrir_si_ya_esta_creado_en_sap(self):
+        entrada = self._entrada_rechazada()
+        entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+        entrada.estado_sap = 'Y'
+        entrada.save(update_fields=['estado', 'estado_sap'])
+        with self.assertRaises(ValidationError) as ctx:
+            se.reabrir_para_correccion(entrada, self.u_almacen)
+        self.assertIn('GRPO ya fue creado', '; '.join(ctx.exception.messages))
+
+    def test_permiso_actor_equivocado_y_superusuario(self):
+        entrada = self._entrada_rechazada()  # OC 'CDL' -> actor ALMACEN
+        with self.assertRaises(ValidationError):
+            se.reabrir_para_correccion(entrada, self.u_materia_prima)
+        su = User.objects.create_superuser('su_reabrir', 'su@x.com', 'x')
+        se.reabrir_para_correccion(entrada, su)  # superuser sí
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_PENDIENTE)
+
+    def test_endpoint_http_reabrir_ok_y_403(self):
+        entrada = self._entrada_rechazada()
+
+        # actor equivocado -> 403
+        self.client.force_login(self.u_materia_prima)
+        r = self.client.post(f'/operations/api/entrada-mercaderia/{entrada.id}/reabrir/',
+                             data={}, content_type='application/json')
+        self.assertEqual(r.status_code, 403)
+
+        # actor correcto -> 200
+        self.client.force_login(self.u_almacen)
+        r = self.client.post(f'/operations/api/entrada-mercaderia/{entrada.id}/reabrir/',
+                             data={}, content_type='application/json')
+        self.assertEqual(r.status_code, 200)
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.estado, EntradaMercaderia.ESTADO_PENDIENTE)
+
+    def test_detalle_html_muestra_boton_y_historial_solo_cuando_corresponde(self):
+        # PENDIENTE recién generada -> sin botón reabrir, sin historial
+        pend = self._entrada_pendiente()
+        self.client.force_login(self.u_almacen)
+        html = self.client.get(f'/operations/entrada-mercaderia/{pend.id}/').content.decode()
+        self.assertNotIn('Reabrir para corregir', html)
+        self.assertNotIn('Historial de reaperturas', html)
+
+        # ENVIADO + error -> botón visible
+        rech = self._entrada_rechazada()
+        html = self.client.get(f'/operations/entrada-mercaderia/{rech.id}/').content.decode()
+        self.assertIn('Reabrir para corregir', html)
+
+        # tras reabrir -> sin botón, con historial
+        se.reabrir_para_correccion(rech, self.u_almacen)
+        html = self.client.get(f'/operations/entrada-mercaderia/{rech.id}/').content.decode()
+        self.assertNotIn('Reabrir para corregir', html)
+        self.assertIn('Historial de reaperturas', html)
+
+    def test_panel_lista_las_rechazadas_en_su_seccion(self):
+        rech = self._entrada_rechazada()  # actor ALMACEN
+        self.client.force_login(self.u_almacen)
+        html = self.client.get('/operations/almacen/').content.decode()
+        self.assertIn('rechazadas por SAP', html)
+        self.assertIn(f'/operations/entrada-mercaderia/{rech.id}/', html)
 
 
 class EntradaMercaderiaAPITests(OperationsTestBase):

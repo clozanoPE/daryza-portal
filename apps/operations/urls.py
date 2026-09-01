@@ -90,6 +90,10 @@ urlpatterns = [
          views.entrada_enviar_a_sap_ajax,
          name='ajax_entrada_enviar_a_sap'),
 
+    path('api/entrada-mercaderia/<int:entrada_id>/reabrir/',
+         views.entrada_reabrir_ajax,
+         name='ajax_entrada_reabrir'),
+
     # ── Panel Vigilancia ─────────────────────────────────────────────────
     path('vigilancia/',
          views.panel_vigilancia,

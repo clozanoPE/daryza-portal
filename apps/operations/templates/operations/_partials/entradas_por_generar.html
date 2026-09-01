@@ -4,10 +4,58 @@ cuya Entrada de Mercadería sigue en estado PENDIENTE (falta completar el
 LOTE en el Portal antes de enviarla al daemon). Compartido por
 panel_almacen.html y panel_materia_prima.html.
 
+Sesión 99c — segunda sección "Entradas rechazadas por SAP": Entradas
+ENVIADO que SAP rechazó (error_mensaje) — el actor las reabre, corrige y
+reenvía.
+
 Parámetros:
-  entradas_pendientes : lista de EntradaMercaderia (se.entradas_pendientes_para)
+  entradas_pendientes : lista de EntradaMercaderia PENDIENTE (se.entradas_pendientes_para)
+  entradas_rechazadas : lista de EntradaMercaderia ENVIADO+error (se.entradas_rechazadas_para)
   acento              : "green" (Almacén) | "pink" (Materia Prima)
 {% endcomment %}
+{% if entradas_rechazadas %}
+<div class="dz-card p-4 mb-4 border-danger-subtle">
+  <h6 class="fw-bold mb-3 text-danger">
+    <i class="bi bi-exclamation-octagon me-2"></i>Entradas de Mercadería rechazadas por SAP
+    <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill ms-1 text-xxs">{{ entradas_rechazadas|length }}</span>
+  </h6>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th class="text-xxs">Ticket</th>
+          <th class="text-xxs">Proveedor</th>
+          <th class="text-xxs">OC(s)</th>
+          <th class="text-xxs">Error SAP</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entrada in entradas_rechazadas %}
+        <tr>
+          <td class="fw-bold text-xs">#{{ entrada.ticket.appointment.id }}</td>
+          <td class="text-xs">{{ entrada.ticket.appointment.user.get_full_name|default:entrada.ticket.appointment.user.username }}</td>
+          <td>
+            <div class="d-flex flex-wrap gap-1">
+              {% for po in entrada.ticket.appointment.purchase_orders.all %}
+              <span class="badge text-xxs bg-light text-dark border">OC {{ po.doc_num }}</span>
+              {% endfor %}
+            </div>
+          </td>
+          <td class="text-xxs text-danger" style="max-width:340px">{{ entrada.error_mensaje|truncatechars:160 }}</td>
+          <td class="text-end">
+            <a href="{% url 'operations:entrada_mercaderia_detalle' entrada.id %}"
+               class="btn btn-outline-danger btn-sm rounded-3 text-xs">
+              <i class="bi bi-arrow-counterclockwise me-1"></i>Corregir
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 {% if entradas_pendientes %}
 <div class="dz-card {% if acento == 'pink' %}dz-card--accent-pink{% endif %} p-4 mb-4">
   <h6 class="fw-bold mb-3">

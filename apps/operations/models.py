@@ -468,3 +468,37 @@ class EntradaMercaderiaLinea(models.Model):
             f"Entrada Mercadería Ticket {self.entrada.ticket_id} | "
             f"OC {self.po_line.purchase_order.doc_num} L{self.po_line.line_num} | {self.cantidad}"
         )
+
+
+class EntradaMercaderiaEvento(models.Model):
+    """
+    Rastro de auditoría de la Entrada de Mercadería (sesión 99c). Hoy solo
+    registra REABIERTA — cuando el actor de recepción reabre una Entrada
+    que SAP rechazó, para corregir el lote/cantidad y reenviarla. El
+    error_mensaje se limpia al reabrir, pero acá queda constancia de que
+    SAP la rechazó una vez y qué dijo. Mismo criterio que FacturaObservacion
+    (historial que no se pisa), a menor escala.
+    """
+    TIPO_REABIERTA = 'REABIERTA'
+    TIPO_CHOICES = [
+        (TIPO_REABIERTA, 'Reabierta para corrección'),
+    ]
+
+    entrada = models.ForeignKey(
+        EntradaMercaderia, on_delete=models.CASCADE, related_name='eventos'
+    )
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    mensaje = models.TextField(
+        blank=True, default='',
+        help_text="Contexto del evento (ej. el error de SAP que se estaba corrigiendo)."
+    )
+    usuario = models.ForeignKey(User, on_delete=models.PROTECT)
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha']
+        verbose_name = "Evento de Entrada de Mercadería"
+        verbose_name_plural = "Eventos de Entrada de Mercadería"
+
+    def __str__(self):
+        return f"Entrada {self.entrada_id} | {self.tipo} | {self.fecha:%Y-%m-%d %H:%M}"
