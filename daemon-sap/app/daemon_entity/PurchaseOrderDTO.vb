@@ -34,4 +34,10 @@ Public Class PurchaseOrderLineDTO
     Public Property precio_unitario As Decimal
     Public Property precio_total_linea As Decimal
     Public Property tax_code As String
+
+    ' Sesión 99b: OITM.ManBtchNum de SAP — True si el artículo se gestiona
+    ' por lote. El Portal lo usa para exigir el número de lote SOLO en las
+    ' líneas que lo requieren (pantalla de Entrada de Mercadería). Mismo
+    ' nombre snake_case que espera PurchaseOrderLineSerializer.
+    Public Property gestionado_por_lote As Boolean
 End Class

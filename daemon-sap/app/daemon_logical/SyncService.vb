@@ -34,7 +34,7 @@ Public Class SyncService
 
     Public Async Function ExecuteSync() As Task
         Try
-
+            Logger.Escribir($"[PRE INICIO] ingresé a ExecuteSync, siguiente paso conectarme a HANA.")
 
             Dim headers As DataTable = _data.GetPendingHeaders()
 
@@ -75,7 +75,8 @@ Public Class SyncService
                         .requiere_coa = Convert.ToBoolean(lineRow("requiere_coa")),
                         .precio_unitario = Convert.ToDecimal(lineRow("Unit Price")),
                         .precio_total_linea = Convert.ToDecimal(lineRow("Line Total")),
-                        .tax_code = lineRow("Tax Code").ToString()
+                        .tax_code = lineRow("Tax Code").ToString(),
+                        .gestionado_por_lote = Convert.ToBoolean(lineRow("Managed By Batch"))
                     })
                 Next
 

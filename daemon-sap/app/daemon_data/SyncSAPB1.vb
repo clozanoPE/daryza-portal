@@ -25,18 +25,23 @@ Public Class SyncSAPB1
         Return dt
     End Function
 
-    ' Obtiene el detalle de artículos (PQT1) para un DocEntry específico
+    ' Obtiene el detalle de artículos (POR1) para un DocEntry específico
     ' Sesión 92: se agregan PriceBefDi/LineTotal/TaxCode — datos de
     ' precio/impuesto que ya existen en SAP al momento de aceptar la OC,
     ' confirmados por el usuario (columnas reales de POR1, no inventadas
-    ' ni calculadas acá). Ver CLAUDE.md sesión 92 para el detalle
-    ' completo del payload nuevo que esto habilita del lado de Django.
+    ' ni calculadas acá).
+    ' Sesión 99b: se agrega OITM.ManBtchNum ("Managed By Batch") — indica
+    ' si el artículo se gestiona por lote. Lo usa la pantalla de Entrada
+    ' de Mercadería del Portal para exigir el número de lote SOLO en las
+    ' líneas que SAP realmente lo requiere. Mismo mecanismo (subquery
+    ' correlacionada con CASE booleano) ya usado para requiere_coa.
     Public Function GetLinesByDocEntry(docEntry As Integer) As DataTable
         Dim dt As New DataTable()
         Using conn As HanaConnection = HanaConnectionManager.GetHanaConnection()
             Dim sql As String = "SELECT t1.""LineNum"", t1.""ItemCode"", t1.""Dscription"", t1.""OpenQty"" as ""Quantity"", t1.""UomCode"" as ""UM""  " &
                                ", t1.""PriceBefDi"" as ""Unit Price"", t1.""LineTotal"" as ""Line Total"", t1.""TaxCode"" as ""Tax Code"" " &
                                ",(select case when t0.""U_MSS_TDB""='MP' then true else false end from OPOR t0 where t0.""DocEntry""=t1.""DocEntry"") as ""requiere_coa"" " &
+                               ",(select case when t2.""ManBtchNum""='Y' then true else false end from OITM t2 where t2.""ItemCode""=t1.""ItemCode"") as ""Managed By Batch"" " &
                                 "FROM POR1 t1 WHERE t1.""LineStatus"" = 'O' and  t1.""DocEntry"" = ?" '& docEntry.ToString()
             Dim cmd As New HanaCommand(sql, conn)
             cmd.Parameters.Add(New HanaParameter("p1", HanaDbType.Integer)).Value = docEntry
