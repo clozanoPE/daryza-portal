@@ -481,3 +481,59 @@ class FacturaLinea(models.Model):
         unique_together = ('factura', 'po_line')
         verbose_name = "Línea de Factura"
         verbose_name_plural = "Líneas de Factura"
+
+
+class FacturaEvento(models.Model):
+    """
+    Rastro de auditoría de una Factura que SOBREVIVE a su eliminación
+    (sesión 101, Obs 3 — el caso OC 79001197: un borrador que no pudo
+    enviarse a SAP dejaba la OC bloqueada sin forma de re-copiarla; la
+    solución es poder eliminar el borrador, pero sin perder la constancia
+    de qué se borró y quién lo hizo).
+
+    Mismo patrón append-only que EntradaMercaderiaEvento /
+    FacturaObservacion, con UNA diferencia clave por diseño: `factura_id`
+    es un IntegerField, NO una FK. Cuando el proveedor elimina un borrador
+    de Factura, la fila de Factura (y sus FacturaOrdenCompra /
+    FacturaLinea vía CASCADE) desaparece — este evento debe quedar de
+    todos modos. `snapshot` (JSON) captura lo suficiente para reconstruir
+    "qué se borró" sin depender de que la Factura siga existiendo.
+
+    `tipo` empieza con un solo valor (ELIMINACION) y está pensado para
+    extenderse a futuro, mismo criterio que EntradaMercaderiaEvento (que
+    hoy solo tiene REABIERTA).
+    """
+    TIPO_ELIMINACION = 'ELIMINACION'
+    TIPO_CHOICES = [
+        (TIPO_ELIMINACION, 'Borrador eliminado por el proveedor'),
+    ]
+
+    factura_id = models.IntegerField(
+        db_index=True,
+        help_text=(
+            "PK que tenía la Factura al momento del evento — NO es una FK "
+            "(la Factura puede ya no existir)."
+        ),
+    )
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='eventos_factura',
+    )
+    fecha = models.DateTimeField(auto_now_add=True)
+    snapshot = models.JSONField(
+        default=dict,
+        help_text=(
+            "Foto de la Factura al momento del evento: numero_documento, "
+            "proveedor (razon_social/ruc), OC(s) vinculadas, importe total, "
+            "estado y estado_sap. Suficiente para saber qué se borró sin "
+            "depender de que la Factura siga existiendo."
+        ),
+    )
+
+    class Meta:
+        ordering = ['-fecha']
+        verbose_name = "Evento de Factura"
+        verbose_name_plural = "Eventos de Factura"
+
+    def __str__(self):
+        return f"Factura {self.factura_id} | {self.tipo} | {self.fecha:%Y-%m-%d %H:%M}"

@@ -57,9 +57,16 @@
           <td class="text-xxs">{{ factura.get_estado_sap_display }}</td>
           <td class="text-xxs">{{ factura.created_at|date:"d/m/Y H:i" }}</td>
           <td>
-            <a href="{% url 'invoicing:factura_detalle' factura.id %}" class="btn btn-outline-success btn-sm rounded-3 text-xxs">
-              <i class="bi bi-eye me-1"></i>Ver
-            </a>
+            <div class="d-flex gap-1 justify-content-end">
+              <a href="{% url 'invoicing:factura_detalle' factura.id %}" class="btn btn-outline-success btn-sm rounded-3 text-xxs">
+                <i class="bi bi-eye me-1"></i>Ver
+              </a>
+              {% if factura.puede_eliminar %}
+              <button class="btn btn-outline-danger btn-sm rounded-3 text-xxs" onclick="eliminarBorradorFactura({{ factura.id }})">
+                <i class="bi bi-trash"></i>
+              </button>
+              {% endif %}
+            </div>
           </td>
         </tr>
         {% if factura.estado == 'OBSERVADA' and factura.observaciones.all %}
@@ -86,4 +93,8 @@
   </div>
 </div>
 
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/panels/mis_facturas.js' %}?v=1.0"></script>
 {% endblock %}

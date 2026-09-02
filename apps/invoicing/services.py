@@ -53,7 +53,7 @@ from apps.operations.models import EntradaMercaderia, EntradaMercaderiaLinea
 from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 from . import services_validacion as sv
-from .models import Factura, FacturaLinea
+from .models import Factura, FacturaEvento, FacturaLinea
 
 # Tolerancia de redondeo al comparar importe_total_xml (2 decimales
 # reales en cualquier comprobante peruano) contra la suma calculada de
@@ -148,6 +148,118 @@ class InvoicingService:
         )
 
         return recibido_confirmado - ya_facturado
+
+    # ── Eliminación de un borrador de Factura (sesión 101, Obs 3) ────────
+
+    ESTADOS_ELIMINABLES = ('BORRADOR', 'OBSERVADA')
+
+    @staticmethod
+    def _snapshot_factura(factura) -> dict:
+        """
+        Foto de la Factura suficiente para reconstruir "qué se borró" sin
+        depender de que siga existiendo (ver FacturaEvento.snapshot).
+        """
+        lineas = list(
+            factura.lineas.select_related('po_line__purchase_order').all()
+        )
+        importe_total = sum((l.total_linea for l in lineas), Decimal('0'))
+        return {
+            'numero_documento': (
+                f"{factura.serie_comprobante}-{factura.numero_comprobante}"
+                if factura.serie_comprobante else f"#{factura.pk}"
+            ),
+            'serie_comprobante': factura.serie_comprobante or '',
+            'numero_comprobante': factura.numero_comprobante or '',
+            'num_at_card': factura.num_at_card or '',
+            'proveedor': {
+                'razon_social': factura.proveedor.razon_social or '',
+                'ruc': factura.proveedor.ruc or '',
+                'sap_card_code': factura.proveedor.sap_card_code or '',
+            },
+            'sede': factura.sede.nombre,
+            'ocs': [
+                foc.purchase_order.doc_num
+                for foc in factura.ordenes_compra.select_related('purchase_order').all()
+            ],
+            'moneda': factura.doc_cur or '',
+            'importe_total': str(importe_total),
+            'importe_total_xml': (
+                str(factura.importe_total_xml) if factura.importe_total_xml is not None else None
+            ),
+            'estado': factura.estado,
+            'estado_sap': factura.estado_sap,
+            'lineas': [
+                {
+                    'oc': l.po_line.purchase_order.doc_num,
+                    'item': l.po_line.item_code,
+                    'cantidad': str(l.cantidad),
+                    'precio': str(l.precio),
+                }
+                for l in lineas
+            ],
+        }
+
+    @staticmethod
+    @transaction.atomic
+    def eliminar_borrador_factura(factura, usuario):
+        """
+        Elimina un borrador de Factura del Portal (sesión 101, Obs 3 — el
+        caso OC 79001197: un borrador que no pudo enviarse a SAP —p. ej.
+        porque el XML del proveedor declara más cantidad de la despachada,
+        importe_no_coincide— dejaba la OC bloqueada por el candado de
+        unicidad, sin ninguna forma de re-copiarla).
+
+        Permiso: SOLO el proveedor dueño (SupplierProfile.user de esta
+        Factura). NI Compras NI superusuario — decisión de negocio
+        explícita (quien la creó es quien la deshace).
+
+        Estados permitidos: estado in (BORRADOR, OBSERVADA) Y estado_sap
+        == '' — nunca si SAP tiene CUALQUIER rastro del documento
+        (estado_sap in {'L','B','Y','C'}).
+
+        Efecto, dentro de una transacción, en este orden EXACTO:
+          1. PRIMERO se crea el FacturaEvento con el snapshot completo
+             (número, proveedor, OCs, importe, estado) — así el rastro
+             queda ANTES de cualquier borrado.
+          2. DESPUÉS Factura.delete() — el CASCADE limpia
+             FacturaOrdenCompra / FacturaLinea de forma segura (el
+             snapshot ya está guardado). Se libera el candado de unicidad
+             de OC (InvoicingService.validar_oc_disponible): la OC vuelve
+             a estar disponible para re-copiar, ahora con la Cantidad
+             Atendida acumulada de todas las rondas CREADO_SAP.
+
+        ARCHIVOS EN ONEDRIVE: los que ya se hubieran subido a esta Factura
+        (XML / PDF / CDR de la cabecera, y los documentos de retención /
+        detracción por línea) quedan HUÉRFANOS — OneDriveClient no tiene
+        ningún método de borrado, mismo criterio ya aceptado para los COA
+        de TicketLineCOA (nunca se borran físicamente de OneDrive; solo el
+        link en BD deja de referenciarlos).
+
+        Devuelve el FacturaEvento creado.
+        """
+        if not factura.proveedor.user_id or factura.proveedor.user_id != usuario.pk:
+            raise ValidationError(
+                "Solo el proveedor dueño de esta Factura puede eliminarla."
+            )
+        if factura.estado_sap != '':
+            raise ValidationError(
+                "No se puede eliminar: SAP ya tiene un rastro de esta Factura "
+                f"(estado SAP: '{factura.get_estado_sap_display()}')."
+            )
+        if factura.estado not in InvoicingService.ESTADOS_ELIMINABLES:
+            raise ValidationError(
+                "Solo se puede eliminar una Factura en Borrador u Observada — "
+                f"esta está en '{factura.get_estado_display()}'."
+            )
+
+        evento = FacturaEvento.objects.create(
+            factura_id=factura.pk,
+            tipo=FacturaEvento.TIPO_ELIMINACION,
+            actor=usuario,
+            snapshot=InvoicingService._snapshot_factura(factura),
+        )
+        factura.delete()
+        return evento
 
     # Estados de Factura en los que la Factura todavía se está armando/
     # revisando (no terminal) — una OC no puede tener 2 de estas a la vez

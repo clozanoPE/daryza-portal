@@ -50,6 +50,18 @@
 </div>
 {% endif %}
 
+{% if puede_eliminar %}
+<div class="dz-card p-3 mb-4 d-flex justify-content-between align-items-center gap-2 flex-wrap">
+  <span class="text-xxs text-muted">
+    <i class="bi bi-info-circle me-1"></i>
+    Si este borrador quedó atascado (por ejemplo, no se pudo enviar a revisión), puede eliminarlo y volver a copiar la(s) OC más adelante.
+  </span>
+  <button class="btn btn-outline-danger btn-sm rounded-3" onclick="eliminarBorradorFactura({{ factura.id }})">
+    <i class="bi bi-trash me-1"></i>Eliminar borrador
+  </button>
+</div>
+{% endif %}
+
 {% if es_compras and puede_actuar_compras %}
 <div class="dz-card p-3 mb-4 d-flex justify-content-end gap-2 flex-wrap">
   <button class="btn btn-outline-danger rounded-3" data-bs-toggle="modal" data-bs-target="#modalObservarFactura">
@@ -356,5 +368,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.3"></script>
+<script src="{% static 'js/panels/factura_detalle.js' %}?v=1.4"></script>
 {% endblock %}

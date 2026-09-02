@@ -90,7 +90,7 @@ from apps.sap_sync.models import PurchaseOrder, PurchaseOrderLine
 
 from . import services_archivos as sa
 from . import services_borrador as sb
-from .models import Factura, FacturaLinea, FacturaOrdenCompra
+from .models import Factura, FacturaEvento, FacturaLinea, FacturaOrdenCompra
 from .services import InvoicingService
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
@@ -1654,6 +1654,44 @@ class NuevaFacturaTestBase(InvoicingTestBase):
             'numero_comprobante': '1', 'tipo_operacion': '02',
             'clasificacion_bienes_servicios': 1,
         }
+
+    def _segunda_ronda(self, po, cantidad_real, creado_sap=True):
+        """
+        Nueva cita para la MISMA `po` ('CDL', actor ALMACEN) → 2da
+        EntradaMercaderia vía el flujo real de servicios. Para OC abierta
+        con N despachos parciales (sesión 99c / 100 / 101).
+        """
+        slot = self._slot_futuro()
+        appt = AppointmentService.solicitar_cita_borrador(
+            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
+        )
+        ticket = AppointmentService.confirmar_cita(
+            appointment_id=appt.id, usuario_almacen=self.u_compras, base_url='http://testserver/',
+        )
+        ticket = OperationsService.iniciar_ingreso_planta(
+            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
+        )
+        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
+        ticket.refresh_from_db()
+        resultados = [
+            {'inspeccion_id': i.id, 'estado': 'CONFORME', 'cantidad_modificada': str(cantidad_real)}
+            for i in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
+        ]
+        OperationsService.registrar_calidad(
+            ticket_id=ticket.id, usuario_calidad=self.u_almacen, resultados=resultados,
+        )
+        ticket.refresh_from_db()
+        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
+
+        from apps.operations import services_entrada as _se
+        entrada = EntradaMercaderia.objects.get(ticket=ticket)
+        _se.enviar_a_sap(entrada, self.u_almacen)
+        if creado_sap:
+            entrada.refresh_from_db()
+            entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
+            entrada.estado_sap = 'Y'
+            entrada.save(update_fields=['estado', 'estado_sap'])
+        return ticket
 
 
 class ListarOcsElegiblesTests(NuevaFacturaTestBase):
@@ -3896,44 +3934,8 @@ class CantidadesConsolidadasPorLineaTests(NuevaFacturaTestBase):
     oc_status.cantidades_consolidadas_por_linea: {po_line_id: {ordenada,
     atendida, disponible}} — las 2 lecturas (solo_confirmado True/False),
     el clamp de 'disponible' a 0 en sobre-recepción, y que NO es N+1.
+    (`_segunda_ronda` vive en NuevaFacturaTestBase.)
     """
-
-    def _segunda_ronda(self, po, cantidad_real, creado_sap=True):
-        """Nueva cita para la MISMA `po` ('CDL', actor ALMACEN) → 2da
-        EntradaMercaderia vía el flujo real de servicios (calco de
-        OcParcialTests._segunda_ronda, sin heredar esa clase para no
-        re-correr sus ~20 tests)."""
-        slot = self._slot_futuro()
-        appt = AppointmentService.solicitar_cita_borrador(
-            user=self.proveedor, slot_id=slot.id, oc_ids=[po.id],
-        )
-        ticket = AppointmentService.confirmar_cita(
-            appointment_id=appt.id, usuario_almacen=self.u_compras, base_url='http://testserver/',
-        )
-        ticket = OperationsService.iniciar_ingreso_planta(
-            ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia,
-        )
-        OperationsService.autorizar_almacen(ticket_id=ticket.id, usuario=self.u_almacen)
-        ticket.refresh_from_db()
-        resultados = [
-            {'inspeccion_id': i.id, 'estado': 'CONFORME', 'cantidad_modificada': str(cantidad_real)}
-            for i in TicketLineInspection.objects.filter(ticket=ticket, etapa='ALMACEN')
-        ]
-        OperationsService.registrar_calidad(
-            ticket_id=ticket.id, usuario_calidad=self.u_almacen, resultados=resultados,
-        )
-        ticket.refresh_from_db()
-        OperationsService.registrar_salida(ticket_id=ticket.id, usuario_vigilancia=self.u_vigilancia)
-
-        from apps.operations import services_entrada as _se
-        entrada = EntradaMercaderia.objects.get(ticket=ticket)
-        _se.enviar_a_sap(entrada, self.u_almacen)
-        if creado_sap:
-            entrada.refresh_from_db()
-            entrada.estado = EntradaMercaderia.ESTADO_CREADO_SAP
-            entrada.estado_sap = 'Y'
-            entrada.save(update_fields=['estado', 'estado_sap'])
-        return ticket
 
     def test_lectura_facturacion_vs_recepcion(self):
         """
@@ -4025,3 +4027,192 @@ class CantidadesConsolidadasPorLineaTests(NuevaFacturaTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Cant. Atendida (OC)')
         self.assertContains(resp, '6.0000')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sesión 101 — Obs 3: eliminar un borrador de Factura atascado + FacturaEvento
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EliminarBorradorFacturaTests(NuevaFacturaTestBase):
+    """
+    InvoicingService.eliminar_borrador_factura + endpoint + el complemento
+    del punto 3 (techo del input = min(saldo, atendida), nunca la OC cruda).
+    """
+
+    def _borrador_real(self, cantidad_factura=Decimal('6.0000'), cantidad_real=Decimal('10.0000')):
+        """Ticket FINALIZADO (CREADO_SAP) -> Factura BORRADOR real con 1 OC + 1 línea."""
+        ticket = self._finalizar_ticket('CDL', cantidad_real=cantidad_real)
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        po_line.precio_unitario = Decimal('10.0000')
+        po_line.save(update_fields=['precio_unitario'])
+        perfil = self._perfil_oc()
+
+        factura = sb.crear_factura_desde_ocs(
+            proveedor=perfil, purchase_order_ids=[po.id],
+            cabecera=self._cabecera_minima(),
+            lineas_payload=[{
+                'po_line': po_line, 'cantidad': cantidad_factura,
+                'aplica_retencion': False, 'aplica_detraccion': False,
+            }],
+            usuario=self.proveedor,
+        )
+        return factura, po, po_line
+
+    # ── Servicio ─────────────────────────────────────────────────────────
+
+    def test_eliminacion_exitosa_por_el_dueno_crea_facturaevento_con_snapshot(self):
+        factura, po, po_line = self._borrador_real()
+        factura_id = factura.id
+
+        evento = InvoicingService.eliminar_borrador_factura(factura, self.proveedor)
+
+        self.assertFalse(Factura.objects.filter(id=factura_id).exists())
+        self.assertEqual(evento.tipo, FacturaEvento.TIPO_ELIMINACION)
+        self.assertEqual(evento.factura_id, factura_id)
+        self.assertEqual(evento.actor, self.proveedor)
+
+        snap = evento.snapshot
+        self.assertEqual(snap['numero_documento'], 'F001-1')
+        self.assertEqual(snap['estado'], 'BORRADOR')
+        self.assertEqual(snap['estado_sap'], '')
+        self.assertEqual(snap['ocs'], [po.doc_num])
+        self.assertEqual(snap['proveedor']['sap_card_code'], 'TESTCODE')
+        self.assertEqual(snap['proveedor']['razon_social'], self._perfil_oc().razon_social)
+        self.assertEqual(Decimal(snap['importe_total']), Decimal('60.0000'))
+        self.assertEqual(len(snap['lineas']), 1)
+        self.assertEqual(snap['lineas'][0]['item'], po_line.item_code)
+
+    def test_facturaevento_sobrevive_a_la_factura(self):
+        """Prueba real de que el rastro persiste sin la Factura, no solo que se creó."""
+        factura, _, _ = self._borrador_real()
+        factura_id = factura.id
+        InvoicingService.eliminar_borrador_factura(factura, self.proveedor)
+
+        self.assertEqual(Factura.objects.filter(id=factura_id).count(), 0)
+        evento = FacturaEvento.objects.get(factura_id=factura_id)
+        self.assertEqual(evento.snapshot['numero_documento'], 'F001-1')
+
+    def test_cascade_limpia_ordencompra_y_linea(self):
+        factura, po, po_line = self._borrador_real()
+        self.assertTrue(FacturaOrdenCompra.objects.filter(factura=factura).exists())
+        self.assertTrue(FacturaLinea.objects.filter(factura=factura).exists())
+
+        InvoicingService.eliminar_borrador_factura(factura, self.proveedor)
+
+        self.assertEqual(FacturaOrdenCompra.objects.filter(purchase_order=po).count(), 0)
+        self.assertEqual(FacturaLinea.objects.filter(po_line=po_line).count(), 0)
+
+    def test_bloqueo_si_no_es_el_dueno(self):
+        factura, _, _ = self._borrador_real()
+        otro = User.objects.create_user('otro_prov_elim', password='x')
+        otro.groups.add(self.g_proveedores)
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.eliminar_borrador_factura(factura, otro)
+        self.assertTrue(Factura.objects.filter(id=factura.id).exists())
+        self.assertFalse(FacturaEvento.objects.filter(factura_id=factura.id).exists())
+
+    def test_bloqueo_si_estado_sap_no_vacio(self):
+        factura, _, _ = self._borrador_real()
+        factura.estado_sap = 'L'
+        factura.save(update_fields=['estado_sap'])
+
+        with self.assertRaises(ValidationError) as ctx:
+            InvoicingService.eliminar_borrador_factura(factura, self.proveedor)
+        self.assertIn('SAP', '; '.join(ctx.exception.messages))
+        self.assertTrue(Factura.objects.filter(id=factura.id).exists())
+
+    def test_bloqueo_si_estado_no_es_borrador_ni_observada(self):
+        factura, _, _ = self._borrador_real()
+        factura.estado = 'APROBADA_COMPRAS'
+        factura.save(update_fields=['estado'])
+
+        with self.assertRaises(ValidationError):
+            InvoicingService.eliminar_borrador_factura(factura, self.proveedor)
+        self.assertTrue(Factura.objects.filter(id=factura.id).exists())
+
+    def test_observada_si_se_puede_eliminar(self):
+        factura, _, _ = self._borrador_real()
+        factura.estado = 'OBSERVADA'
+        factura.save(update_fields=['estado'])
+
+        InvoicingService.eliminar_borrador_factura(factura, self.proveedor)
+        self.assertFalse(Factura.objects.filter(id=factura.id).exists())
+
+    def test_eliminar_libera_la_oc_para_re_copiar(self):
+        factura, po, _ = self._borrador_real()
+        perfil = self._perfil_oc()
+        self.assertEqual(sb.listar_ocs_elegibles(perfil), [])
+
+        InvoicingService.eliminar_borrador_factura(factura, self.proveedor)
+
+        elegibles = [e['purchase_order'].id for e in sb.listar_ocs_elegibles(perfil)]
+        self.assertIn(po.id, elegibles)
+
+    # ── Endpoint HTTP ────────────────────────────────────────────────────
+
+    def test_endpoint_dueno_elimina_y_redirige(self):
+        factura, _, _ = self._borrador_real()
+        self.client.force_login(self.proveedor)
+        resp = self.client.post(
+            f'/invoicing/factura/{factura.id}/eliminar/',
+            data='{}', content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['status'], 'success')
+        self.assertIn('/invoicing/mis-facturas/', data['redirect_url'])
+        self.assertFalse(Factura.objects.filter(id=factura.id).exists())
+        self.assertTrue(FacturaEvento.objects.filter(factura_id=factura.id).exists())
+
+    def test_endpoint_otro_proveedor_recibe_404(self):
+        factura, _, _ = self._borrador_real()
+        otro = User.objects.create_user('otro_prov_elim_http', password='x')
+        otro.groups.add(self.g_proveedores)
+        self.client.force_login(otro)
+        resp = self.client.post(
+            f'/invoicing/factura/{factura.id}/eliminar/',
+            data='{}', content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(Factura.objects.filter(id=factura.id).exists())
+
+    def test_detalle_muestra_boton_solo_si_puede_eliminar(self):
+        factura, _, _ = self._borrador_real()
+        self.client.force_login(self.proveedor)
+
+        resp = self.client.get(f'/invoicing/factura/{factura.id}/')
+        self.assertContains(resp, 'Eliminar borrador')
+
+        factura.estado_sap = 'L'
+        factura.save(update_fields=['estado_sap'])
+        resp = self.client.get(f'/invoicing/factura/{factura.id}/')
+        self.assertNotContains(resp, 'Eliminar borrador')
+
+    # ── Punto 3: techo del input = suma de rondas CREADO_SAP ─────────────
+
+    def test_copiar_oc_precarga_suma_de_varias_rondas_creado_sap(self):
+        """
+        OC de 10: ronda 1 = 6 CREADO_SAP, ronda 2 = 4 CREADO_SAP -> el input
+        'Cantidad a Facturar' se pre-carga con 10 (suma de ambas), NUNCA
+        con la primera ronda sola ni con la cantidad cruda de la OC.
+        """
+        ticket = self._finalizar_ticket('CDL', cantidad_real=Decimal('6.0000'))
+        po = ticket.appointment.purchase_orders.first()
+        po_line = po.lines.first()
+        self._segunda_ronda(po, Decimal('4.0000'))
+        self._perfil_oc()
+
+        grupos = sb.lineas_para_copiar([po])
+        linea = grupos[0]['lineas'][0]
+        self.assertEqual(linea['cantidad_atendida'], Decimal('10.0000'))
+        self.assertEqual(linea['techo'], Decimal('10.0000'))
+        self.assertNotEqual(linea['techo'], Decimal('6.0000'))
+
+        self.client.force_login(self.proveedor)
+        resp = self.client.get('/invoicing/nueva/copiar/', {'oc_ids': [po.id]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, f'name="cantidad_{po_line.id}"')
+        self.assertContains(resp, 'value="10.0000"')
+        self.assertContains(resp, 'max="10.0000"')

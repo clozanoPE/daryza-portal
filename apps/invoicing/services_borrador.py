@@ -186,10 +186,16 @@ def lineas_para_copiar(purchase_orders) -> list[dict]:
     """
     # Cantidad Atendida por línea (sesión 100, Obs 2) — lectura de
     # FACTURACIÓN: Σ solo de rondas CREADO_SAP (solo_confirmado=True), la
-    # fracción realmente confirmada en SAP. `saldo` (de
-    # lineas_disponibles_de_oc → InvoicingService.saldo_disponible) sigue
-    # siendo la Cantidad Disponible PARA FACTURAR (Atendida − ya facturado),
-    # que es lo que se pre-carga como `max`/`value` del input.
+    # fracción realmente confirmada en SAP.
+    #
+    # Sesión 101, Obs 3 (punto 3) — `techo` es el máximo que se pre-carga
+    # como `value`/`max` del input "Cantidad a Facturar": min(saldo,
+    # atendida), NUNCA la cantidad cruda de la OC. Así el proveedor no
+    # puede intentar facturar más de lo realmente despachado y confirmado
+    # en SAP (evita que el problema de la OC 79001197 vuelva a ocurrir).
+    # `saldo` (= atendida − ya facturado) ya es ≤ atendida, así que
+    # `techo == saldo` en la práctica — el min() deja explícito en el
+    # código que el techo está atado a `atendida`, no a la OC.
     from apps.base.oc_status import cantidades_consolidadas_por_linea
     cant = cantidades_consolidadas_por_linea(list(purchase_orders), solo_confirmado=True)
 
@@ -198,18 +204,18 @@ def lineas_para_copiar(purchase_orders) -> list[dict]:
         lineas = lineas_disponibles_de_oc(po)
         if not lineas:
             continue
-        grupos.append({
-            'purchase_order': po,
-            'lineas': [
-                {
-                    'po_line': item['po_line'],
-                    'saldo': item['saldo'],
-                    'cantidad_oc': item['po_line'].quantity_sap,
-                    'cantidad_atendida': cant.get(item['po_line'].id, {}).get('atendida'),
-                }
-                for item in lineas
-            ],
-        })
+        lineas_dict = []
+        for item in lineas:
+            atendida = cant.get(item['po_line'].id, {}).get('atendida')
+            techo = item['saldo'] if atendida is None else min(item['saldo'], atendida)
+            lineas_dict.append({
+                'po_line': item['po_line'],
+                'saldo': item['saldo'],
+                'techo': techo,
+                'cantidad_oc': item['po_line'].quantity_sap,
+                'cantidad_atendida': atendida,
+            })
+        grupos.append({'purchase_order': po, 'lineas': lineas_dict})
     return grupos
 
 

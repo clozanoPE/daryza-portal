@@ -360,11 +360,15 @@ def crear_factura_ajax(request):
 @proveedor_required
 @require_GET
 def mis_facturas(request):
-    facturas = Factura.objects.filter(
+    facturas = list(Factura.objects.filter(
         proveedor__user=request.user,
     ).select_related('sede').prefetch_related(
         'ordenes_compra__purchase_order', 'observaciones',
-    ).order_by('-created_at')
+    ).order_by('-created_at'))
+    for f in facturas:
+        f.puede_eliminar = (
+            f.estado in InvoicingService.ESTADOS_ELIMINABLES and f.estado_sap == ''
+        )
     return render(request, 'invoicing/mis_facturas.html', {'facturas': facturas})
 
 
@@ -390,6 +394,9 @@ def factura_detalle(request, factura_id: int):
     return render(request, 'invoicing/factura_detalle.html', {
         'factura': factura,
         'puede_editar': puede_editar,
+        'puede_eliminar': (
+            factura.estado in InvoicingService.ESTADOS_ELIMINABLES and factura.estado_sap == ''
+        ),
         'es_compras': False,
         'puede_actuar_compras': False,
         'archivos': [
@@ -492,6 +499,33 @@ def enviar_a_revision_ajax(request, factura_id: int):
     except ValidationError as e:
         return _json_err(_mensaje_de(e))
     return _json_ok(msg='Factura enviada a revisión correctamente.')
+
+
+@proveedor_required
+@require_POST
+def eliminar_borrador_factura_ajax(request, factura_id: int):
+    """
+    POST /invoicing/factura/<factura_id>/eliminar/ — sesión 101, Obs 3.
+    Solo el proveedor dueño; solo BORRADOR/OBSERVADA con estado_sap == ''.
+    El queryset ya filtra por dueño (404 si no coincide) — defensa en
+    profundidad con el candado de InvoicingService.eliminar_borrador_factura.
+    Crea un FacturaEvento con el snapshot ANTES de borrar (rastro que
+    sobrevive al CASCADE).
+    """
+    factura = get_object_or_404(
+        Factura.objects.select_related('proveedor', 'sede').prefetch_related(
+            'ordenes_compra__purchase_order', 'lineas__po_line__purchase_order',
+        ),
+        id=factura_id, proveedor__user=request.user,
+    )
+    try:
+        InvoicingService.eliminar_borrador_factura(factura, request.user)
+    except ValidationError as e:
+        return _json_err(_mensaje_de(e))
+    return _json_ok(
+        msg='Borrador de Factura eliminado. Las Órdenes de Compra quedan disponibles nuevamente.',
+        redirect_url=reverse('invoicing:mis_facturas'),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

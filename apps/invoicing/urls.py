@@ -27,6 +27,11 @@ urlpatterns = [
         views.enviar_a_revision_ajax,
         name='enviar_a_revision_factura',
     ),
+    path(
+        'factura/<int:factura_id>/eliminar/',
+        views.eliminar_borrador_factura_ajax,
+        name='eliminar_borrador_factura',
+    ),
 
     # ── Lado de Compras (Sub-fase 3.5) ──────────────────────────────────
     path('compras/', views.panel_facturas_compras, name='panel_facturas_compras'),

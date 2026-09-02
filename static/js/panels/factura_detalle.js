@@ -158,6 +158,32 @@ async function enviarARevision(facturaId) {
 }
 
 /**
+ * Sesión 101 (Obs 3) — el proveedor elimina un borrador de Factura que
+ * quedó atascado (no se pudo enviar a SAP). Crea un FacturaEvento con el
+ * snapshot ANTES de borrar; libera el candado de unicidad de la(s) OC.
+ * El botón solo se renderiza cuando el estado lo permite (BORRADOR/
+ * OBSERVADA + estado_sap == '') — el servidor igual re-valida.
+ */
+async function eliminarBorradorFactura(facturaId) {
+  const { showToast, confirmDialog } = DzUI;
+  const ok = await confirmDialog(
+    '¿Eliminar este borrador de Factura?',
+    'Esta acción no se puede deshacer. Las Órdenes de Compra quedarán disponibles para volver a copiarlas. Los archivos ya subidos no se recuperan.',
+    'warning',
+  );
+  if (!ok) return;
+
+  try {
+    const data = await DzApi.postJSON(`/invoicing/factura/${facturaId}/eliminar/`, {});
+    if (data.status !== 'success') throw new Error(data.msg);
+    showToast(data.msg || 'Borrador eliminado.', 'success');
+    setTimeout(() => { window.location.href = data.redirect_url || '/invoicing/mis-facturas/'; }, 900);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+/**
  * Sub-fase 3.5 — Compras aprueba la Factura. InvoicingService.
  * aprobar_factura ya re-valida firma/CDR/importe por su cuenta (defensa
  * en profundidad) — si rechaza, el mensaje real del servicio se muestra
